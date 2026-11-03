@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import 'fake-indexeddb/auto'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { resetAllData, saveProfile } from '../data/repository'
 import { App } from './App'
 import { NAV_ITEMS } from './navigation'
 
@@ -17,7 +19,9 @@ vi.mock('react-router/dom', async () => {
   return { RouterProvider: router.RouterProvider }
 })
 
-beforeAll(() => {
+beforeAll(async () => {
+  await resetAllData()
+  await saveProfile({ name: 'Testheld', avatar: '🧙', createdDay: '2026-11-03' })
   MotionGlobalConfig.skipAnimations = true
   // ScrollRestoration scrollt bei Navigationen; jsdom implementiert scrollTo nicht.
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo
@@ -72,5 +76,15 @@ describe('App-Rahmen', () => {
     await screen.findByRole('heading', { level: 1 })
     await user.click(screen.getByRole('button', { name: 'Zum Inhalt springen' }))
     expect(screen.getByRole('main')).toHaveFocus()
+  })
+})
+
+describe('Onboarding-Weiche', () => {
+  it('zeigt ohne Charakter-Profil das Onboarding statt der App', async () => {
+    await resetAllData()
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Willkommen' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Hauptnavigation' })).not.toBeInTheDocument()
+    await saveProfile({ name: 'Testheld', avatar: '🧙', createdDay: '2026-11-03' })
   })
 })

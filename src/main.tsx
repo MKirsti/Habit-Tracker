@@ -8,6 +8,11 @@ import '@fontsource-variable/inter'
 import './index.css'
 import { App } from './app/App'
 
+// Nur in der Entwicklung: Hilfsfunktionen unter window.questlog (z. B. questlog.seedDemo(30)).
+if (import.meta.env.DEV) {
+  void import('./dev/devtools').then(({ installDevtools }) => installDevtools())
+}
+
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Questlog: #root fehlt in index.html')
 

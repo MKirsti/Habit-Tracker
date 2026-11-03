@@ -200,3 +200,16 @@ export function useGame(): { data: GameData; today: DayKey; state: GameState } |
 - `MotionConfig reducedMotion="user"`; Effekte zusätzlich über `settings.effects` abschaltbar.
 
 Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten · `/kampagne` Kampagne · `/held` Charakter · `/einstellungen` Einstellungen. Ohne Profil wird das Onboarding angezeigt.
+
+## App-Ebene (`src/app`) – Spielzustand & Gate
+
+- `App.tsx`: `AppErrorBoundary` → `ToastProvider` → `GameProvider` → `EffectsConfig` (setzt `settings.effects` um) → `ProfileGate` (ohne Profil: `OnboardingPage`, sonst Router + `GameFeedback`).
+- **Seiten und Features holen Daten ausschließlich über `useGameContext()`** aus `src/app/gameContext.ts` → `{ data, today, state }`. Nie selbst `useGame()`/`useGameData()` aufrufen (sonst mehrfache Berechnung).
+- Schreiben ausschließlich über `src/data/repository.ts` (bzw. `seed.ts`/`backup.ts`). Die Funktionen werfen deutsche `Error`s → abfangen und per `useToast()` mit `tone: 'error'` anzeigen. Nach dem Schreiben aktualisiert sich der Zustand automatisch (Live-Query) – kein manuelles Neuladen.
+- `GameFeedback` (`src/features/feedback`) sitzt **außerhalb** des RouterProviders: dort keine Router-Hooks verwenden. Es erkennt Änderungen am Spielzustand (XP, Level-Up, Perfekter Tag, Kapitel) und zeigt die Rückmeldungen zentral – Seiten zeigen dafür **keine eigenen** XP-Toasts, höchstens lokale Mikro-Animationen.
+- Router-Hooks/Komponenten immer aus `'react-router'` importieren (nicht `'react-router/dom'`).
+
+## Tests & Entwicklung
+
+- Komponenten-Tests: `// @vitest-environment jsdom`, `import 'fake-indexeddb/auto'`, `afterEach(cleanup)` (keine Vitest-Globals), Animationen per `MotionGlobalConfig.skipAnimations = true` aus. Seiten mit `renderWithGame(<Seite />, { route })` aus `src/test/renderWithGame.tsx` rendern; Daten vorher mit `resetAllData()` + Repository-Funktionen anlegen.
+- Im Dev-Server (`npm run dev`) gibt es `window.questlog` (`src/dev/devtools.ts`): `await questlog.seedDemo(30)` legt einen Demo-Helden mit 30 Tagen Verlauf an, `await questlog.reset()` löscht alles. Ideal für Screenshots mit Playwright.
