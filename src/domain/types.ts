@@ -32,6 +32,21 @@ export interface Measure {
   unit: string
 }
 
+/**
+ * Ein früherer Rhythmus einer Quest: `schedule` galt für alle Tage **vor** `until`
+ * (und ab dem `until` des vorherigen Eintrags).
+ */
+export interface ScheduleHistoryEntry {
+  until: DayKey
+  schedule: Schedule
+}
+
+/** Zeitraum, in dem eine Quest ruht (nicht aktiv ist): `from ≤ Tag < until`. */
+export interface HabitPause {
+  from: DayKey
+  until: DayKey
+}
+
 export interface Habit {
   id: string
   title: string
@@ -40,7 +55,14 @@ export interface Habit {
   description?: string
   attribute: AttributeId
   difficulty: Difficulty
+  /** Aktueller Rhythmus: gilt ab dem `until` des letzten `scheduleHistory`-Eintrags (ohne Verlauf: immer). */
   schedule: Schedule
+  /**
+   * Frühere Rhythmen, aufsteigend nach `until`. Wird vom Repository gepflegt, damit eine Änderung des
+   * Rhythmus die Vergangenheit (Pflicht-Quests, Perfekte Tage, Streaks, XP) nicht umschreibt.
+   * Maßgeblich für einen Tag ist `scheduleOn(habit, day)` aus `schedule.ts`.
+   */
+  scheduleHistory?: ScheduleHistoryEntry[]
   measure?: Measure
   /** Verknüpfte Kampagne (Hauptquest). */
   mainQuestId?: string
@@ -50,6 +72,11 @@ export interface Habit {
   createdDay: DayKey
   /** Ab diesem Spieltag ist die Quest archiviert, also nicht mehr aktiv (inklusive). */
   archivedDay?: DayKey
+  /**
+   * Ruhezeiten (z. B. eine Archivierung, die später rückgängig gemacht wurde): An diesen Tagen ist die
+   * Quest nicht aktiv – keine Pflicht, Streaks überspringen sie. Wird vom Repository gepflegt.
+   */
+  pauses?: HabitPause[]
 }
 
 /**
@@ -190,7 +217,11 @@ export interface HabitStatus {
   done: boolean
   /** Streak bezogen auf diesen Tag. */
   streak: Streak
-  /** Nur für Wochenquests: erledigte Tage in der Woche dieses Tages. */
+  /**
+   * Nur, wenn die Quest an diesem Tag eine Wochenquest ist (`scheduleOn`): erledigte Tage in der Woche dieses
+   * Tages. `target` ist das Wochenziel, das (wie bei der Wochen-Serie) für diese Woche gilt: das vom Montag;
+   * war die Quest am Montag keine Wochenquest, das des Tages.
+   */
   week?: { done: number; target: number }
   /** XP, die die Quest (mit aktueller Schwierigkeit) bei Erledigung gibt. */
   xp: number
@@ -247,7 +278,10 @@ export interface GameTotals {
   /** Anzahl erledigter Quest-Tage (Completions mit value ≥ target). */
   questsCompleted: number
   perfectDays: number
-  /** Bester Streak über alle Quests (Tage- und Wochen-Streaks getrennt). */
+  /**
+   * Bester Streak über alle Quests (Tage- und Wochen-Streaks getrennt). Zählt auch Serien aus der Zeit vor
+   * einer Umstellung zwischen Tages- und Wochenquest (`bestStreakIn`).
+   */
   bestDayStreak: number
   bestWeekStreak: number
   /** Tage mit mindestens einer erledigten Quest. */

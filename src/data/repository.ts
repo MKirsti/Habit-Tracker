@@ -11,11 +11,14 @@
  *   gespeichert). Dafür nutzen Updates ein "Lesen → Zusammenführen → Normalisieren → put"
  *   innerhalb einer Transaktion.
  * - Operationen, die mehrere Tabellen berühren, laufen in einer gemeinsamen Transaktion.
+ * - Die Vergangenheit bleibt unangetastet: Ändert sich der Rhythmus einer Quest, wird der alte in
+ *   `scheduleHistory` festgehalten; wird eine archivierte Quest zurückgeholt, wird die archivierte
+ *   Zeit als Pause (`pauses`) gespeichert. So gehen verdiente XP, Perfekte Tage und Streaks nie verloren.
  */
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
-import { isValidDayKey } from '../domain/dates'
-import { habitTarget, isDone, reachesTarget } from '../domain/schedule'
+import { compareDays, isValidDayKey } from '../domain/dates'
+import { habitTarget, isDone, mergePauses, reachesTarget, sameSchedule } from '../domain/schedule'
 import type {
   AttributeId,
   Chapter,
@@ -26,10 +29,12 @@ import type {
   Difficulty,
   GameData,
   Habit,
+  HabitPause,
   IsoWeekday,
   MainQuest,
   Measure,
   Schedule,
+  ScheduleHistoryEntry,
   Settings,
 } from '../domain/types'
 import { db, KV_KEYS, type QuestlogDB } from './db'
@@ -48,7 +53,8 @@ export const DEFAULT_AVATAR = '🧙'
 /** Bezeichnung eines Kapitel-Zählers, wenn keine angegeben wurde. */
 export const DEFAULT_COUNTER_LABEL = 'Fortschritt'
 
-export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay'>
+/** Die bearbeitbaren Felder einer Quest. Verlauf (`scheduleHistory`) und Pausen pflegt das Repository selbst. */
+export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay' | 'scheduleHistory' | 'pauses'>
 export type MainQuestDraft = Omit<MainQuest, 'id' | 'createdAt'>
 
 const HABIT_METRICS = ['completions', 'total', 'streak'] as const
@@ -143,14 +149,27 @@ export async function createHabit(draft: HabitDraft, today: DayKey, database: Qu
 }
 
 /**
- * Ändert eine Quest. Pflichtfelder, die im Patch fehlen oder `undefined` sind, bleiben unverändert.
- * Optionale Felder (`description`, `measure`, `mainQuestId`), die im Patch **explizit** mit
+ * Ändert eine Quest am Spieltag `today`. Pflichtfelder, die im Patch fehlen oder `undefined` sind, bleiben
+ * unverändert. Optionale Felder (`description`, `measure`, `mainQuestId`), die im Patch **explizit** mit
  * `undefined` stehen, werden entfernt.
  *
- * Bereits gespeicherte Erledigungen bleiben unverändert (Snapshots), damit spätere
- * Änderungen die Vergangenheit nicht umschreiben.
+ * Die Vergangenheit bleibt unverändert:
+ * - Bereits gespeicherte Erledigungen behalten ihre Snapshots (Ziel, Schwierigkeit, Attribut).
+ * - Ändert sich der Rhythmus (inhaltlich, nach Normalisierung) und liegt `today` nach `createdDay`, wird der
+ *   bisher gültige Rhythmus mit `until: today` an `scheduleHistory` angehängt – er gilt weiter für alle Tage
+ *   vor `today`, der neue ab `today`. Mehrere Änderungen am selben Tag hängen nichts weiteres an: Für die
+ *   Tage vor `today` bleibt der ursprüngliche Rhythmus maßgeblich. Ist `today ≤ createdDay`, wird der
+ *   Rhythmus einfach ersetzt (es gibt noch keine Vergangenheit).
+ * - Der Verlauf wird dabei normalisiert (sortiert, gleiche Nachbarn zusammengefasst, Einträge mit dem
+ *   aktuellen Rhythmus am Ende entfernt), ohne an der Bedeutung für irgendeinen Tag etwas zu ändern.
  */
-export async function updateHabit(id: string, patch: Partial<HabitDraft>, database: QuestlogDB = db): Promise<void> {
+export async function updateHabit(
+  id: string,
+  patch: Partial<HabitDraft>,
+  today: DayKey,
+  database: QuestlogDB = db,
+): Promise<void> {
+  assertDayKey(today)
   await database.transaction('rw', database.habits, async () => {
     const existing = await requireHabit(database, id)
     const merged: HabitDraft = {
@@ -170,6 +189,10 @@ export async function updateHabit(id: string, patch: Partial<HabitDraft>, databa
       createdDay: existing.createdDay,
     }
     if (existing.archivedDay !== undefined) next.archivedDay = existing.archivedDay
+    const history = nextScheduleHistory(existing, next.schedule, today)
+    if (history.length > 0) next.scheduleHistory = history
+    const pauses = sanitizePauses(existing.pauses)
+    if (pauses.length > 0) next.pauses = pauses
     await database.habits.put(next)
   })
 }
@@ -185,11 +208,25 @@ export async function archiveHabit(id: string, today: DayKey, database: Questlog
   await mutateHabit(database, id, (habit) => (habit.archivedDay !== undefined ? habit : { ...habit, archivedDay: today }))
 }
 
-/** Holt eine archivierte Quest zurück (entfernt `archivedDay`). */
-export async function restoreHabit(id: string, database: QuestlogDB = db): Promise<void> {
+/**
+ * Holt eine archivierte Quest am Spieltag `today` zurück: `archivedDay` wird entfernt, die archivierte Zeit
+ * `[archivedDay, today)` wird als Pause gespeichert (mit vorhandenen Pausen zusammengefasst). So wird die
+ * Quest für diese Tage nicht rückwirkend zur offenen Pflicht-Quest – Perfekte Tage, XP und Streaks der
+ * Vergangenheit bleiben erhalten. Am Tag der Archivierung selbst zurückgeholt, entsteht keine Pause.
+ * Eine nicht archivierte Quest bleibt unverändert.
+ */
+export async function restoreHabit(id: string, today: DayKey, database: QuestlogDB = db): Promise<void> {
+  assertDayKey(today)
   await mutateHabit(database, id, (habit) => {
-    const next = { ...habit }
+    if (habit.archivedDay === undefined) return habit
+    const next: Habit = { ...habit }
     delete next.archivedDay
+    // Vor createdDay war die Quest ohnehin nicht aktiv – die Pause beginnt frühestens dort.
+    const from = compareDays(habit.archivedDay, habit.createdDay) > 0 ? habit.archivedDay : habit.createdDay
+    const pauses = sanitizePauses(habit.pauses)
+    const merged = compareDays(from, today) < 0 ? mergePauses([...pauses, { from, until: today }]) : pauses
+    if (merged.length > 0) next.pauses = merged
+    else delete next.pauses
     return next
   })
 }
@@ -569,6 +606,87 @@ function normalizeSchedule(schedule: Schedule): Schedule {
     default:
       throw new Error('Unbekannter Rhythmus.')
   }
+}
+
+/**
+ * Rhythmus-Verlauf nach einer Bearbeitung am Tag `today`, bei der der Rhythmus `nextSchedule` wird:
+ * Für alle Tage vor `today` bleibt der bisher gültige Rhythmus (laut altem Verlauf) erhalten, ab `today`
+ * gilt `nextSchedule`.
+ */
+function nextScheduleHistory(existing: Habit, nextSchedule: Schedule, today: DayKey): ScheduleHistoryEntry[] {
+  const history = sanitizeHistory(existing.scheduleHistory)
+  if (sameSchedule(existing.schedule, nextSchedule) || compareDays(today, existing.createdDay) <= 0) {
+    return normalizeHistory(history, nextSchedule)
+  }
+  // Einträge, die vor `today` enden, bleiben. Die Tage zwischen dem letzten davon und `today` hatten den
+  // Rhythmus des ersten Eintrags, der erst ab `today` endet (z. B. eine frühere Änderung am selben Tag),
+  // sonst den bisher aktuellen.
+  const kept = history.filter((entry) => compareDays(entry.until, today) < 0)
+  const covering = history.find((entry) => compareDays(entry.until, today) >= 0)
+  kept.push({ until: today, schedule: covering?.schedule ?? normalizeStoredSchedule(existing.schedule) })
+  return normalizeHistory(kept, nextSchedule)
+}
+
+/**
+ * Normalisiert einen nach `until` sortierten Verlauf, ohne die Bedeutung für irgendeinen Tag zu ändern:
+ * - gleicher `until` mehrfach → der erste gilt (wie in `scheduleOn`), die übrigen entfallen
+ * - direkt aufeinanderfolgende Einträge mit gleichem Rhythmus werden zusammengefasst
+ * - Einträge am Ende mit dem aktuellen Rhythmus `current` sind überflüssig und entfallen
+ */
+function normalizeHistory(sorted: readonly ScheduleHistoryEntry[], current: Schedule): ScheduleHistoryEntry[] {
+  const result: ScheduleHistoryEntry[] = []
+  for (const entry of sorted) {
+    const last = result.at(-1)
+    if (last !== undefined && last.until === entry.until) continue
+    if (last !== undefined && sameSchedule(last.schedule, entry.schedule)) {
+      last.until = entry.until
+      continue
+    }
+    result.push({ until: entry.until, schedule: entry.schedule })
+  }
+  while (result.length > 0 && sameSchedule(result[result.length - 1].schedule, current)) result.pop()
+  return result
+}
+
+/**
+ * Gültige Einträge eines gespeicherten Verlaufs (gültiger Tag, gültiger Rhythmus), normalisierte Rhythmen,
+ * stabil nach `until` sortiert. Kaputte Einträge werden verworfen.
+ */
+function sanitizeHistory(value: unknown): ScheduleHistoryEntry[] {
+  if (!Array.isArray(value)) return []
+  const entries: ScheduleHistoryEntry[] = []
+  for (const entry of value as unknown[]) {
+    if (!isRecord(entry) || typeof entry.until !== 'string' || !isValidDayKey(entry.until)) continue
+    const schedule = tryNormalizeSchedule(entry.schedule)
+    if (schedule !== undefined) entries.push({ until: entry.until, schedule })
+  }
+  return entries.sort((a, b) => compareDays(a.until, b.until))
+}
+
+/** Gültige gespeicherte Pausen (gültige Tage, `from < until`), sortiert und zusammengefasst. */
+function sanitizePauses(value: unknown): HabitPause[] {
+  if (!Array.isArray(value)) return []
+  const pauses: HabitPause[] = []
+  for (const pause of value as unknown[]) {
+    if (!isRecord(pause)) continue
+    const { from, until } = pause
+    if (typeof from !== 'string' || typeof until !== 'string' || !isValidDayKey(from) || !isValidDayKey(until)) continue
+    pauses.push({ from, until })
+  }
+  return mergePauses(pauses)
+}
+
+function tryNormalizeSchedule(value: unknown): Schedule | undefined {
+  try {
+    return normalizeSchedule(value as Schedule)
+  } catch {
+    return undefined
+  }
+}
+
+/** Gespeicherter Rhythmus in Normalform; ein (nur durch kaputte Daten möglicher) ungültiger bleibt wie er ist. */
+function normalizeStoredSchedule(schedule: Schedule): Schedule {
+  return tryNormalizeSchedule(schedule) ?? schedule
 }
 
 function normalizeMeasure(measure: Measure): Measure {

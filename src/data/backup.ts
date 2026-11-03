@@ -4,6 +4,9 @@
  * Importierte Dateien werden mit zod streng gegen das Datenmodell aus `domain/types.ts`
  * geprüft, bevor irgendetwas in die Datenbank geschrieben wird. Unbekannte Felder werden
  * dabei verworfen. Fehlermeldungen sind deutsch und können direkt angezeigt werden.
+ *
+ * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest) erhöhen die
+ * Schema-Version nicht: Ältere Backups ohne diese Felder bleiben gültig.
  */
 import { z } from 'zod'
 import { ATTRIBUTE_IDS } from '../domain/attributes'
@@ -56,6 +59,36 @@ const scheduleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('weekly'), times: z.number().int().min(1).max(7) }),
 ])
 
+/** Früherer Rhythmus einer Quest (gilt für die Tage vor `until`). */
+const scheduleHistoryEntrySchema = z.object({
+  until: dayKeySchema,
+  schedule: scheduleSchema,
+})
+
+/** Der Verlauf muss streng aufsteigend nach `until` sortiert sein (so schreibt ihn das Repository). */
+const scheduleHistorySchema = z.array(scheduleHistoryEntrySchema).superRefine((entries, ctx) => {
+  entries.forEach((entry, index) => {
+    if (index > 0 && entries[index - 1].until >= entry.until) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [index, 'until'],
+        message: 'Der Rhythmus-Verlauf muss nach Datum aufsteigend sortiert sein.',
+      })
+    }
+  })
+})
+
+/** Ruhezeit einer Quest: `from ≤ Tag < until`, also muss `from` vor `until` liegen. */
+const pauseSchema = z
+  .object({
+    from: dayKeySchema,
+    until: dayKeySchema,
+  })
+  .refine((pause) => pause.from < pause.until, {
+    path: ['until'],
+    error: 'Eine Pause muss enden, nachdem sie begonnen hat.',
+  })
+
 const measureSchema = z.object({
   target: z.number().positive(),
   unit: z.string(),
@@ -69,11 +102,13 @@ const habitSchema = z.object({
   attribute: attributeSchema,
   difficulty: difficultySchema,
   schedule: scheduleSchema,
+  scheduleHistory: scheduleHistorySchema.optional(),
   measure: measureSchema.optional(),
   mainQuestId: z.string().optional(),
   order: z.number(),
   createdDay: dayKeySchema,
   archivedDay: dayKeySchema.optional(),
+  pauses: z.array(pauseSchema).optional(),
 })
 
 const completionSchema = z.object({

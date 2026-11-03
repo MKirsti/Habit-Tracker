@@ -73,14 +73,28 @@ export function rankForLevel(level: number): string
 ```
 Level beginnt bei 1 mit 0 XP. Beispiel: 100 XP → Level 2 mit 0 XP ins Level. Werte aus `BALANCING`.
 
+### Quest-Verlauf: Rhythmus-Historie & Pausen
+Der Spielzustand wird aus der Quest-Konfiguration abgeleitet. Damit Bearbeiten nie verdiente XP, Perfekte Tage oder Streaks kostet, speichert eine Quest (`Habit` in `types.ts`) zwei optionale, **vom Repository gepflegte** Verläufe:
+- `scheduleHistory?: { until: DayKey; schedule: Schedule }[]` – aufsteigend nach `until`. Jeder Eintrag ist der Rhythmus, der für die Tage **vor** `until` galt (und ab dem `until` des vorherigen Eintrags). `habit.schedule` gilt ab dem letzten `until`. Ohne Verlauf gilt `habit.schedule` immer.
+- `pauses?: { from: DayKey; until: DayKey }[]` – an Tagen mit `from ≤ Tag < until` ist die Quest nicht aktiv (keine Pflicht, nicht sichtbar, Streaks überspringen sie). Entsteht beim Zurückholen einer archivierten Quest (später auch Urlaubsmodus).
+
+Beide Felder sind für Seiten **nur lesend**; `HabitDraft` enthält sie nicht. Alles, was einen Tag in der Vergangenheit bewertet, nutzt `scheduleOn(habit, day)` statt `habit.schedule` (auch die UI für frühere Tage).
+
 ### `schedule.ts`
 ```ts
 export function isActiveOn(habit: Habit, day: DayKey): boolean
-  // createdDay ≤ day und (kein archivedDay oder day < archivedDay)
+  // createdDay ≤ day und (kein archivedDay oder day < archivedDay) und day in keiner Pause
+export function isPausedOn(habit: Habit, day: DayKey): boolean    // from ≤ day < until für eine Pause
+export function scheduleOn(habit: Habit, day: DayKey): Schedule
+  // Rhythmus an diesem Tag: Verlaufseintrag mit dem kleinsten until > day, sonst habit.schedule
+  // (unabhängig von der gespeicherten Reihenfolge; bei gleichem until gewinnt der erste Eintrag)
 export function isRequiredOn(habit: Habit, day: DayKey): boolean
-  // aktiv UND (daily ODER weekdays mit passendem Wochentag). Wochenquests: false.
+  // aktiv UND scheduleOn(habit, day) ist daily ODER weekdays mit passendem Wochentag. Wochenquests: false.
 export function isVisibleOn(habit: Habit, day: DayKey): boolean
-  // aktiv UND (isRequiredOn ODER schedule.type === 'weekly')
+  // aktiv UND (isRequiredOn ODER scheduleOn(habit, day).type === 'weekly')
+export function sameSchedule(a: Schedule, b: Schedule): boolean     // inhaltlich gleich (Wochentage als Menge)
+export function mergePauses(pauses: readonly HabitPause[]): HabitPause[]
+  // leere (from ≥ until) verwerfen, nach from sortieren, überlappende/angrenzende zusammenfassen
 export function questXp(difficulty: Difficulty): number
 export function isDone(c: Pick<Completion, 'value' | 'target'>): boolean  // value ≥ target
 export function habitTarget(habit: Habit): number                          // measure?.target ?? 1
@@ -91,11 +105,19 @@ export function describeSchedule(schedule: Schedule): string
 ### `streaks.ts`
 ```ts
 export function computeStreak(habit: Habit, doneDays: ReadonlySet<DayKey>, asOf: DayKey, from?: DayKey): Streak
+export function streakUnit(schedule: Schedule): 'day' | 'week'   // weekly → 'week', sonst 'day'
+export function bestStreakIn(habit: Habit, doneDays: ReadonlySet<DayKey>, unit: 'day' | 'week', asOf: DayKey, from?: DayKey): number
+  // längste Serie in dieser Einheit (gleiche Regeln), auch wenn sie nicht zum aktuellen Rhythmus passt;
+  // 0, wenn die Quest (auch laut scheduleHistory) nie einen Rhythmus dieser Einheit hatte
+export function streakReachedDay(habit: Habit, doneDays: ReadonlySet<DayKey>, target: number, asOf: DayKey, from?: DayKey, unit?: 'day' | 'week'): DayKey | undefined
+  // frühester Tag, an dem die Serie (Einheit: unit ?? streakUnit(habit.schedule)) die Länge target erreicht hat
 ```
 - `doneDays`: Tage, an denen die Quest erledigt war. Betrachtet wird nur `[max(habit.createdDay, from), asOf]`.
-- daily/weekdays (unit `'day'`): zählt aufeinanderfolgende **planmäßige** Tage (Nicht-Plantage werden übersprungen, brechen nichts). Ist `asOf` planmäßig und noch nicht erledigt, bricht das die aktuelle Serie nicht (Tag läuft noch) – gezählt wird dann ab dem vorherigen Plantag. Tage nach `archivedDay` zählen nicht.
-- weekly (unit `'week'`): eine Woche (Mo–So) zählt, wenn erledigte Tage ≥ `times`. Die Woche von `asOf` zählt, falls schon erfüllt; ist sie noch nicht erfüllt, bricht sie nichts.
-- `best` = längste Serie im Zeitraum (inkl. aktueller).
+- Die Einheit folgt dem **aktuellen** Rhythmus (`habit.schedule`). Pausierte Tage werden übersprungen (zählen nicht, brechen nichts).
+- daily/weekdays (unit `'day'`): zählt aufeinanderfolgende **planmäßige** Tage laut `scheduleOn(habit, day)` (Nicht-Plantage werden übersprungen, brechen nichts; Tage, an denen die Quest damals eine Wochenquest war, gelten als Nicht-Plantage). Ist `asOf` planmäßig und noch nicht erledigt, bricht das die aktuelle Serie nicht (Tag läuft noch) – gezählt wird dann ab dem vorherigen Plantag. Tage nach `archivedDay` zählen nicht.
+- weekly (unit `'week'`): eine Woche (Mo–So) zählt, wenn erledigte (nicht pausierte) Tage ≥ `times`. Maßgeblich ist der Rhythmus am **Montag** der Woche: War die Quest da eine Wochenquest, gilt deren `times`, sonst wird die Woche übersprungen (zählt nicht, bricht nichts). Die Woche von `asOf` zählt, falls schon erfüllt; ist sie noch nicht erfüllt, bricht sie nichts. Ebenso brechen eine durch Archivierung abgeschnittene letzte Woche und Wochen mit pausierten Tagen nichts.
+- `best` = längste Serie im Zeitraum (inkl. aktueller). Laufzeit O(Tage + Verlaufs-/Pauseneinträge).
+- Umstellung zwischen Tages- und Wochenquest: `computeStreak` wechselt die Einheit; die in der früheren Einheit erreichten Serien liefert `bestStreakIn`. Damit bleiben Bestwerte (`GameTotals.bestDayStreak`/`bestWeekStreak`) und erreichte Streak-Kapitel erhalten.
 
 ### `chapters.ts`
 ```ts
@@ -108,7 +130,7 @@ export interface ChapterContext {
 ```
 - manual: current = manualDone ? 1 : 0, target 1, doneDay = completedDay.
 - counter: current = counter ?? 0, target = criterion.target, done = current ≥ target.
-- habit: nur Completions mit `quest.startDay ≤ day ≤ today`. completions = Anzahl erledigter; total = Summe aller `value`; streak = `computeStreak(...).best` mit `from = quest.startDay`. `doneDay` = erster Tag, an dem das Ziel erreicht war. Fehlt die Quest: `brokenReference: true`, current 0, nicht erledigt.
+- habit: nur Completions mit `quest.startDay ≤ day ≤ today`. completions = Anzahl erledigter; total = Summe aller `value`; streak = `computeStreak(...).best` mit `from = quest.startDay` (Einheit des aktuellen Rhythmus). Hat die Serie in der **anderen** Einheit (vor einer Umstellung zwischen Tages- und Wochenquest, `bestStreakIn`) das Ziel erreicht, bleibt das Kapitel abgeschlossen (current = dieser Wert) – verdiente Kapitel-XP gehen durch Bearbeiten nicht verloren. `doneDay` = erster Tag, an dem das Ziel (in einer der Einheiten) erreicht war. Fehlt die Quest: `brokenReference: true`, current 0, nicht erledigt.
 
 ### `engine.ts`
 ```ts
@@ -120,7 +142,9 @@ XP-Regeln:
 2. Perfekter Tag: für jeden Tag `d` von (frühester Tag mit Completion oder `profile.createdDay`) bis `today`: Pflicht-Quests = `isRequiredOn(h, d)`. Perfekt ⇔ ≥ 1 Pflicht-Quest und alle erledigt. Bonus = `round(perfectDayBonus × Quest-XP dieses Tages)` (Quest-XP umfasst alle an `d` erledigten Quests, auch Wochenquests). Nur Charakter-XP.
 3. Kapitel: `chapterXp` pro abgeschlossenem Kapitel, `mainQuestXp` pro komplett abgeschlossener Kampagne (auch archivierte). Nur Charakter-XP.
 4. `adventureDay = diffDays(profile.createdDay, today) + 1` (ohne Profil: 1).
-5. `getDayState` sortiert sichtbare Quests nach `order` (dann `title`); Streaks werden **zum Stichtag `day`** berechnet.
+5. `getDayState` sortiert sichtbare Quests nach `order` (dann `title`); Streaks werden **zum Stichtag `day`** berechnet. `HabitStatus.week` gibt es, wenn `scheduleOn(habit, day)` eine Wochenquest ist (frühere Tage zeigen den damals gültigen Rhythmus). `week.target` ist dasselbe Wochenziel wie bei der Wochen-Serie: das vom **Montag** der Woche (ein mitten in der Woche geändertes Ziel gilt ab dem nächsten Montag); war die Quest am Montag keine Wochenquest, das des Tages.
+
+Weil Pflicht/Sichtbarkeit über `scheduleOn` und Pausen laufen, ändern Rhythmus-Änderungen und das Zurückholen archivierter Quests keine vergangenen Perfekten Tage, XP, Level oder Streaks. `GameTotals.bestDayStreak`/`bestWeekStreak` berücksichtigen über `bestStreakIn` beide Einheiten. Invariante (per Zufallstest im Repository geprüft): Bearbeiten, Archivieren und Zurückholen am Tag `today` ändern `deriveGameState(…, today − 1)` (Level, XP, Attribute, Gesamtwerte, abgeschlossene Kapitel) nicht. Nur der laufende Tag darf sich ändern (z. B. wird eine heute auf „täglich“ umgestellte Quest sofort Pflicht).
 
 ## Daten-API (`src/data`)
 
@@ -142,11 +166,19 @@ export async function loadGameData(): Promise<GameData>        // settings mit D
 export async function saveProfile(profile: CharacterProfile): Promise<void>
 export async function updateSettings(patch: Partial<Settings>): Promise<void>
 
-export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay'>
+export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay' | 'scheduleHistory' | 'pauses'>
 export async function createHabit(draft: HabitDraft, today: DayKey): Promise<Habit>   // order = max+1
-export async function updateHabit(id: string, patch: Partial<HabitDraft>): Promise<void>
-export async function archiveHabit(id: string, today: DayKey): Promise<void>   // archivedDay = today
-export async function restoreHabit(id: string): Promise<void>                  // archivedDay entfernen
+export async function updateHabit(id: string, patch: Partial<HabitDraft>, today: DayKey): Promise<void>
+  // today = aktueller Spieltag (Pflicht). Ändert sich der Rhythmus (inhaltlich, normalisiert) und ist
+  // today > createdDay, wird { until: today, schedule: <alter Rhythmus> } an scheduleHistory angehängt –
+  // außer der letzte Eintrag hat schon until === today (mehrere Änderungen am selben Tag: für die Tage davor
+  // bleibt der ursprüngliche Rhythmus). today ≤ createdDay → Rhythmus wird einfach ersetzt.
+  // Der Verlauf wird bedeutungsgleich normalisiert (gleiche Nachbarn zusammengefasst, überflüssige Einträge
+  // mit dem aktuellen Rhythmus am Ende entfernt). Verlauf und Pausen bleiben sonst erhalten.
+export async function archiveHabit(id: string, today: DayKey): Promise<void>   // archivedDay = today (bleibt, falls schon archiviert)
+export async function restoreHabit(id: string, today: DayKey): Promise<void>
+  // archivedDay entfernen; ist archivedDay < today, wird die Pause { from: archivedDay, until: today }
+  // ergänzt (mit vorhandenen Pausen zusammengefasst). Nicht archivierte Quest: keine Änderung.
 export async function deleteHabit(id: string): Promise<void>                   // löscht auch alle Completions
 export async function moveHabit(id: string, direction: 'up' | 'down'): Promise<void> // tauscht order mit Nachbar (aktive Quests)
 
@@ -177,6 +209,7 @@ export function parseBackup(json: unknown): { ok: true; backup: BackupFile } | {
 export async function restoreBackup(backup: BackupFile): Promise<void>   // ersetzt ALLE Daten in einer Transaktion
 export function backupFileName(now: Date): string                      // "questlog-backup-2026-11-03.json"
 ```
+Neue **optionale** Felder (`Habit.scheduleHistory`, `Habit.pauses`) erhöhen `BACKUP_SCHEMA_VERSION` nicht – ältere Backups ohne sie bleiben gültig. Geprüft wird: `scheduleHistory` streng aufsteigend nach `until` mit gültigen Rhythmen, Pausen mit `from < until`.
 
 ### `seed.ts`
 ```ts

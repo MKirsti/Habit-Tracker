@@ -2,22 +2,97 @@
  * Wann ist eine Quest aktiv, fällig bzw. sichtbar – und wie weit ist eine Wochenquest?
  *
  * Begriffe:
- * - aktiv:    zwischen `createdDay` (inklusive) und `archivedDay` (exklusive)
- * - Pflicht:  aktiv und planmäßig an genau diesem Tag fällig (daily, oder weekdays mit passendem Wochentag).
- *             Nur Pflicht-Quests zählen für den "Perfekten Tag". Wochenquests sind nie Pflicht.
- * - sichtbar: Pflicht-Quests plus alle aktiven Wochenquests (die an jedem Tag der Woche erledigt werden können)
+ * - aktiv:    zwischen `createdDay` (inklusive) und `archivedDay` (exklusive) und in keiner Pause
+ * - Rhythmus: der an diesem Tag gültige Rhythmus (`scheduleOn`) – frühere Rhythmen stehen in
+ *             `scheduleHistory`, damit eine Änderung die Vergangenheit nicht umschreibt
+ * - Pflicht:  aktiv und laut Rhythmus des Tages planmäßig fällig (daily, oder weekdays mit passendem
+ *             Wochentag). Nur Pflicht-Quests zählen für den "Perfekten Tag". Wochenquests sind nie Pflicht.
+ * - sichtbar: Pflicht-Quests plus alle aktiven Quests, die an dem Tag Wochenquests sind (die an jedem Tag
+ *             der Woche erledigt werden können)
  */
 import { BALANCING } from './balancing'
 import { addDays, compareDays, isoWeekday, startOfWeek } from './dates'
-import type { Completion, DayKey, Difficulty, Habit, IsoWeekday, Schedule } from './types'
+import type { Completion, DayKey, Difficulty, Habit, HabitPause, IsoWeekday, Schedule } from './types'
 
 /** Kurznamen der Wochentage, Index = ISO-Wochentag (Index 0 ungenutzt). */
 const WEEKDAY_SHORT = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] as const
 
-/** createdDay ≤ day und (kein archivedDay oder day < archivedDay). */
+/** createdDay ≤ day, (kein archivedDay oder day < archivedDay) und `day` liegt in keiner Pause. */
 export function isActiveOn(habit: Habit, day: DayKey): boolean {
   if (compareDays(habit.createdDay, day) > 0) return false
-  return habit.archivedDay === undefined || compareDays(day, habit.archivedDay) < 0
+  if (habit.archivedDay !== undefined && compareDays(day, habit.archivedDay) >= 0) return false
+  return !isPausedOn(habit, day)
+}
+
+/** Liegt `day` in einer Pause der Quest (`from ≤ day < until`)? */
+export function isPausedOn(habit: Habit, day: DayKey): boolean {
+  const pauses = habit.pauses
+  if (pauses === undefined) return false
+  return pauses.some((pause) => compareDays(pause.from, day) <= 0 && compareDays(day, pause.until) < 0)
+}
+
+/**
+ * Der an `day` gültige Rhythmus einer Quest.
+ *
+ * Jeder Eintrag in `scheduleHistory` gilt für die Tage **vor** seinem `until` (und ab dem `until` des
+ * vorherigen Eintrags); ab dem letzten `until` gilt `habit.schedule`. Maßgeblich ist also der Eintrag mit
+ * dem kleinsten `until > day` – das Ergebnis hängt damit nicht von der gespeicherten Reihenfolge ab
+ * (bei gleichem `until` gewinnt der erste Eintrag). Ohne Verlauf ist es immer `habit.schedule`.
+ */
+export function scheduleOn(habit: Habit, day: DayKey): Schedule {
+  const history = habit.scheduleHistory
+  if (history === undefined) return habit.schedule
+  let schedule = habit.schedule
+  let validUntil: DayKey | undefined
+  for (const entry of history) {
+    if (compareDays(day, entry.until) >= 0) continue
+    if (validUntil === undefined || compareDays(entry.until, validUntil) < 0) {
+      schedule = entry.schedule
+      validUntil = entry.until
+    }
+  }
+  return schedule
+}
+
+/**
+ * Beschreiben zwei Rhythmen dasselbe? Wochentage werden dabei als Menge verglichen
+ * (Reihenfolge und Doppelte spielen keine Rolle).
+ */
+export function sameSchedule(a: Schedule, b: Schedule): boolean {
+  switch (a.type) {
+    case 'daily':
+      return b.type === 'daily'
+    case 'weekdays': {
+      if (b.type !== 'weekdays') return false
+      const left = new Set(a.days)
+      const right = new Set(b.days)
+      return left.size === right.size && [...left].every((day) => right.has(day))
+    }
+    case 'weekly':
+      return b.type === 'weekly' && a.times === b.times
+  }
+}
+
+/**
+ * Normalisierte Pausen: leere Zeiträume (`from ≥ until`) entfallen, der Rest wird nach `from` sortiert
+ * und überlappende oder direkt aneinandergrenzende Zeiträume werden zusammengefasst.
+ * Gibt immer neue Objekte zurück; die Eingabe bleibt unverändert.
+ */
+export function mergePauses(pauses: readonly HabitPause[]): HabitPause[] {
+  const sorted = pauses
+    .filter((pause) => compareDays(pause.from, pause.until) < 0)
+    .map((pause) => ({ from: pause.from, until: pause.until }))
+    .sort((a, b) => compareDays(a.from, b.from))
+  const merged: HabitPause[] = []
+  for (const pause of sorted) {
+    const last = merged.at(-1)
+    if (last !== undefined && compareDays(pause.from, last.until) <= 0) {
+      if (compareDays(pause.until, last.until) > 0) last.until = pause.until
+    } else {
+      merged.push(pause)
+    }
+  }
+  return merged
 }
 
 /**
@@ -35,15 +110,21 @@ export function isScheduledWeekday(schedule: Schedule, weekday: IsoWeekday): boo
   }
 }
 
-/** Aktiv UND planmäßig fällig (daily, oder weekdays mit passendem Wochentag). Wochenquests: false. */
+/**
+ * Aktiv UND laut Rhythmus dieses Tages (`scheduleOn`) planmäßig fällig (daily, oder weekdays mit passendem
+ * Wochentag). War die Quest an dem Tag eine Wochenquest: false.
+ */
 export function isRequiredOn(habit: Habit, day: DayKey): boolean {
-  if (habit.schedule.type === 'weekly') return false
-  return isActiveOn(habit, day) && isScheduledWeekday(habit.schedule, isoWeekday(day))
+  const schedule = scheduleOn(habit, day)
+  if (schedule.type === 'weekly') return false
+  return isActiveOn(habit, day) && isScheduledWeekday(schedule, isoWeekday(day))
 }
 
-/** Aktiv UND (Pflicht an diesem Tag ODER Wochenquest). */
+/** Aktiv UND (Pflicht an diesem Tag ODER an diesem Tag eine Wochenquest). */
 export function isVisibleOn(habit: Habit, day: DayKey): boolean {
-  return habit.schedule.type === 'weekly' ? isActiveOn(habit, day) : isRequiredOn(habit, day)
+  if (!isActiveOn(habit, day)) return false
+  const schedule = scheduleOn(habit, day)
+  return schedule.type === 'weekly' || isScheduledWeekday(schedule, isoWeekday(day))
 }
 
 /**

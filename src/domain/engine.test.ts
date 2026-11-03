@@ -12,7 +12,7 @@ import {
   makeMainQuest,
   seededRandom,
 } from './testing'
-import type { AttributeId, Completion, DayKey, Difficulty, GameData, Habit } from './types'
+import type { AttributeId, Completion, DayKey, Difficulty, GameData, Habit, Schedule } from './types'
 
 // Kalender-Referenz: 2026-11-02 ist ein Montag, 2026-11-04 ein Mittwoch.
 
@@ -458,6 +458,216 @@ describe('deriveGameState – Kampagnen', () => {
   })
 })
 
+describe('deriveGameState – Bearbeiten ändert die Vergangenheit nicht', () => {
+  // Zwei Wochen: Liegestütze (täglich, easy) jeden Tag, Bibliothek (2× pro Woche, hard) Di + Do.
+  // Heute (Mo 16.11.) ist beides erledigt.
+  const library2 = makeHabit({ ...library, schedule: { type: 'weekly', times: 2 } })
+  const twoWeeks = makeGameData({
+    profile: { name: 'Lena', avatar: '🧙', createdDay: '2026-11-02' },
+    habits: [pushups, library2],
+    completions: [
+      ...completeRange(pushups, '2026-11-02', '2026-11-16'),
+      ...['2026-11-03', '2026-11-05', '2026-11-10', '2026-11-12', '2026-11-16'].map((day) => makeCompletion(library2, day)),
+    ],
+  })
+  const TODAY = '2026-11-16'
+
+  /** Die Quest `id` bekommt heute den Rhythmus `schedule` – so, wie das Repository es speichert. */
+  function editSchedule(data: GameData, id: string, schedule: Schedule, withHistory = true): GameData {
+    return {
+      ...data,
+      habits: data.habits.map((habit) =>
+        habit.id !== id
+          ? habit
+          : { ...habit, schedule, ...(withHistory ? { scheduleHistory: [{ until: TODAY, schedule: habit.schedule }] } : {}) },
+      ),
+    }
+  }
+
+  function xpTotals(data: GameData) {
+    const { totals, level, attributes } = deriveGameState(data, TODAY)
+    return {
+      questsCompleted: totals.questsCompleted,
+      perfectDays: totals.perfectDays,
+      xpFromQuests: totals.xpFromQuests,
+      xpFromPerfectDays: totals.xpFromPerfectDays,
+      level,
+      attributes,
+    }
+  }
+
+  it.each<[string, Schedule]>([
+    ['Wochenquest → täglich', { type: 'daily' }],
+    ['Wochenquest → Mo/Mi/Fr', { type: 'weekdays', days: [1, 3, 5] }],
+    ['Wochenquest → 3× pro Woche', { type: 'weekly', times: 3 }],
+  ])('%s: Perfekte Tage, XP und Level bleiben erhalten', (_label, schedule) => {
+    const before = xpTotals(twoWeeks)
+    expect(before.perfectDays).toBe(15)
+    expect(xpTotals(editSchedule(twoWeeks, 'library', schedule))).toEqual(before)
+  })
+
+  it('ohne Verlauf gingen Perfekte Tage und XP verloren (Gegenprobe)', () => {
+    const before = xpTotals(twoWeeks)
+    const naive = xpTotals(editSchedule(twoWeeks, 'library', { type: 'daily' }, false))
+    expect(naive.perfectDays).toBe(5) // nur noch die Tage mit Bibliothek
+    expect(naive.level.totalXp).toBeLessThan(before.level.totalXp)
+  })
+
+  it('auch eine Lockerung (täglich → Wochenquest) schreibt die Vergangenheit nicht um', () => {
+    // Zusätzlich täglich Wasser (immer erledigt); Liegestütze am Mi 11.11. vergessen → der Tag war nicht
+    // perfekt und bleibt es auch, obwohl Liegestütze ab heute nur noch 3× pro Woche fällig sind.
+    const water = makeHabit({ id: 'water', difficulty: 'easy', createdDay: '2026-11-02', order: 3 })
+    const missed: GameData = {
+      ...twoWeeks,
+      habits: [...twoWeeks.habits, water],
+      completions: [
+        ...twoWeeks.completions.filter((c) => c.id !== 'pushups:2026-11-11'),
+        ...completeRange(water, '2026-11-02', TODAY),
+      ],
+    }
+    const before = xpTotals(missed)
+    expect(before.perfectDays).toBe(14)
+    const loosened = editSchedule(missed, 'pushups', { type: 'weekly', times: 3 })
+    expect(xpTotals(loosened)).toEqual(before)
+    expect(getDayState(loosened, '2026-11-11')).toMatchObject({ requiredCount: 2, requiredDone: 1, perfect: false })
+    // Ohne Verlauf wäre der 11.11. nachträglich perfekt (Liegestütze keine Pflicht mehr)
+    expect(xpTotals(editSchedule(missed, 'pushups', { type: 'weekly', times: 3 }, false)).perfectDays).toBe(15)
+  })
+
+  it('hinzugefügte Wochentage machen frühere Tage nicht zur offenen Pflicht', () => {
+    // Lesen Mo/Mi/Fr (nur Mo 02. und Mi 04. erledigt), ab heute Mo–Fr.
+    const data = makeGameData({
+      habits: [pushups, reading],
+      completions: [...completeRange(pushups, '2026-11-02', '2026-11-08'), makeCompletion(reading, '2026-11-02'), makeCompletion(reading, '2026-11-04'), makeCompletion(reading, '2026-11-06')],
+    })
+    const today = '2026-11-09'
+    const edited: GameData = {
+      ...data,
+      habits: [
+        pushups,
+        {
+          ...reading,
+          schedule: { type: 'weekdays', days: [1, 2, 3, 4, 5] },
+          scheduleHistory: [{ until: today, schedule: reading.schedule }],
+        },
+      ],
+    }
+    expect(deriveGameState(edited, today).totals).toEqual(deriveGameState(data, today).totals)
+    expect(getDayState(edited, '2026-11-03').habits.map((s) => s.habit.id)).toEqual(['pushups'])
+    expect(getDayState(edited, '2026-11-10').habits.map((s) => s.habit.id)).toEqual(['pushups', 'reading'])
+  })
+
+  it.each<[string, Schedule, Schedule]>([
+    ['täglich → Wochenquest', { type: 'daily' }, { type: 'weekly', times: 5 }],
+    ['Wochenquest → täglich', { type: 'weekly', times: 1 }, { type: 'daily' }],
+  ])(
+    '%s: Streak-Kapitel, Kampagnen-XP und Bestwerte bleiben erhalten',
+    (_label, before, after) => {
+      // Lesen ab Mo 02.11. drei Wochen lang täglich erledigt; Kampagne mit einem Streak-Kapitel (Ziel 3).
+      // Bei einer Wochenquest sind das 3 Wochen, sonst 3 Tage – erreicht ist es in beiden Fällen.
+      const quest = makeMainQuest({
+        id: 'scholar',
+        startDay: '2026-11-02',
+        chapters: [makeChapter({ id: 'streak', criterion: { type: 'habit', habitId: 'reading', metric: 'streak', target: 3 } })],
+      })
+      const habit = makeHabit({ ...reading, measure: undefined, schedule: before })
+      const data = makeGameData({
+        profile: { name: 'Lena', avatar: '🧙', createdDay: '2026-11-02' },
+        habits: [habit],
+        completions: completeRange(habit, '2026-11-02', '2026-11-22'),
+        mainQuests: [quest],
+      })
+      const today = '2026-11-23'
+      const original = deriveGameState(data, today)
+      expect(original.mainQuests[0].complete).toBe(true)
+
+      const edited: GameData = {
+        ...data,
+        habits: [{ ...habit, schedule: after, scheduleHistory: [{ until: today, schedule: before }] }],
+      }
+      const state = deriveGameState(edited, today)
+      expect(state.mainQuests[0].chapters[0]).toMatchObject({ done: true, doneDay: original.mainQuests[0].chapters[0].doneDay })
+      expect(state.totals.xpFromChapters).toBe(BALANCING.chapterXp + BALANCING.mainQuestXp)
+      expect(state.level).toStrictEqual(original.level)
+      // Bestwerte der früheren Einheit bleiben in den Gesamtwerten (Heldenseite) erhalten.
+      expect(state.totals.bestDayStreak).toBe(original.totals.bestDayStreak)
+      expect(state.totals.bestWeekStreak).toBe(original.totals.bestWeekStreak)
+    },
+  )
+
+  it('getDayState zeigt an früheren Tagen den damals gültigen Rhythmus', () => {
+    const edited = editSchedule(twoWeeks, 'library', { type: 'daily' })
+    const past = getDayState(edited, '2026-11-11').habits.find((s) => s.habit.id === 'library')
+    expect(past).toMatchObject({ required: false, week: { done: 2, target: 2 } })
+    const now = getDayState(edited, '2026-11-17').habits.find((s) => s.habit.id === 'library')
+    expect(now?.required).toBe(true)
+    expect(now?.week).toBeUndefined()
+  })
+
+  it('Wochenfortschritt nutzt dasselbe Wochenziel wie die Wochen-Serie (Rhythmus am Montag)', () => {
+    // 3× pro Woche, am Mi 18.11. auf 2× gesenkt. Erledigt: drei volle Wochen, dann Mo 16. + Mi 18.
+    const lowered = makeHabit({
+      ...library,
+      createdDay: '2026-10-26',
+      schedule: { type: 'weekly', times: 2 },
+      scheduleHistory: [{ until: '2026-11-18', schedule: { type: 'weekly', times: 3 } }],
+    })
+    const days = ['2026-10-26', '2026-10-27', '2026-10-28', '2026-11-02', '2026-11-03', '2026-11-04']
+    const data = makeGameData({
+      habits: [lowered],
+      completions: [...days, '2026-11-09', '2026-11-10', '2026-11-11', '2026-11-16', '2026-11-18'].map((day) => makeCompletion(lowered, day)),
+    })
+    // Für diese Woche gilt noch das Ziel vom Montag (3) – „erreicht“ darf nicht angezeigt werden, solange die
+    // Woche für die Serie nicht zählt.
+    const sunday = getDayState(data, '2026-11-22').habits[0]
+    expect(sunday.week).toEqual({ done: 2, target: 3 })
+    expect(sunday.streak).toEqual({ current: 3, best: 3, unit: 'week' })
+    expect(getDayState(data, '2026-11-23').habits[0].streak.current).toBe(0) // Woche nicht erfüllt → gebrochen
+    // Ab dem nächsten Montag gilt das neue Ziel.
+    expect(getDayState(data, '2026-11-23').habits[0].week).toEqual({ done: 0, target: 2 })
+    // Umstellung auf Wochenquest mitten in der Woche: die Woche zählt nicht für die Serie, angezeigt wird das Ziel des Tages.
+    const switched = makeHabit({
+      ...library,
+      createdDay: '2026-11-02',
+      schedule: { type: 'weekly', times: 2 },
+      scheduleHistory: [{ until: '2026-11-18', schedule: { type: 'daily' } }],
+    })
+    expect(getDayState(makeGameData({ habits: [switched] }), '2026-11-18').habits[0].week).toEqual({ done: 0, target: 2 })
+  })
+
+  it('eine zurückgeholte Quest behält die Perfekten Tage ihrer archivierten Zeit', () => {
+    // Meditieren: täglich ab 02.11., archiviert am Do 05.11., am Do 12.11. zurückgeholt.
+    const meditation = makeHabit({ id: 'meditation', difficulty: 'easy', createdDay: '2026-11-02', order: 5 })
+    const completions = [
+      ...completeRange(pushups, '2026-11-02', '2026-11-16'),
+      ...completeRange(meditation, '2026-11-02', '2026-11-04'),
+      ...completeRange(meditation, '2026-11-12', '2026-11-16'),
+    ]
+    const archived = makeGameData({ habits: [pushups, { ...meditation, archivedDay: '2026-11-05' }], completions })
+    const restored = makeGameData({
+      habits: [pushups, { ...meditation, pauses: [{ from: '2026-11-05', until: '2026-11-12' }] }],
+      completions,
+    })
+    const naive = makeGameData({ habits: [pushups, meditation], completions })
+
+    // Vor dem Zurückholen: alle Tage bis gestern perfekt
+    expect(deriveGameState(archived, '2026-11-11').totals.perfectDays).toBe(10)
+    const state = deriveGameState(restored, TODAY)
+    expect(state.totals.perfectDays).toBe(15)
+    expect(state.level.totalXp).toBeGreaterThan(deriveGameState(archived, '2026-11-11').level.totalXp)
+    expect(getDayState(restored, '2026-11-08')).toMatchObject({ requiredCount: 1, perfect: true })
+    expect(getDayState(restored, '2026-11-08').habits.map((s) => s.habit.id)).toEqual(['pushups'])
+    // Die Serie läuft über die Pause hinweg weiter (3 + 5 Tage)
+    expect(state.todayState.habits.find((s) => s.habit.id === 'meditation')?.streak).toEqual({
+      current: 8,
+      best: 8,
+      unit: 'day',
+    })
+    // Ohne Pause wären 05.–11.11. rückwirkend nicht mehr perfekt
+    expect(deriveGameState(naive, TODAY).totals.perfectDays).toBe(8)
+  })
+})
+
 describe('getDayState', () => {
   it('sortiert nach order, dann nach Titel (deutsch)', () => {
     const habits = [
@@ -558,12 +768,20 @@ function referenceXp(data: GameData, today: DayKey) {
   let xpFromPerfectDays = 0
   for (const day of starts.length > 0 ? dayRange(starts[0], today) : []) {
     const done = doneOn.get(day) ?? []
-    const required = data.habits.filter(
-      (h) =>
+    const required = data.habits.filter((h) => {
+      // Rhythmus des Tages: Verlaufseintrag mit dem kleinsten until > day (bei Gleichstand der erste), sonst aktuell
+      const historic = (h.scheduleHistory ?? [])
+        .filter((entry) => day < entry.until)
+        .sort((a, b) => (a.until < b.until ? -1 : a.until > b.until ? 1 : 0))[0]
+      const schedule = historic?.schedule ?? h.schedule
+      const paused = (h.pauses ?? []).some((pause) => pause.from <= day && day < pause.until)
+      return (
         h.createdDay <= day &&
         (h.archivedDay === undefined || day < h.archivedDay) &&
-        (h.schedule.type === 'daily' || (h.schedule.type === 'weekdays' && h.schedule.days.includes(isoWeekday(day)))),
-    )
+        !paused &&
+        (schedule.type === 'daily' || (schedule.type === 'weekdays' && schedule.days.includes(isoWeekday(day))))
+      )
+    })
     if (required.length > 0 && required.every((h) => done.some((c) => c.habitId === h.id))) {
       perfectDays++
       xpFromPerfectDays += Math.round(
@@ -581,16 +799,25 @@ function referenceXp(data: GameData, today: DayKey) {
   }
 }
 
-/** Zufälliger Spielstand: verschiedene Rhythmen, Archivierungen, Teilfortschritte, gelöschte Quests, Zukunft. */
-function randomGameData(random: () => number): { data: GameData; today: DayKey } {
+/**
+ * Zufälliger Spielstand: verschiedene Rhythmen, Archivierungen, Teilfortschritte, gelöschte Quests, Zukunft.
+ * Mit `timeline` haben viele Quests zusätzlich einen Rhythmus-Verlauf und Pausen.
+ */
+function randomGameData(random: () => number, timeline = false): { data: GameData; today: DayKey } {
   const int = (max: number) => Math.floor(random() * (max + 1))
   const pick = <T>(items: readonly T[]): T => items[int(items.length - 1)]
+  const randomSchedule = (kind: number): Schedule =>
+    kind < 0.4
+      ? { type: 'daily' }
+      : kind < 0.75
+        ? { type: 'weekdays', days: [pick([1, 2, 3] as const), pick([4, 5, 6, 7] as const)] }
+        : { type: 'weekly', times: 1 + int(3) }
   const base = '2026-09-01'
   const today = addDays(base, 40 + int(60))
   const habits: Habit[] = Array.from({ length: 2 + int(5) }, (_, i) => {
     const createdDay = addDays(base, int(50))
     const kind = random()
-    return makeHabit({
+    const habit = makeHabit({
       id: `h${i}`,
       order: int(3),
       difficulty: pick(DIFFICULTIES),
@@ -598,13 +825,18 @@ function randomGameData(random: () => number): { data: GameData; today: DayKey }
       createdDay,
       archivedDay: random() < 0.25 ? addDays(createdDay, 1 + int(60)) : undefined,
       measure: random() < 0.3 ? { target: 1 + int(9), unit: 'Seiten' } : undefined,
-      schedule:
-        kind < 0.4
-          ? { type: 'daily' }
-          : kind < 0.75
-            ? { type: 'weekdays', days: [pick([1, 2, 3] as const), pick([4, 5, 6, 7] as const)] }
-            : { type: 'weekly', times: 1 + int(3) },
+      schedule: randomSchedule(kind),
     })
+    if (timeline && random() < 0.7) {
+      const first = addDays(createdDay, 1 + int(30))
+      habit.scheduleHistory = [{ until: first, schedule: randomSchedule(random()) }]
+      if (random() < 0.5) habit.scheduleHistory.push({ until: addDays(first, 1 + int(30)), schedule: randomSchedule(random()) })
+    }
+    if (timeline && random() < 0.5) {
+      const from = addDays(createdDay, int(40))
+      habit.pauses = [{ from, until: addDays(from, 1 + int(15)) }]
+    }
+    return habit
   })
   const ghost = makeHabit({ id: 'geloescht', difficulty: 'epic' })
   const completions: Completion[] = []
@@ -650,10 +882,24 @@ describe('deriveGameState – Referenzmodell (Zufallstests)', () => {
     }
   })
 
-  it('getDayState zeigt für jeden Tag dieselben Pflicht-, Perfekt- und XP-Werte wie die Gesamtrechnung', () => {
+  it('stimmt auch mit Rhythmus-Verlauf und Pausen mit der wörtlichen Regelumsetzung überein', () => {
+    const random = seededRandom(1117)
+    for (let i = 0; i < 40; i++) {
+      const { data, today } = randomGameData(random, true)
+      const expected = referenceXp(data, today)
+      const label = `Fall #${i}, today ${today}`
+      expect(deriveGameState(data, today).totals, label).toMatchObject({
+        xpFromQuests: expected.xpFromQuests,
+        perfectDays: expected.perfectDays,
+        xpFromPerfectDays: expected.xpFromPerfectDays,
+      })
+    }
+  })
+
+  it.each([false, true])('getDayState zeigt für jeden Tag dieselben Pflicht-, Perfekt- und XP-Werte wie die Gesamtrechnung (Verlauf & Pausen: %s)', (timeline) => {
     const random = seededRandom(77)
     for (let i = 0; i < 5; i++) {
-      const { data, today } = randomGameData(random)
+      const { data, today } = randomGameData(random, timeline)
       let perfectDays = 0
       let bonus = 0
       for (const day of dayRange('2026-08-01', today)) {

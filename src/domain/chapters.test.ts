@@ -183,6 +183,83 @@ describe('evaluateChapter – habit', () => {
     })
   })
 
+  it('streak: ein abgeschlossenes Kapitel bleibt nach Rhythmus-Änderung und Zurückholen abgeschlossen', () => {
+    // 01.–07.11. nur Mo/Mi/Fr fällig (02., 04., 06. erledigt), ab Mo 09.11. täglich; 12.–15.11. archiviert,
+    // am 16.11. zurückgeholt (Pause). Erledigt: 09.–11. und 16.–17. → Serie 3 + 3 + 2 = 8 Plantage.
+    const edited = makeHabit({
+      ...reading,
+      schedule: { type: 'daily' },
+      scheduleHistory: [{ until: '2026-11-09', schedule: { type: 'weekdays', days: [1, 3, 5] } }],
+      pauses: [{ from: '2026-11-12', until: '2026-11-16' }],
+    })
+    const completions = ['2026-11-02', '2026-11-04', '2026-11-06', '2026-11-09', '2026-11-10', '2026-11-11', '2026-11-16', '2026-11-17'].map(
+      (day) => makeCompletion(edited, day),
+    )
+    const streakCtx = context([edited], completions, '2026-11-17')
+    expect(evaluateChapter(habitChapter('streak', 8), quest, streakCtx)).toMatchObject({
+      current: 8,
+      done: true,
+      doneDay: '2026-11-17',
+    })
+    // Gegenprobe ohne Verlauf und Pause: Di/Do/Sa/So und die archivierte Zeit wären verpasste Tage
+    const naive = makeHabit({ ...reading, schedule: { type: 'daily' } })
+    expect(evaluateChapter(habitChapter('streak', 8), quest, context([naive], completions, '2026-11-17'))).toMatchObject({
+      current: 3,
+      done: false,
+    })
+  })
+
+  it('streak: Umstellung täglich → Wochenquest – ein erreichtes Ziel bleibt erreicht (Kapitel-XP bleiben)', () => {
+    // 01.–21.11. täglich gelesen (21 Tage in Folge), ab Mo 23.11. nur noch 5× pro Woche.
+    const switched = makeHabit({
+      ...reading,
+      schedule: { type: 'weekly', times: 5 },
+      scheduleHistory: [{ until: '2026-11-23', schedule: { type: 'daily' } }],
+    })
+    const streakCtx = context([switched], completeRange(switched, '2026-11-01', '2026-11-21'), '2026-11-25')
+    expect(evaluateChapter(habitChapter('streak', 21), quest, streakCtx)).toMatchObject({
+      current: 21,
+      target: 21,
+      progress: 1,
+      done: true,
+      doneDay: '2026-11-21',
+    })
+  })
+
+  it('streak: Umstellung Wochenquest → täglich – erfüllte Wochen bleiben erreicht', () => {
+    // 2× pro Woche, drei Wochen in Folge erfüllt (3. Woche am Mi 18.11.); ab Mo 23.11. täglich (23., 24. erledigt).
+    const switched = makeHabit({
+      ...reading,
+      schedule: { type: 'daily' },
+      scheduleHistory: [{ until: '2026-11-23', schedule: { type: 'weekly', times: 2 } }],
+    })
+    const days = ['2026-11-02', '2026-11-04', '2026-11-09', '2026-11-11', '2026-11-16', '2026-11-18', '2026-11-23', '2026-11-24']
+    const streakCtx = context([switched], days.map((day) => makeCompletion(switched, day)), '2026-11-25')
+    expect(evaluateChapter(habitChapter('streak', 3), quest, streakCtx)).toMatchObject({
+      current: 3,
+      progress: 1,
+      done: true,
+      doneDay: '2026-11-18',
+    })
+    // Noch nicht erreichte Ziele zeigen den Wert in der Einheit des aktuellen Rhythmus (hier: 2 Tage).
+    expect(evaluateChapter(habitChapter('streak', 5), quest, streakCtx)).toMatchObject({
+      current: 2,
+      target: 5,
+      done: false,
+    })
+    // Ab 5 Tagen in Folge ist das Ziel in der neuen Einheit erreicht.
+    const later = context(
+      [switched],
+      [...days, '2026-11-25', '2026-11-26', '2026-11-27'].map((day) => makeCompletion(switched, day)),
+      '2026-11-28',
+    )
+    expect(evaluateChapter(habitChapter('streak', 5), quest, later)).toMatchObject({
+      current: 5,
+      done: true,
+      doneDay: '2026-11-27',
+    })
+  })
+
   it('total: Gleitkomma-Rauschen verhindert den Abschluss nicht (10 × 0,1 L = 1 L)', () => {
     const water = makeHabit({ id: 'water', createdDay: '2026-11-01', measure: { target: 0.1, unit: 'L' } })
     const days = ['2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']

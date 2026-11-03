@@ -5,14 +5,18 @@ import {
   habitTarget,
   isActiveOn,
   isDone,
+  isPausedOn,
   isRequiredOn,
   isScheduledWeekday,
   isVisibleOn,
+  mergePauses,
   questXp,
   reachesTarget,
+  sameSchedule,
+  scheduleOn,
 } from './schedule'
 import { daySet, makeHabit } from './testing'
-import type { Difficulty } from './types'
+import type { Difficulty, HabitPause } from './types'
 
 // Kalender-Referenz: 2026-11-02 ist ein Montag, 2026-11-08 ein Sonntag.
 
@@ -32,6 +36,167 @@ describe('isActiveOn', () => {
 
   it('ist ohne archivedDay unbegrenzt aktiv', () => {
     expect(isActiveOn(makeHabit({ id: 'x', createdDay: '2026-11-03' }), '2030-01-01')).toBe(true)
+  })
+})
+
+describe('isActiveOn / isPausedOn – Pausen', () => {
+  // Pause Mi 04.11. bis (exklusive) Mo 09.11., z. B. eine zurückgeholte Archivierung
+  const habit = makeHabit({
+    id: 'p',
+    createdDay: '2026-11-01',
+    pauses: [
+      { from: '2026-11-04', until: '2026-11-09' },
+      { from: '2026-11-20', until: '2026-11-21' },
+    ],
+  })
+
+  it('ist von from (inklusive) bis until (exklusive) pausiert und damit nicht aktiv', () => {
+    expect(isPausedOn(habit, '2026-11-03')).toBe(false)
+    expect(isActiveOn(habit, '2026-11-03')).toBe(true)
+    expect(isPausedOn(habit, '2026-11-04')).toBe(true)
+    expect(isActiveOn(habit, '2026-11-04')).toBe(false)
+    expect(isActiveOn(habit, '2026-11-08')).toBe(false)
+    expect(isPausedOn(habit, '2026-11-09')).toBe(false)
+    expect(isActiveOn(habit, '2026-11-09')).toBe(true)
+  })
+
+  it('berücksichtigt mehrere Pausen', () => {
+    expect(isActiveOn(habit, '2026-11-19')).toBe(true)
+    expect(isActiveOn(habit, '2026-11-20')).toBe(false)
+    expect(isActiveOn(habit, '2026-11-21')).toBe(true)
+  })
+
+  it('ohne Pausen ist nichts pausiert', () => {
+    expect(isPausedOn(makeHabit({ id: 'x' }), '2026-11-04')).toBe(false)
+    expect(isPausedOn(makeHabit({ id: 'x', pauses: [] }), '2026-11-04')).toBe(false)
+  })
+
+  it('pausierte Tage sind weder Pflicht noch sichtbar', () => {
+    expect(isRequiredOn(habit, '2026-11-05')).toBe(false)
+    expect(isVisibleOn(habit, '2026-11-05')).toBe(false)
+    const weekly = makeHabit({ ...habit, schedule: { type: 'weekly', times: 2 } })
+    expect(isVisibleOn(weekly, '2026-11-05')).toBe(false)
+    expect(isVisibleOn(weekly, '2026-11-10')).toBe(true)
+  })
+})
+
+describe('scheduleOn – Rhythmus-Verlauf', () => {
+  // Bis So 08.11. dreimal pro Woche, Mo 09.11. bis So 15.11. Mo/Mi/Fr, ab Mo 16.11. täglich.
+  const habit = makeHabit({
+    id: 'h',
+    createdDay: '2026-11-01',
+    schedule: { type: 'daily' },
+    scheduleHistory: [
+      { until: '2026-11-09', schedule: { type: 'weekly', times: 3 } },
+      { until: '2026-11-16', schedule: { type: 'weekdays', days: [1, 3, 5] } },
+    ],
+  })
+
+  it('liefert ohne Verlauf immer den aktuellen Rhythmus', () => {
+    const plain = makeHabit({ id: 'p', schedule: { type: 'weekly', times: 2 } })
+    expect(scheduleOn(plain, '2000-01-01')).toEqual({ type: 'weekly', times: 2 })
+    expect(scheduleOn(makeHabit({ ...plain, scheduleHistory: [] }), '2026-11-01')).toEqual({ type: 'weekly', times: 2 })
+  })
+
+  it('jeder Eintrag gilt für die Tage vor seinem until, danach der aktuelle Rhythmus', () => {
+    expect(scheduleOn(habit, '2026-11-01')).toEqual({ type: 'weekly', times: 3 })
+    expect(scheduleOn(habit, '2026-11-08')).toEqual({ type: 'weekly', times: 3 })
+    expect(scheduleOn(habit, '2026-11-09')).toEqual({ type: 'weekdays', days: [1, 3, 5] })
+    expect(scheduleOn(habit, '2026-11-15')).toEqual({ type: 'weekdays', days: [1, 3, 5] })
+    expect(scheduleOn(habit, '2026-11-16')).toEqual({ type: 'daily' })
+    expect(scheduleOn(habit, '2027-06-01')).toEqual({ type: 'daily' })
+    // Vor dem ersten Eintrag gilt der erste Eintrag (z. B. für den Montag der ersten Woche).
+    expect(scheduleOn(habit, '2026-10-01')).toEqual({ type: 'weekly', times: 3 })
+  })
+
+  it('hängt nicht von der gespeicherten Reihenfolge ab; bei gleichem until gewinnt der erste Eintrag', () => {
+    const reversed = makeHabit({ ...habit, scheduleHistory: [...(habit.scheduleHistory ?? [])].reverse() })
+    for (const day of ['2026-11-01', '2026-11-08', '2026-11-09', '2026-11-15', '2026-11-16']) {
+      expect(scheduleOn(reversed, day), day).toEqual(scheduleOn(habit, day))
+    }
+    const tie = makeHabit({
+      id: 't',
+      scheduleHistory: [
+        { until: '2026-11-09', schedule: { type: 'weekly', times: 1 } },
+        { until: '2026-11-09', schedule: { type: 'weekly', times: 5 } },
+      ],
+    })
+    expect(scheduleOn(tie, '2026-11-08')).toEqual({ type: 'weekly', times: 1 })
+  })
+
+  it('isRequiredOn nutzt den Rhythmus des Tages: frühere Wochenquest-Tage bleiben ohne Pflicht', () => {
+    expect(isRequiredOn(habit, '2026-11-04')).toBe(false) // damals 3× pro Woche
+    expect(isRequiredOn(habit, '2026-11-10')).toBe(false) // damals Mo/Mi/Fr – Dienstag
+    expect(isRequiredOn(habit, '2026-11-11')).toBe(true) // damals Mo/Mi/Fr – Mittwoch
+    expect(isRequiredOn(habit, '2026-11-17')).toBe(true) // jetzt täglich
+  })
+
+  it('isVisibleOn nutzt den Rhythmus des Tages', () => {
+    expect(isVisibleOn(habit, '2026-11-04')).toBe(true) // Wochenquest: jeden Tag sichtbar
+    expect(isVisibleOn(habit, '2026-11-10')).toBe(false) // Dienstag, kein Plantag
+    expect(isVisibleOn(habit, '2026-11-17')).toBe(true)
+  })
+
+  it('hinzugefügte Wochentage gelten erst ab der Änderung', () => {
+    // Bis Mo 09.11. nur Mo/Mi/Fr, danach Mo–Fr.
+    const more = makeHabit({
+      id: 'm',
+      createdDay: '2026-11-01',
+      schedule: { type: 'weekdays', days: [1, 2, 3, 4, 5] },
+      scheduleHistory: [{ until: '2026-11-09', schedule: { type: 'weekdays', days: [1, 3, 5] } }],
+    })
+    expect(isRequiredOn(more, '2026-11-03')).toBe(false) // Di vor der Änderung
+    expect(isRequiredOn(more, '2026-11-10')).toBe(true) // Di nach der Änderung
+  })
+})
+
+describe('sameSchedule', () => {
+  it('vergleicht Rhythmen inhaltlich', () => {
+    expect(sameSchedule({ type: 'daily' }, { type: 'daily' })).toBe(true)
+    expect(sameSchedule({ type: 'weekdays', days: [5, 1, 3, 1] }, { type: 'weekdays', days: [1, 3, 5] })).toBe(true)
+    expect(sameSchedule({ type: 'weekdays', days: [1, 3] }, { type: 'weekdays', days: [1, 3, 5] })).toBe(false)
+    expect(sameSchedule({ type: 'weekdays', days: [1, 3, 4] }, { type: 'weekdays', days: [1, 3, 5] })).toBe(false)
+    expect(sameSchedule({ type: 'weekly', times: 3 }, { type: 'weekly', times: 3 })).toBe(true)
+    expect(sameSchedule({ type: 'weekly', times: 3 }, { type: 'weekly', times: 2 })).toBe(false)
+  })
+
+  it('unterscheidet verschiedene Arten – auch "alle 7 Tage" ist nicht "täglich"', () => {
+    expect(sameSchedule({ type: 'daily' }, { type: 'weekly', times: 7 })).toBe(false)
+    expect(sameSchedule({ type: 'weekdays', days: [1, 2, 3, 4, 5, 6, 7] }, { type: 'daily' })).toBe(false)
+    expect(sameSchedule({ type: 'weekly', times: 1 }, { type: 'daily' })).toBe(false)
+  })
+})
+
+describe('mergePauses', () => {
+  it('sortiert, fasst überlappende und angrenzende Pausen zusammen und verwirft leere', () => {
+    const input: HabitPause[] = [
+      { from: '2026-11-20', until: '2026-11-25' },
+      { from: '2026-11-01', until: '2026-11-05' },
+      { from: '2026-11-05', until: '2026-11-08' }, // grenzt an
+      { from: '2026-11-02', until: '2026-11-03' }, // liegt innerhalb
+      { from: '2026-11-10', until: '2026-11-10' }, // leer
+      { from: '2026-11-15', until: '2026-11-12' }, // verkehrt herum
+      { from: '2026-11-24', until: '2026-11-30' }, // überlappt
+    ]
+    const copy = structuredClone(input)
+    expect(mergePauses(input)).toEqual([
+      { from: '2026-11-01', until: '2026-11-08' },
+      { from: '2026-11-20', until: '2026-11-30' },
+    ])
+    expect(input).toEqual(copy) // Eingabe unverändert
+  })
+
+  it('lässt getrennte Pausen getrennt', () => {
+    expect(
+      mergePauses([
+        { from: '2026-11-01', until: '2026-11-02' },
+        { from: '2026-11-03', until: '2026-11-04' },
+      ]),
+    ).toEqual([
+      { from: '2026-11-01', until: '2026-11-02' },
+      { from: '2026-11-03', until: '2026-11-04' },
+    ])
+    expect(mergePauses([])).toEqual([])
   })
 })
 

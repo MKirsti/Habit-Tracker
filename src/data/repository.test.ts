@@ -2,8 +2,12 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '../domain/balancing'
 import { evaluateChapter } from '../domain/chapters'
-import { isActiveOn, isDone } from '../domain/schedule'
-import type { Chapter, Habit, MainQuest } from '../domain/types'
+import { addDays, dayRange } from '../domain/dates'
+import { deriveGameState } from '../domain/engine'
+import { isActiveOn, isDone, isRequiredOn, isVisibleOn, scheduleOn } from '../domain/schedule'
+import { seededRandom } from '../domain/testing'
+import type { Chapter, Completion, DayKey, GameData, Habit, MainQuest, Schedule } from '../domain/types'
+import { createBackup, parseBackup } from './backup'
 import { KV_KEYS, QuestlogDB } from './db'
 import {
   archiveHabit,
@@ -131,6 +135,16 @@ describe('loadGameData', () => {
     const middle = await createMainQuest(questDraft({ title: 'Mitte' }), database)
     const { mainQuests } = await loadGameData(database)
     expect(mainQuests.map((q) => q.id)).toEqual([early.id, middle.id, late.id])
+  })
+
+  it('liefert Rhythmus-Verlauf und Pausen der Quests mit', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 4 } }, '2026-11-10', database)
+    await archiveHabit(habit.id, '2026-11-12', database)
+    await restoreHabit(habit.id, '2026-11-14', database)
+    const [loaded] = (await loadGameData(database)).habits
+    expect(loaded.scheduleHistory).toStrictEqual([{ until: '2026-11-10', schedule: { type: 'daily' } }])
+    expect(loaded.pauses).toStrictEqual([{ from: '2026-11-12', until: '2026-11-14' }])
   })
 
   it('ignoriert ungültige oder unbekannte gespeicherte Einstellungen', async () => {
@@ -263,13 +277,13 @@ describe('updateHabit', () => {
   it('ändert nur die angegebenen Felder und behält id, order, createdDay und archivedDay', async () => {
     const habit = await createHabit(measureDraft({ description: 'Abends' }), DAY, database)
     await archiveHabit(habit.id, NEXT_DAY, database)
-    await updateHabit(habit.id, { title: ' Mehr lesen ', difficulty: 'hard' }, database)
+    await updateHabit(habit.id, { title: ' Mehr lesen ', difficulty: 'hard' }, NEXT_DAY, database)
     expect(await storedHabit(habit.id)).toStrictEqual({ ...habit, title: 'Mehr lesen', difficulty: 'hard', archivedDay: NEXT_DAY })
   })
 
   it('ignoriert undefined bei Pflichtfeldern', async () => {
     const habit = await createHabit(checkDraft(), DAY, database)
-    await updateHabit(habit.id, { title: undefined, schedule: undefined }, database)
+    await updateHabit(habit.id, { title: undefined, schedule: undefined }, NEXT_DAY, database)
     expect(await storedHabit(habit.id)).toStrictEqual(habit)
   })
 
@@ -277,14 +291,14 @@ describe('updateHabit', () => {
     const habit = await createHabit(measureDraft({ description: 'Abends', mainQuestId: 'quest-1' }), DAY, database)
     expect((await storedHabit(habit.id)).mainQuestId).toBe('quest-1')
 
-    await updateHabit(habit.id, { mainQuestId: undefined }, database)
+    await updateHabit(habit.id, { mainQuestId: undefined }, DAY, database)
     const unlinked = await storedHabit(habit.id)
     expect('mainQuestId' in unlinked).toBe(false)
     expect(unlinked.description).toBe('Abends')
     expect(unlinked.measure).toStrictEqual({ target: 10, unit: 'Seiten' })
     expect(await database.habits.where('mainQuestId').equals('quest-1').count()).toBe(0)
 
-    await updateHabit(habit.id, { description: undefined, measure: undefined }, database)
+    await updateHabit(habit.id, { description: undefined, measure: undefined }, DAY, database)
     const plain = await storedHabit(habit.id)
     expect('description' in plain).toBe(false)
     expect('measure' in plain).toBe(false)
@@ -292,15 +306,145 @@ describe('updateHabit', () => {
 
   it('validiert den zusammengeführten Stand und ändert bei Fehlern nichts', async () => {
     const habit = await createHabit(checkDraft(), DAY, database)
-    await expect(updateHabit(habit.id, { title: '  ' }, database)).rejects.toThrow('Die Quest braucht einen Namen.')
+    await expect(updateHabit(habit.id, { title: '  ' }, NEXT_DAY, database)).rejects.toThrow('Die Quest braucht einen Namen.')
     await expect(
-      updateHabit(habit.id, { schedule: { type: 'weekdays', days: [] } }, database),
+      updateHabit(habit.id, { schedule: { type: 'weekdays', days: [] } }, NEXT_DAY, database),
     ).rejects.toThrow('Wähle mindestens einen Wochentag.')
     expect(await storedHabit(habit.id)).toStrictEqual(habit)
   })
 
   it('wirft bei unbekannter Quest', async () => {
-    await expect(updateHabit('gibt-es-nicht', { title: 'X' }, database)).rejects.toThrow('Diese Quest gibt es nicht')
+    await expect(updateHabit('gibt-es-nicht', { title: 'X' }, DAY, database)).rejects.toThrow('Diese Quest gibt es nicht')
+  })
+})
+
+describe('updateHabit – Rhythmus-Verlauf', () => {
+  const D1 = '2026-11-10'
+  const D2 = '2026-11-17'
+
+  it('hält bei einer Rhythmus-Änderung den alten Rhythmus für die Tage vor heute fest', async () => {
+    const habit = await createHabit(checkDraft({ schedule: { type: 'weekly', times: 3 } }), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'daily' } }, D1, database)
+    const stored = await storedHabit(habit.id)
+    expect(stored.schedule).toStrictEqual({ type: 'daily' })
+    expect(stored.scheduleHistory).toStrictEqual([{ until: D1, schedule: { type: 'weekly', times: 3 } }])
+    expect(scheduleOn(stored, addDays(D1, -1))).toStrictEqual({ type: 'weekly', times: 3 })
+    expect(scheduleOn(stored, D1)).toStrictEqual({ type: 'daily' })
+    expect(isRequiredOn(stored, '2026-11-05')).toBe(false)
+    expect(isRequiredOn(stored, D1)).toBe(true)
+  })
+
+  it('legt keinen Eintrag an, wenn sich der Rhythmus inhaltlich nicht ändert', async () => {
+    const habit = await createHabit(checkDraft({ schedule: { type: 'weekdays', days: [1, 3, 5] } }), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekdays', days: [5, 3, 1, 3] }, title: 'Neu' }, D1, database)
+    await updateHabit(habit.id, { difficulty: 'hard' }, D2, database)
+    const stored = await storedHabit(habit.id)
+    expect('scheduleHistory' in stored).toBe(false)
+    expect(stored).toStrictEqual({ ...habit, title: 'Neu', difficulty: 'hard' })
+  })
+
+  it('ersetzt den Rhythmus einfach, solange die Quest noch keine Vergangenheit hat (today ≤ createdDay)', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekdays', days: [2] } }, '2026-11-01', database)
+    const stored = await storedHabit(habit.id)
+    expect(stored.schedule).toStrictEqual({ type: 'weekdays', days: [2] })
+    expect('scheduleHistory' in stored).toBe(false)
+  })
+
+  it('mehrere Änderungen am selben Tag: für die Tage davor bleibt der ursprüngliche Rhythmus', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, D1, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekdays', days: [1, 2] } }, D1, database)
+    const stored = await storedHabit(habit.id)
+    expect(stored.scheduleHistory).toStrictEqual([{ until: D1, schedule: { type: 'daily' } }])
+    expect(stored.schedule).toStrictEqual({ type: 'weekdays', days: [1, 2] })
+
+    // Zurück zum ursprünglichen Rhythmus am selben Tag → der Verlauf ist überflüssig und entfällt.
+    await updateHabit(habit.id, { schedule: { type: 'daily' } }, D1, database)
+    expect(await storedHabit(habit.id)).toStrictEqual(habit)
+  })
+
+  it('Änderungen an verschiedenen Tagen ergeben einen aufsteigenden Verlauf', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, D1, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekdays', days: [6, 7] } }, D2, database)
+    await updateHabit(habit.id, { schedule: { type: 'daily' } }, '2026-11-24', database)
+    const stored = await storedHabit(habit.id)
+    expect(stored.scheduleHistory).toStrictEqual([
+      { until: D1, schedule: { type: 'daily' } },
+      { until: D2, schedule: { type: 'weekly', times: 2 } },
+      { until: '2026-11-24', schedule: { type: 'weekdays', days: [6, 7] } },
+    ])
+    expect(stored.schedule).toStrictEqual({ type: 'daily' })
+    expect(scheduleOn(stored, '2026-11-05')).toStrictEqual({ type: 'daily' })
+    expect(scheduleOn(stored, '2026-11-12')).toStrictEqual({ type: 'weekly', times: 2 })
+    expect(scheduleOn(stored, '2026-11-20')).toStrictEqual({ type: 'weekdays', days: [6, 7] })
+    expect(scheduleOn(stored, '2026-11-24')).toStrictEqual({ type: 'daily' })
+  })
+
+  it('behält Verlauf und Pausen bei anderen Änderungen', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, D1, database)
+    await archiveHabit(habit.id, '2026-11-12', database)
+    await restoreHabit(habit.id, '2026-11-15', database)
+    const before = await storedHabit(habit.id)
+    await updateHabit(habit.id, { title: 'Umbenannt', description: 'Neu' }, D2, database)
+    expect(await storedHabit(habit.id)).toStrictEqual({ ...before, title: 'Umbenannt', description: 'Neu' })
+  })
+
+  it('ignoriert Verlauf und Pausen in Entwurf/Patch (die pflegt nur das Repository)', async () => {
+    const sneaky = {
+      ...checkDraft(),
+      scheduleHistory: [{ until: D1, schedule: { type: 'weekly', times: 1 } }],
+      pauses: [{ from: DAY, until: D1 }],
+    } as HabitDraft
+    const habit = await createHabit(sneaky, DAY, database)
+    expect('scheduleHistory' in habit).toBe(false)
+    expect('pauses' in habit).toBe(false)
+    await updateHabit(habit.id, sneaky, D1, database)
+    expect(await storedHabit(habit.id)).toStrictEqual(habit)
+  })
+
+  it('verlangt einen gültigen Spieltag und ändert sonst nichts', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await expect(
+      updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, '2026-02-30', database),
+    ).rejects.toThrow('Ungültiges Datum')
+    await expect(
+      updateHabit(habit.id, { title: 'X' }, undefined as unknown as string, database),
+    ).rejects.toThrow('Ungültiges Datum')
+    expect(await storedHabit(habit.id)).toStrictEqual(habit)
+  })
+
+  it('normalisiert einen gespeicherten Verlauf und verwirft kaputte Einträge', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await database.habits.update(habit.id, {
+      schedule: { type: 'weekly', times: 2 },
+      scheduleHistory: [
+        { until: D2, schedule: { type: 'weekly', times: 3 } },
+        { until: 'kaputt', schedule: { type: 'daily' } },
+        { until: D1, schedule: { type: 'daily' } },
+        { until: '2026-11-12', schedule: { type: 'weekdays', days: [] } },
+      ],
+    } as Partial<Habit>)
+    await updateHabit(habit.id, { schedule: { type: 'daily' } }, '2026-11-24', database)
+    expect((await storedHabit(habit.id)).scheduleHistory).toStrictEqual([
+      { until: D1, schedule: { type: 'daily' } },
+      { until: D2, schedule: { type: 'weekly', times: 3 } },
+      { until: '2026-11-24', schedule: { type: 'weekly', times: 2 } },
+    ])
+  })
+
+  it('bei zurückgestellter Uhr bleibt die Vergangenheit vor heute ebenfalls erhalten', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, D2, database)
+    // Uhr zurück auf D1 (< D2): Vor D1 galt laut Verlauf "täglich" – das bleibt so.
+    await updateHabit(habit.id, { schedule: { type: 'weekdays', days: [1] } }, D1, database)
+    const stored = await storedHabit(habit.id)
+    expect(stored.scheduleHistory).toStrictEqual([{ until: D1, schedule: { type: 'daily' } }])
+    expect(scheduleOn(stored, '2026-11-09')).toStrictEqual({ type: 'daily' })
+    expect(scheduleOn(stored, D1)).toStrictEqual({ type: 'weekdays', days: [1] })
   })
 })
 
@@ -309,10 +453,49 @@ describe('archiveHabit / restoreHabit / deleteHabit', () => {
     const habit = await createHabit(checkDraft(), DAY, database)
     await archiveHabit(habit.id, NEXT_DAY, database)
     expect((await storedHabit(habit.id)).archivedDay).toBe(NEXT_DAY)
-    await restoreHabit(habit.id, database)
+    // Am Tag der Archivierung zurückgeholt: keine Pause nötig, die Quest ist wieder wie vorher.
+    await restoreHabit(habit.id, NEXT_DAY, database)
     const restored = await storedHabit(habit.id)
     expect('archivedDay' in restored).toBe(false)
+    expect('pauses' in restored).toBe(false)
     expect(restored).toStrictEqual(habit)
+  })
+
+  it('restoreHabit speichert die archivierte Zeit als Pause', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await archiveHabit(habit.id, '2026-11-05', database)
+    await restoreHabit(habit.id, '2026-11-12', database)
+    const restored = await storedHabit(habit.id)
+    expect('archivedDay' in restored).toBe(false)
+    expect(restored).toStrictEqual({ ...habit, pauses: [{ from: '2026-11-05', until: '2026-11-12' }] })
+    expect(isActiveOn(restored, '2026-11-04')).toBe(true)
+    expect(isActiveOn(restored, '2026-11-05')).toBe(false)
+    expect(isActiveOn(restored, '2026-11-11')).toBe(false)
+    expect(isActiveOn(restored, '2026-11-12')).toBe(true)
+  })
+
+  it('restoreHabit fasst mehrere Archiv-Zeiten zusammen', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await archiveHabit(habit.id, '2026-11-05', database)
+    await restoreHabit(habit.id, '2026-11-08', database)
+    await archiveHabit(habit.id, '2026-11-08', database) // direkt wieder archiviert → grenzt an
+    await restoreHabit(habit.id, '2026-11-10', database)
+    await archiveHabit(habit.id, '2026-11-20', database)
+    await restoreHabit(habit.id, '2026-11-22', database)
+    expect((await storedHabit(habit.id)).pauses).toStrictEqual([
+      { from: '2026-11-05', until: '2026-11-10' },
+      { from: '2026-11-20', until: '2026-11-22' },
+    ])
+  })
+
+  it('restoreHabit ändert eine nicht archivierte Quest nicht und verlangt einen gültigen Tag', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await restoreHabit(habit.id, NEXT_DAY, database)
+    expect(await storedHabit(habit.id)).toStrictEqual(habit)
+    await archiveHabit(habit.id, NEXT_DAY, database)
+    await expect(restoreHabit(habit.id, 'gestern', database)).rejects.toThrow('Ungültiges Datum')
+    expect((await storedHabit(habit.id)).archivedDay).toBe(NEXT_DAY)
+    await expect(restoreHabit('unbekannt', DAY, database)).rejects.toThrow('Diese Quest gibt es nicht')
   })
 
   it('erneutes Archivieren verschiebt archivedDay nicht nach hinten (Vergangenheit bleibt unverändert)', async () => {
@@ -349,6 +532,159 @@ describe('archiveHabit / restoreHabit / deleteHabit', () => {
     expect(data.habits.map((h) => h.id)).toEqual([kept.id])
     expect(data.completions.map((c) => c.habitId)).toEqual([kept.id])
   })
+})
+
+describe('Bearbeiten kostet nie verdiente XP', () => {
+  /** Zwei Quests ab DAY (Di 03.11.), zwei Wochen lang erledigt wie geplant; Spielstand zum Tag `today`. */
+  async function playTwoWeeks() {
+    await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: DAY }, database)
+    const daily = await createHabit(checkDraft({ title: 'Täglich' }), DAY, database)
+    const weekly = await createHabit(checkDraft({ title: 'Wöchentlich', schedule: { type: 'weekly', times: 2 } }), DAY, database)
+    for (const day of dayRange(DAY, '2026-11-16')) await toggleCompletion(daily.id, day, database)
+    for (const day of ['2026-11-04', '2026-11-06', '2026-11-10', '2026-11-12']) await toggleCompletion(weekly.id, day, database)
+    return { daily, weekly }
+  }
+
+  async function stateOn(today: string) {
+    return deriveGameState(await loadGameData(database), today)
+  }
+
+  it('eine Rhythmus-Änderung behält Perfekte Tage, XP und Level', async () => {
+    const { weekly } = await playTwoWeeks()
+    const today = '2026-11-17'
+    const before = await stateOn(today)
+    expect(before.totals.perfectDays).toBe(14)
+
+    await updateHabit(weekly.id, { schedule: { type: 'daily' } }, today, database)
+    const after = await stateOn(today)
+    expect(after.totals.perfectDays).toBe(before.totals.perfectDays)
+    expect(after.level).toStrictEqual(before.level)
+    expect(after.attributes).toStrictEqual(before.attributes)
+  })
+
+  it('Archivieren und Zurückholen behält Perfekte Tage, XP und Streaks', async () => {
+    const { daily, weekly } = await playTwoWeeks()
+    await archiveHabit(weekly.id, '2026-11-13', database)
+    for (const day of dayRange('2026-11-17', '2026-11-20')) await toggleCompletion(daily.id, day, database)
+    const archived = await stateOn('2026-11-21')
+
+    await restoreHabit(weekly.id, '2026-11-21', database)
+    const restored = await stateOn('2026-11-21')
+    expect(restored.totals.perfectDays).toBe(archived.totals.perfectDays)
+    expect(restored.level).toStrictEqual(archived.level)
+    expect(restored.todayState.habits.find((s) => s.habit.id === daily.id)?.streak.current).toBe(18)
+    // Die Wochenserie läuft weiter: die beiden erfüllten Wochen zählen, die pausierten brechen nichts
+    expect(restored.todayState.habits.find((s) => s.habit.id === weekly.id)?.streak).toStrictEqual({
+      current: 2,
+      best: 2,
+      unit: 'week',
+    })
+  })
+
+  it('zufällige Spielverläufe: Bearbeiten, Archivieren und Zurückholen ändern nie den Spielstand bis gestern', async () => {
+    const random = seededRandom(20261103)
+    const int = (max: number) => Math.floor(random() * (max + 1))
+    const pick = <T>(items: readonly T[]): T => items[int(items.length - 1)]
+    const randomSchedule = (): Schedule => {
+      const kind = random()
+      if (kind < 0.35) return { type: 'daily' }
+      if (kind < 0.65) return { type: 'weekdays', days: [pick([1, 2, 3] as const), pick([4, 5, 6, 7] as const)] }
+      return { type: 'weekly', times: 1 + int(3) }
+    }
+    /** Alles, was bis zum Stichtag verdient bzw. erreicht wurde (ohne den laufenden Tag). */
+    const earned = (data: GameData, day: DayKey) => {
+      const state = deriveGameState(data, day)
+      return {
+        level: state.level,
+        attributes: state.attributes,
+        totals: state.totals,
+        chapters: state.mainQuests.flatMap((q) => q.chapters.map((c) => ({ id: c.chapter.id, done: c.done, doneDay: c.doneDay }))),
+      }
+    }
+    /** Erledigt jede an `day` sichtbare (nicht archivierte) Quest mit Wahrscheinlichkeit `chance`. */
+    const play = async (day: DayKey, chance: number) => {
+      const { habits } = await loadGameData(database)
+      const done: Completion[] = habits
+        .filter((habit) => isVisibleOn(habit, day) && random() < chance)
+        .map((habit) => ({
+          id: completionId(habit.id, day),
+          habitId: habit.id,
+          day,
+          value: 1,
+          target: 1,
+          difficulty: habit.difficulty,
+          attribute: habit.attribute,
+          updatedAt: 0,
+        }))
+      await database.completions.bulkPut(done)
+    }
+
+    const start = '2026-10-05' // Montag
+    /** Damit der Test nicht nur zufällig grün ist: so oft kamen die kritischen Fälle vor. */
+    const coverage = { unitFlips: 0, pauses: 0, doneStreakChapters: 0 }
+    for (let round = 0; round < 10; round++) {
+      await resetAllData(database)
+      await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: start }, database)
+      const habits: Habit[] = []
+      for (let i = 0; i < 3; i++) {
+        habits.push(
+          await createHabit(
+            checkDraft({ title: `Quest ${i}`, schedule: randomSchedule(), difficulty: pick(['easy', 'medium', 'hard'] as const) }),
+            start,
+            database,
+          ),
+        )
+      }
+      const streakChapter = (id: string, habit: Habit, target: number): Chapter => ({
+        id,
+        title: id,
+        criterion: { type: 'habit', habitId: habit.id, metric: 'streak', target },
+      })
+      await createMainQuest(
+        questDraft({
+          startDay: start,
+          chapters: [streakChapter('s0', habits[0], 3), streakChapter('s1', habits[1], 2), streakChapter('s2', habits[2], 6)],
+        }),
+        database,
+      )
+
+      for (let offset = 0; offset < 42; offset++) {
+        const today = addDays(start, offset)
+        const yesterday = addDays(today, -1)
+        await play(today, 0.85)
+        if (random() < 0.1) await play(yesterday, 0.5) // nachgetragen
+        const edits = random() < 0.3 ? 1 + int(2) : 0 // auch mehrere Änderungen am selben Tag
+        for (let k = 0; k < edits; k++) {
+          const before = earned(await loadGameData(database), yesterday)
+          const habit = pick(habits)
+          const op = random()
+          const kind = op < 0.5 ? 'Rhythmus' : op < 0.6 ? 'Schwierigkeit' : op < 0.8 ? 'Archivieren' : 'Zurückholen'
+          const label = `Runde ${round}, ${today}, ${kind} ${habit.title}`
+          if (kind === 'Rhythmus') await updateHabit(habit.id, { schedule: randomSchedule() }, today, database)
+          else if (kind === 'Schwierigkeit') {
+            const patch = { difficulty: pick(['easy', 'epic'] as const), attribute: pick(['strength', 'charisma'] as const) }
+            await updateHabit(habit.id, patch, today, database)
+          } else if (kind === 'Archivieren') await archiveHabit(habit.id, today, database)
+          else await restoreHabit(habit.id, today, database)
+          expect(earned(await loadGameData(database), yesterday), label).toStrictEqual(before)
+        }
+      }
+      // Was das Repository schreibt, muss auch ein Backup-Import akzeptieren (z. B. streng sortierter Verlauf).
+      const parsed = parseBackup(await createBackup(new Date(), database))
+      expect(parsed.ok ? '' : parsed.error, `Runde ${round}`).toBe('')
+
+      const final = await loadGameData(database)
+      for (const habit of final.habits) {
+        const types = new Set([habit.schedule, ...(habit.scheduleHistory ?? []).map((e) => e.schedule)].map((x) => x.type === 'weekly'))
+        if (types.size === 2) coverage.unitFlips++
+        if (habit.pauses?.length) coverage.pauses++
+      }
+      coverage.doneStreakChapters += earned(final, addDays(start, 41)).chapters.filter((c) => c.done).length
+    }
+    expect(coverage.unitFlips).toBeGreaterThanOrEqual(5)
+    expect(coverage.pauses).toBeGreaterThanOrEqual(3)
+    expect(coverage.doneStreakChapters).toBeGreaterThanOrEqual(5)
+  }, 30_000)
 })
 
 describe('moveHabit', () => {
@@ -507,7 +843,7 @@ describe('Erledigungen', () => {
     // der heutigen Erledigung bleibt bei 20, die Quest ist also weiterhin "nicht erledigt".
     const habit = await createHabit(measureDraft({ measure: { target: 20, unit: 'Seiten' } }), DAY, database)
     await setCompletionValue(habit.id, DAY, 12, database)
-    await updateHabit(habit.id, { measure: { target: 10, unit: 'Seiten' } }, database)
+    await updateHabit(habit.id, { measure: { target: 10, unit: 'Seiten' } }, DAY, database)
 
     await toggleCompletion(habit.id, DAY, database)
     // Erledigt mit dem aktuellen Ziel – die gelesenen 12 Seiten bleiben erhalten (zählen z. B. für "Seiten gesamt").
@@ -522,6 +858,7 @@ describe('Erledigungen', () => {
     await updateHabit(
       habit.id,
       { measure: { target: 20, unit: 'Seiten' }, difficulty: 'epic', attribute: 'wisdom' },
+      DAY,
       database,
     )
     expect(await database.completions.get(completionId(habit.id, DAY))).toStrictEqual(before)
@@ -537,7 +874,7 @@ describe('Erledigungen', () => {
     })
 
     // Wird die Quest zur Abhak-Quest, bleibt die Vergangenheit ebenfalls unangetastet.
-    await updateHabit(habit.id, { measure: undefined }, database)
+    await updateHabit(habit.id, { measure: undefined }, NEXT_DAY, database)
     expect(await database.completions.get(completionId(habit.id, DAY))).toStrictEqual(before)
   })
 })

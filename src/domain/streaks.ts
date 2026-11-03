@@ -2,25 +2,35 @@
  * Streak-Berechnung ("🔥 12").
  *
  * Betrachtet wird nur das Fenster `[max(createdDay, from), asOf]`; Tage ab `archivedDay` gehören nicht dazu.
+ * Die Einheit richtet sich nach dem **aktuellen** Rhythmus (`habit.schedule`). Pausierte Tage
+ * (`habit.pauses`) werden übersprungen: Sie zählen nicht und brechen nichts.
  *
  * Tages-Einheit (daily / weekdays):
- * - Gezählt werden aufeinanderfolgende **Plantage**. Nicht-Plantage (z. B. Dienstag bei "Mo, Mi, Fr")
- *   werden übersprungen und brechen nichts – auch wenn an ihnen trotzdem etwas erledigt wurde.
+ * - Gezählt werden aufeinanderfolgende **Plantage** laut dem Rhythmus des jeweiligen Tages (`scheduleOn`).
+ *   Nicht-Plantage (z. B. Dienstag bei "Mo, Mi, Fr") werden übersprungen und brechen nichts – auch wenn an
+ *   ihnen trotzdem etwas erledigt wurde. Tage, an denen die Quest damals eine Wochenquest war, gelten
+ *   ebenfalls als Nicht-Plantage.
  * - Ein noch offener Plantag `asOf` bricht die aktuelle Serie nicht (der Tag läuft noch).
  *
  * Wochen-Einheit (weekly):
  * - ISO-Wochen (Mo–So). Eine Woche zählt, wenn die erledigten Tage **im Fenster** ≥ `times` sind.
  *   Die erste Woche beginnt mit der Woche des Fensterstarts; Tage davor zählen nicht mit.
+ * - Maßgeblich ist der Rhythmus am **Montag** der Woche (`scheduleOn`): War die Quest da eine Wochenquest,
+ *   gilt deren `times`; sonst wird die Woche übersprungen (zählt nicht, bricht nichts).
  * - Die Woche von `asOf` zählt, sobald sie erfüllt ist, und bricht nichts, solange sie es nicht ist.
- *   Gleiches gilt für eine letzte Woche, die durch die Archivierung abgeschnitten wurde: Sie war nie
- *   vollständig verfügbar und darf die (eingefrorene) Serie daher nicht brechen.
+ *   Gleiches gilt für eine letzte Woche, die durch die Archivierung abgeschnitten wurde, und für Wochen
+ *   mit pausierten Tagen: Sie waren nie vollständig verfügbar und dürfen die Serie daher nicht brechen.
  *
  * `best` ist die längste Serie im Fenster (inklusive der aktuellen).
- * Laufzeit: O(Tage im Fenster) – jeder Tag wird genau einmal betrachtet.
+ * Laufzeit: O(Tage im Fenster + Verlaufs-/Pauseneinträge) – jeder Tag wird genau einmal betrachtet.
+ *
+ * Wird eine Quest zwischen Tages- und Wochenquest umgestellt, wechselt die Einheit von `computeStreak`.
+ * Die in der früheren Einheit erreichten Serien liefert `bestStreakIn` – damit gehen Bestwerte und
+ * erreichte Streak-Kapitel (und deren XP) durch das Umstellen nicht verloren.
  */
 import { fromEpochDay, isoWeekday, toEpochDay } from './dates'
-import { isScheduledWeekday } from './schedule'
-import type { DayKey, Habit, IsoWeekday, Streak } from './types'
+import { isScheduledWeekday, mergePauses } from './schedule'
+import type { DayKey, Habit, IsoWeekday, Schedule, Streak } from './types'
 
 interface StreakWindow {
   /** Erster Tag des Fensters (Epoch-Tag). */
@@ -51,19 +61,60 @@ function nextWeekday(weekday: IsoWeekday): IsoWeekday {
   return (weekday === 7 ? 1 : weekday + 1) as IsoWeekday
 }
 
+/**
+ * Rhythmus-Verlauf und Pausen einer Quest für **aufsteigend** abgefragte Epoch-Tage. Beide Abfragen
+ * schieben nur einen Zeiger über die vorab sortierten Einträge weiter – zusammen O(Tage + Einträge).
+ * Die Ergebnisse entsprechen `scheduleOn` bzw. `isPausedOn` aus `schedule.ts`.
+ */
+interface Timeline {
+  scheduleAt(day: number): Schedule
+  pausedAt(day: number): boolean
+}
+
+function habitTimeline(habit: Habit): Timeline {
+  // Stabile Sortierung: Bei gleichem `until` gewinnt – wie in `scheduleOn` – der erste Eintrag.
+  const history = (habit.scheduleHistory ?? [])
+    .map((entry) => ({ until: toEpochDay(entry.until), schedule: entry.schedule }))
+    .sort((a, b) => a.until - b.until)
+  const pauses = mergePauses(habit.pauses ?? []).map((pause) => ({
+    from: toEpochDay(pause.from),
+    until: toEpochDay(pause.until),
+  }))
+  let historyIndex = 0
+  let pauseIndex = 0
+  return {
+    scheduleAt(day) {
+      while (historyIndex < history.length && history[historyIndex].until <= day) historyIndex++
+      return historyIndex < history.length ? history[historyIndex].schedule : habit.schedule
+    },
+    pausedAt(day) {
+      while (pauseIndex < pauses.length && pauses[pauseIndex].until <= day) pauseIndex++
+      return pauseIndex < pauses.length && pauses[pauseIndex].from <= day
+    },
+  }
+}
+
 /** Serie in Plantagen (daily / weekdays). */
 function scanDays(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWindow, reachTarget?: number): ScanResult {
   const { start, end, asOf } = window
+  const timeline = habitTimeline(habit)
+  // Plantage je Wochentag für den zuletzt gesehenen Rhythmus – neu berechnet nur bei einem Wechsel.
+  let schedule: Schedule | undefined
   const scheduled: boolean[] = []
-  for (let weekday = 1; weekday <= 7; weekday++) {
-    scheduled[weekday] = isScheduledWeekday(habit.schedule, weekday as IsoWeekday)
-  }
 
   let run = 0
   let best = 0
   let reachedOn: number | undefined
   let weekday = isoWeekday(fromEpochDay(start))
   for (let day = start; day <= end; day++, weekday = nextWeekday(weekday)) {
+    // Pausierte Tage zählen nicht und brechen nichts.
+    if (timeline.pausedAt(day)) continue
+    const daySchedule = timeline.scheduleAt(day)
+    if (daySchedule !== schedule) {
+      schedule = daySchedule
+      // Wochenquest-Rhythmus (früher) → kein Wochentag ist Plantag.
+      for (let w = 1; w <= 7; w++) scheduled[w] = isScheduledWeekday(daySchedule, w as IsoWeekday)
+    }
     if (!scheduled[weekday]) continue
     if (doneDays.has(fromEpochDay(day))) {
       run++
@@ -78,23 +129,31 @@ function scanDays(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWin
 }
 
 /** Serie in ISO-Wochen (weekly). */
-function scanWeeks(
-  times: number,
-  doneDays: ReadonlySet<DayKey>,
-  window: StreakWindow,
-  reachTarget?: number,
-): ScanResult {
+function scanWeeks(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWindow, reachTarget?: number): ScanResult {
   const { start, end, asOf } = window
   const asOfWeekStart = asOf - (isoWeekday(fromEpochDay(asOf)) - 1)
+  const timeline = habitTimeline(habit)
 
   let run = 0
   let best = 0
   let reachedOn: number | undefined
+  /** Wochenziel der laufenden Woche; 0 = Woche wird übersprungen (damals keine Wochenquest). */
+  let times = 0
   let doneInWeek = 0
   let weekFulfilled = false
+  let weekHasPause = false
   let weekday = isoWeekday(fromEpochDay(start))
   for (let day = start; day <= end; day++, weekday = nextWeekday(weekday)) {
-    if (doneDays.has(fromEpochDay(day))) {
+    if (day === start || weekday === 1) {
+      // Maßgeblich ist der Rhythmus am Montag der Woche (auch wenn das Fenster erst später beginnt).
+      const weekSchedule = timeline.scheduleAt(day - (weekday - 1))
+      // Ungültige Werte (≤ 0) würden jede Woche automatisch erfüllen – mindestens 1 erledigter Tag ist nötig.
+      times = weekSchedule.type === 'weekly' ? Math.max(1, weekSchedule.times) : 0
+    }
+
+    if (timeline.pausedAt(day)) {
+      weekHasPause = true
+    } else if (times > 0 && doneDays.has(fromEpochDay(day))) {
       doneInWeek++
       // Die Woche zählt ab dem Tag, an dem sie erfüllt ist (wichtig für "erreicht am …").
       if (!weekFulfilled && doneInWeek >= times) {
@@ -108,11 +167,13 @@ function scanWeeks(
     const isLastDayOfWeek = weekday === 7 || day === end
     if (isLastDayOfWeek) {
       const weekStart = day - (weekday - 1)
-      // Eine unvollständige Woche (Woche des Stichtags oder durch Archivierung abgeschnitten) bricht nichts.
-      const weekIsCutShort = weekStart === asOfWeekStart || weekday !== 7
-      if (!weekFulfilled && !weekIsCutShort) run = 0
+      // Eine unvollständige Woche (Woche des Stichtags, durch Archivierung abgeschnitten oder mit
+      // pausierten Tagen) bricht nichts – ebenso wenig eine übersprungene Woche.
+      const weekIsCutShort = weekStart === asOfWeekStart || weekday !== 7 || weekHasPause
+      if (times > 0 && !weekFulfilled && !weekIsCutShort) run = 0
       doneInWeek = 0
       weekFulfilled = false
+      weekHasPause = false
     }
   }
   return { current: run, best, reachedOn }
@@ -121,37 +182,67 @@ function scanWeeks(
 function scan(
   habit: Habit,
   doneDays: ReadonlySet<DayKey>,
+  unit: Streak['unit'],
   asOf: DayKey,
   from: DayKey | undefined,
   reachTarget?: number,
-): ScanResult & { unit: Streak['unit'] } {
+): ScanResult {
   const window = streakWindow(habit, asOf, from)
-  if (habit.schedule.type === 'weekly') {
-    if (window.start > window.end) return { current: 0, best: 0, unit: 'week' }
-    // Ungültige Werte (≤ 0) würden jede Woche automatisch erfüllen – mindestens 1 erledigter Tag ist nötig.
-    const times = Math.max(1, habit.schedule.times)
-    return { ...scanWeeks(times, doneDays, window, reachTarget), unit: 'week' }
-  }
-  if (window.start > window.end) return { current: 0, best: 0, unit: 'day' }
-  return { ...scanDays(habit, doneDays, window, reachTarget), unit: 'day' }
+  if (window.start > window.end) return { current: 0, best: 0 }
+  return unit === 'week'
+    ? scanWeeks(habit, doneDays, window, reachTarget)
+    : scanDays(habit, doneDays, window, reachTarget)
+}
+
+/** Einheit einer Serie bei diesem Rhythmus: Wochenquests zählen Wochen, alle anderen Plantage. */
+export function streakUnit(schedule: Schedule): Streak['unit'] {
+  return schedule.type === 'weekly' ? 'week' : 'day'
+}
+
+/** Hatte die Quest jemals (aktuell oder laut `scheduleHistory`) einen Rhythmus dieser Einheit? */
+function everHadUnit(habit: Habit, unit: Streak['unit']): boolean {
+  if (streakUnit(habit.schedule) === unit) return true
+  return (habit.scheduleHistory ?? []).some((entry) => streakUnit(entry.schedule) === unit)
 }
 
 /**
- * Aktuelle und beste Serie einer Quest zum Stichtag `asOf`.
+ * Aktuelle und beste Serie einer Quest zum Stichtag `asOf`, in der Einheit des **aktuellen** Rhythmus.
  * @param doneDays Tage, an denen die Quest erledigt war (value ≥ target).
  * @param from     optionaler frühester Tag (z. B. Start einer Kampagne); es gilt max(createdDay, from).
  */
 export function computeStreak(habit: Habit, doneDays: ReadonlySet<DayKey>, asOf: DayKey, from?: DayKey): Streak {
-  const { current, best, unit } = scan(habit, doneDays, asOf, from)
+  const unit = streakUnit(habit.schedule)
+  const { current, best } = scan(habit, doneDays, unit, asOf, from)
   return { current, best, unit }
 }
 
 /**
- * Erster Tag im Fenster, an dem die Serie (gleiche Logik wie `computeStreak`) die Länge `target`
- * erreicht hat – `undefined`, wenn das bis `asOf` nie passiert ist.
+ * Längste Serie in der Einheit `unit` – auch wenn sie nicht zum aktuellen Rhythmus passt.
+ *
+ * Für die Einheit des aktuellen Rhythmus ist das `computeStreak(...).best`. Für die andere Einheit zählen
+ * nur die Zeiten, in denen die Quest laut `scheduleHistory` damals eine Tages- bzw. Wochenquest war (gleiche
+ * Regeln wie oben). So bleiben Bestwerte und erreichte Streak-Kapitel erhalten, wenn eine Quest zwischen
+ * Tages- und Wochenquest umgestellt wird. Hatte die Quest nie einen Rhythmus dieser Einheit, ist das
+ * Ergebnis 0 – ohne den Zeitraum zu durchlaufen.
+ */
+export function bestStreakIn(
+  habit: Habit,
+  doneDays: ReadonlySet<DayKey>,
+  unit: Streak['unit'],
+  asOf: DayKey,
+  from?: DayKey,
+): number {
+  if (!everHadUnit(habit, unit)) return 0
+  return scan(habit, doneDays, unit, asOf, from).best
+}
+
+/**
+ * Erster Tag im Fenster, an dem die Serie (gleiche Logik wie `computeStreak` bzw. `bestStreakIn`) in der
+ * Einheit `unit` (Standard: die des aktuellen Rhythmus) die Länge `target` erreicht hat – `undefined`,
+ * wenn das bis `asOf` nie passiert ist.
  *
  * Da `best` mit wachsendem Stichtag nie sinkt, ist das genau der früheste Tag `d`, für den
- * `computeStreak(habit, doneDays, d, from).best ≥ target` gilt. Bei Wochenserien ist es der Tag,
+ * `bestStreakIn(habit, doneDays, unit, d, from) ≥ target` gilt. Bei Wochenserien ist es der Tag,
  * an dem die entscheidende Woche erfüllt wurde.
  */
 export function streakReachedDay(
@@ -160,7 +251,9 @@ export function streakReachedDay(
   target: number,
   asOf: DayKey,
   from?: DayKey,
+  unit: Streak['unit'] = streakUnit(habit.schedule),
 ): DayKey | undefined {
-  const { reachedOn } = scan(habit, doneDays, asOf, from, target)
+  if (!everHadUnit(habit, unit)) return undefined
+  const { reachedOn } = scan(habit, doneDays, unit, asOf, from, target)
   return reachedOn === undefined ? undefined : fromEpochDay(reachedOn)
 }

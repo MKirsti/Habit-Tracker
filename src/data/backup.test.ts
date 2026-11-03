@@ -21,8 +21,10 @@ import {
   saveProfile,
   setChapterCounter,
   setChapterManual,
+  restoreHabit,
   setCompletionValue,
   toggleCompletion,
+  updateHabit,
   updateSettings,
 } from './repository'
 
@@ -108,6 +110,10 @@ async function fillWithRichData(database: QuestlogDB): Promise<void> {
     database,
   )
   await archiveHabit(talk.id, '2026-10-20', database)
+  // Rhythmus-Änderung und zurückgeholte Archivierung → scheduleHistory und pauses
+  await updateHabit(gym.id, { schedule: { type: 'daily' } }, '2026-10-10', database)
+  await archiveHabit(gym.id, '2026-10-12', database)
+  await restoreHabit(gym.id, '2026-10-15', database)
 
   await setCompletionValue(reading.id, '2026-10-01', 4, database)
   await setCompletionValue(reading.id, '2026-10-02', 12, database)
@@ -196,6 +202,7 @@ describe('Backup-Roundtrip', () => {
     expect(original.habits.some((h) => h.archivedDay && h.measure === undefined)).toBe(true)
     expect(original.habits.some((h) => h.measure && h.mainQuestId && h.description)).toBe(true)
     expect(original.mainQuests.some((q) => q.archived)).toBe(true)
+    expect(original.habits.some((h) => h.scheduleHistory?.length && h.pauses?.length)).toBe(true)
     expect(original.mainQuests.flatMap((q) => q.chapters).some((c) => c.completedDay && c.manualDone)).toBe(true)
 
     const json = JSON.stringify(await createBackup(EXPORT_TIME, source))
@@ -289,6 +296,25 @@ describe('parseBackup', () => {
     expect(expectError(input)).toBe('Diese Datei ist kein Questlog-Backup.')
   })
 
+  it('übernimmt Rhythmus-Verlauf und Pausen; ältere Backups ohne diese Felder bleiben gültig', () => {
+    const input = validBackup()
+    const history = [
+      { until: '2026-11-10', schedule: { type: 'weekly', times: 2 } },
+      { until: '2026-11-17', schedule: { type: 'weekdays', days: [1, 3] } },
+    ]
+    const pauses = [{ from: '2026-11-20', until: '2026-11-25' }]
+    Object.assign(habitOf(input), { scheduleHistory: history, pauses })
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.backup.data.habits[0].scheduleHistory).toStrictEqual(history)
+    expect(result.backup.data.habits[0].pauses).toStrictEqual(pauses)
+
+    const legacy = parseBackup(validBackup())
+    if (!legacy.ok) throw new Error(legacy.error)
+    expect('scheduleHistory' in legacy.backup.data.habits[0]).toBe(false)
+    expect('pauses' in legacy.backup.data.habits[0]).toBe(false)
+  })
+
   it('meldet kaputtes JSON', () => {
     expect(expectError('{ "app": "questlog", ')).toBe('Die Datei enthält kein gültiges JSON.')
   })
@@ -320,6 +346,36 @@ describe('parseBackup', () => {
     ['Wochenziel 0', (b: ReturnType<typeof validBackup>) => habitOf(b).schedule = { type: 'weekly', times: 0 }, 'data.habits.0.schedule.times'],
     ['unbekannter Rhythmus', (b: ReturnType<typeof validBackup>) => habitOf(b).schedule = { type: 'monthly' }, 'data.habits.0.schedule.type'],
     ['Zielwert 0', (b: ReturnType<typeof validBackup>) => habitOf(b).measure = { target: 0, unit: 'x' }, 'data.habits.0.measure.target'],
+    [
+      'unsortierter Rhythmus-Verlauf',
+      (b: ReturnType<typeof validBackup>) =>
+        (habitOf(b).scheduleHistory = [
+          { until: '2026-11-10', schedule: { type: 'daily' } },
+          { until: '2026-11-10', schedule: { type: 'weekly', times: 1 } },
+        ]),
+      'data.habits.0.scheduleHistory.1.until',
+    ],
+    [
+      'ungültiger Rhythmus im Verlauf',
+      (b: ReturnType<typeof validBackup>) =>
+        (habitOf(b).scheduleHistory = [{ until: '2026-11-10', schedule: { type: 'weekly', times: 9 } }]),
+      'data.habits.0.scheduleHistory.0.schedule.times',
+    ],
+    [
+      'ungültiger Tag im Verlauf',
+      (b: ReturnType<typeof validBackup>) => (habitOf(b).scheduleHistory = [{ until: '10.11.2026', schedule: { type: 'daily' } }]),
+      'data.habits.0.scheduleHistory.0.until',
+    ],
+    [
+      'Pause ohne Dauer',
+      (b: ReturnType<typeof validBackup>) => (habitOf(b).pauses = [{ from: '2026-11-05', until: '2026-11-05' }]),
+      'data.habits.0.pauses.0.until',
+    ],
+    [
+      'Pause mit ungültigem Tag',
+      (b: ReturnType<typeof validBackup>) => (habitOf(b).pauses = [{ from: '2026-11-31', until: '2026-12-02' }]),
+      'data.habits.0.pauses.0.from',
+    ],
     ['Erledigung mit Wert 0', (b: ReturnType<typeof validBackup>) => completionOf(b).value = 0, 'data.completions.0.value'],
     ['falsche Erledigungs-ID', (b: ReturnType<typeof validBackup>) => completionOf(b).id = 'x', 'data.completions.0.id'],
     ['Tageswechsel 13 Uhr', (b: ReturnType<typeof validBackup>) => (b.data.settings = { dayStartHour: 13, effects: true }), 'data.settings.dayStartHour'],

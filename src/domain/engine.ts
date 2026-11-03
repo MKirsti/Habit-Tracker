@@ -12,6 +12,10 @@
  * 4. adventureDay = diffDays(profile.createdDay, today) + 1 (ohne Profil: 1).
  * 5. getDayState sortiert sichtbare Quests nach `order` (dann `title`); Streaks gelten zum Stichtag `day`.
  *
+ * Pflicht/Sichtbarkeit eines Tages richten sich nach dem an diesem Tag gültigen Rhythmus (`scheduleOn`)
+ * und berücksichtigen Pausen. Bearbeiten, Archivieren und Zurückholen einer Quest ändern so nie
+ * nachträglich die Vergangenheit – verdiente XP und Perfekte Tage bleiben erhalten.
+ *
  * Laufzeit: Alle Completions werden einmal vorab nach Quest und Tag indiziert. Danach kostet die Auswertung
  * grob O(Completions + Tage × Quests) – ohne wiederholtes Durchsuchen der Completion-Liste.
  */
@@ -19,10 +23,10 @@ import { ATTRIBUTE_IDS } from './attributes'
 import { BALANCING } from './balancing'
 import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
-import { compareDays, diffDays, isValidDayKey } from './dates'
+import { compareDays, diffDays, isValidDayKey, startOfWeek } from './dates'
 import { attributeLevelFromXp, levelFromXp, rankForLevel } from './leveling'
-import { doneDaysInWeek, habitTarget, isDone, isRequiredOn, isVisibleOn, questXp } from './schedule'
-import { computeStreak } from './streaks'
+import { doneDaysInWeek, habitTarget, isDone, isRequiredOn, isVisibleOn, questXp, scheduleOn } from './schedule'
+import { bestStreakIn, computeStreak } from './streaks'
 import type {
   AttributeId,
   AttributeState,
@@ -173,8 +177,16 @@ function buildHabitStatus(
     xp: questXp(habit.difficulty),
   }
   if (completion) status.completion = completion
-  if (habit.schedule.type === 'weekly') {
-    status.week = { done: doneDaysInWeek(doneDays, day), target: habit.schedule.times }
+  // Rhythmus dieses Tages: Nach einer Änderung zeigt ein früherer Tag den damals gültigen Rhythmus.
+  const schedule = scheduleOn(habit, day)
+  if (schedule.type === 'weekly') {
+    // Wochenziel wie bei der Wochen-Serie: Es gilt das Ziel vom Montag der Woche, damit „Wochenziel erreicht“
+    // in der Anzeige und in der Serie dasselbe bedeutet (ein mitten in der Woche gesenktes Ziel gilt ab dem
+    // nächsten Montag). War die Quest am Montag noch keine Wochenquest, zählt die Woche nicht für die Serie –
+    // dann gilt das Ziel des Tages.
+    const monday = scheduleOn(habit, startOfWeek(day))
+    const target = monday.type === 'weekly' ? monday.times : schedule.times
+    status.week = { done: doneDaysInWeek(doneDays, day), target }
   }
   return status
 }
@@ -276,10 +288,15 @@ export function deriveGameState(data: GameData, today: DayKey): GameState {
   let bestDayStreak = 0
   let bestWeekStreak = 0
   for (const habit of index.habits) {
-    const streak = computeStreak(habit, index.doneDaysByHabit.get(habit.id) ?? NO_DAYS, today)
+    const doneDays = index.doneDaysByHabit.get(habit.id) ?? NO_DAYS
+    const streak = computeStreak(habit, doneDays, today)
     streakByHabit.set(habit.id, streak)
-    if (streak.unit === 'day') bestDayStreak = Math.max(bestDayStreak, streak.best)
-    else bestWeekStreak = Math.max(bestWeekStreak, streak.best)
+    // Bestwerte in beiden Einheiten: Nach einer Umstellung zwischen Tages- und Wochenquest bleibt die in der
+    // früheren Einheit erreichte Serie erhalten (ohne solche Umstellung kostet das nichts, siehe bestStreakIn).
+    const dayBest = streak.unit === 'day' ? streak.best : bestStreakIn(habit, doneDays, 'day', today)
+    const weekBest = streak.unit === 'week' ? streak.best : bestStreakIn(habit, doneDays, 'week', today)
+    bestDayStreak = Math.max(bestDayStreak, dayBest)
+    bestWeekStreak = Math.max(bestWeekStreak, weekBest)
   }
 
   // --- Regel 3: Kapitel & Kampagnen (archivierte zählen für XP mit) -------------------------

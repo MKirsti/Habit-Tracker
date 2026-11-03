@@ -6,11 +6,12 @@
  * - counter: manueller Zähler, z. B. "Bücher beendet: 3 / 12"
  * - habit:   automatisch aus einer Quest; es zählen nur Erledigungen mit `quest.startDay ≤ day ≤ today`.
  *            Metriken: completions (erledigte Tage), total (Summe aller Werte inkl. Teilfortschritt),
- *            streak (bester Streak seit Kampagnenstart).
+ *            streak (bester Streak seit Kampagnenstart; nach einer Umstellung zwischen Tages- und
+ *            Wochenquest bleibt ein in der früheren Einheit erreichtes Ziel erreicht).
  */
 import { compareDays } from './dates'
 import { isDone, reachesTarget } from './schedule'
-import { computeStreak, streakReachedDay } from './streaks'
+import { bestStreakIn, streakReachedDay, streakUnit } from './streaks'
 import type { Chapter, ChapterState, Completion, DayKey, Habit, MainQuest } from './types'
 
 export interface ChapterContext {
@@ -35,6 +36,13 @@ function buildState(chapter: Chapter, current: number, target: number, doneDay?:
   // Ein Abschlusstag ergibt nur Sinn, wenn das Kapitel tatsächlich (noch) abgeschlossen ist.
   if (done && doneDay !== undefined) state.doneDay = doneDay
   return state
+}
+
+/** Der frühere zweier (optionaler) Tage. */
+function earliestDay(a: DayKey | undefined, b: DayKey | undefined): DayKey | undefined {
+  if (a === undefined) return b
+  if (b === undefined) return a
+  return compareDays(a, b) <= 0 ? a : b
 }
 
 /** Erledigungen im Kampagnenzeitraum [startDay, today], aufsteigend nach Tag. */
@@ -90,10 +98,20 @@ function evaluateHabitChapter(
     case 'streak': {
       const doneDays = new Set<DayKey>()
       for (const c of completions) if (isDone(c)) doneDays.add(c.day)
-      const best = computeStreak(habit, doneDays, ctx.today, quest.startDay).best
-      const reachedOn =
-        best >= target ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay) : undefined
-      return buildState(chapter, best, target, reachedOn)
+      // Gezählt wird in der Einheit des aktuellen Rhythmus. Wurde die Quest zwischen Tages- und Wochenquest
+      // umgestellt, bleibt ein in der früheren Einheit erreichtes Ziel erreicht – verdiente XP gehen nie verloren.
+      const unit = streakUnit(habit.schedule)
+      const earlierUnit = unit === 'day' ? 'week' : 'day'
+      const best = bestStreakIn(habit, doneDays, unit, ctx.today, quest.startDay)
+      const earlierBest = bestStreakIn(habit, doneDays, earlierUnit, ctx.today, quest.startDay)
+      const reachedOn = earliestDay(
+        best >= target ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, unit) : undefined,
+        earlierBest >= target
+          ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, earlierUnit)
+          : undefined,
+      )
+      const current = best < target && earlierBest >= target ? earlierBest : best
+      return buildState(chapter, current, target, reachedOn)
     }
   }
 }
