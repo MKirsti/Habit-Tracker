@@ -115,13 +115,14 @@ async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('QuestsPage – Liste', () => {
-  it('erklärt im Leerzustand, was Quests sind, und verweist auf die fertige Kampagne', async () => {
+  it('erklärt im Leerzustand, was Quests sind, und verweist auf die Kampagnen-Bibliothek', async () => {
     const user = userEvent.setup()
     renderWithGame(<QuestsPage />, { route: '/quests' })
     expect(await screen.findByRole('heading', { level: 1, name: 'Quests' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Dein Questbuch ist noch leer' })).toBeInTheDocument()
     expect(screen.getByText(/Quests sind deine Gewohnheiten/)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Zur Kampagne/ })).toHaveAttribute('href', '/kampagne')
+    expect(screen.getByText(/In der Kampagnen-Bibliothek warten Vorlagen/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Zur Bibliothek/ })).toHaveAttribute('href', '/kampagne?neu=1')
     // Genau ein „Neue Quest“-Button (der Kopf zeigt im Leerzustand keinen zweiten).
     await user.click(screen.getByRole('button', { name: 'Neue Quest' }))
     expect(await screen.findByRole('dialog', { name: 'Neue Quest' })).toBeInTheDocument()

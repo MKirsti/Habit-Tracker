@@ -329,14 +329,14 @@ function EmptyQuestbook({ onCreate, buttonRef }: { onCreate: () => void; buttonR
           📚
         </span>
         <p className="text-[0.9375rem] text-muted">
-          <span className="font-medium text-parchment">Lieber mit einer fertigen Kampagne starten?</span> Auf der
-          Kampagnen-Seite wartet „Der Weg des Gelehrten“ – samt passender Quests rund ums Lesen.
+          <span className="font-medium text-parchment">Lieber mit einer fertigen Kampagne starten?</span> In der
+          Kampagnen-Bibliothek warten Vorlagen vom Lesen über Sport bis zur Ernährung – samt passender Quests.
         </p>
         <Link
-          to="/kampagne"
+          to="/kampagne?neu=1"
           className={cn(buttonClassName({ variant: 'secondary', size: 'sm' }), 'col-span-2 sm:col-span-1')}
         >
-          Zur Kampagne
+          Zur Bibliothek
           <ArrowRight aria-hidden />
         </Link>
       </div>

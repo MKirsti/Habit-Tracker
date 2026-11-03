@@ -28,13 +28,15 @@ src/
     schedule.ts      Wann ist eine Quest aktiv/fällig, Wochenfortschritt
     streaks.ts       Streak-Berechnung
     chapters.ts      Auswertung von Kampagnen-Kapiteln
-    engine.ts        deriveGameState / getDayState
+    engine.ts        deriveGameState / getDayState / evaluateMainQuests
+    campaigns.ts     Aktive Kampagnen & Limit (isCampaignActive, campaignSlotsLeft …)
     deletion.ts      Löschen einer Quest als reine Funktion (Grabstein) + Vorschau der Folgen
   data/          Persistenz (IndexedDB via Dexie) & React-Hooks
     db.ts            Dexie-Datenbank
     repository.ts    Alle schreibenden Operationen
     backup.ts        Export/Import (JSON, zod-validiert)
-    seed.ts          Vorlage-Kampagne "Der Weg des Gelehrten"
+    blueprints/      Kampagnen-Bibliothek (Vorlagen, siehe unten)
+    seed.ts          Kampagnen aus Vorlagen installieren, startAdventure
     hooks.ts         useGameData / useToday / useGame
     ids.ts           newId()
   ui/            Wiederverwendbare, rein darstellende Komponenten (Design-System)
@@ -144,11 +146,13 @@ export interface ChapterContext {
 ```ts
 export function getDayState(data: GameData, day: DayKey): DayState
 export function deriveGameState(data: GameData, today: DayKey): GameState
+export function evaluateMainQuests(data: GameData, today: DayKey): MainQuestState[]
+  // alle Kampagnen (aktive + archivierte, gespeicherte Reihenfolge), exakt wie in deriveGameState ausgewertet
 ```
 XP-Regeln:
 1. Jede erledigte Completion (`value ≥ target`) mit `day ≤ today` gibt `questXp(c.difficulty)` → Charakter-XP **und** dieselbe Menge Attribut-XP für `c.attribute`. Teilfortschritt gibt 0 XP. Zu Completions gelöschter Quests: werden ignoriert.
 2. Perfekter Tag: für jeden Tag `d` von (frühester Tag mit Completion oder `profile.createdDay`) bis `today`: Pflicht-Quests = `isRequiredOn(h, d)` über alle Quests **und** alle Grabsteine (`deletedHabits`, nie erledigt). Perfekt ⇔ ≥ 1 Pflicht-Quest und alle erledigt. Bonus = `round(perfectDayBonus × Quest-XP dieses Tages)` (Quest-XP umfasst alle an `d` erledigten Quests, auch Wochenquests). Nur Charakter-XP.
-3. Kapitel: `chapterXp` pro abgeschlossenem Kapitel, `mainQuestXp` pro komplett abgeschlossener Kampagne (auch archivierte). Nur Charakter-XP.
+3. Kapitel: `chapterXp` pro abgeschlossenem Kapitel, `mainQuestXp` pro komplett abgeschlossener Kampagne (auch archivierte). Nur Charakter-XP. Nicht archivierte Kampagnen stehen in `GameState.mainQuests`, archivierte (gleich ausgewertet) in `GameState.archivedMainQuests`.
 4. `adventureDay = diffDays(profile.createdDay, today) + 1` (ohne Profil: 1).
 5. `getDayState` sortiert sichtbare Quests nach `order` (dann `title`); Streaks werden **zum Stichtag `day`** berechnet. `HabitStatus.xp` = `questXp(completion.difficulty)`, wenn erledigt (die gutgeschriebenen XP), sonst `questXp(habit.difficulty)`. `requiredCount` zählt Grabsteine mit (an früheren Tagen also ggf. mehr als die sichtbaren Pflicht-Quests). `HabitStatus.week` gibt es, wenn `scheduleOn(habit, day)` eine Wochenquest ist (frühere Tage zeigen den damals gültigen Rhythmus). `week.target` ist dasselbe Wochenziel wie bei der Wochen-Serie: das vom **Montag** der Woche (ein mitten in der Woche geändertes Ziel gilt ab dem nächsten Montag); war die Quest am Montag keine Wochenquest, das des Tages.
 
@@ -175,7 +179,9 @@ export class QuestlogDB extends Dexie {
   kv!: Table<{ key: string; value: unknown }, string>  // '&key'  – Schlüssel 'profile', 'settings', 'deletedHabits'
 }
 export const db: QuestlogDB   // Datenbankname 'questlog'
+export function legacyBlueprintRef(quest): BlueprintRef | undefined
 ```
+Version 2 (Indizes unverändert): Eine vorhandene Kampagne „Der Weg des Gelehrten“ ohne `blueprint` (aus dem früheren Onboarding) bekommt beim Upgrade `blueprint: { id: 'scholar', level: 'beginner' }` – sie gilt damit in der Bibliothek als laufend.
 
 ### `repository.ts`
 Alle Funktionen `async`, nutzen `db` (ein optionaler letzter Parameter `database = db` ist erlaubt, damit Tests eine eigene Instanz verwenden können).
@@ -216,7 +222,12 @@ export async function toggleCompletion(habitId: string, day: DayKey): Promise<vo
 
 export type MainQuestDraft = Omit<MainQuest, 'id' | 'createdAt'>
 export async function createMainQuest(draft: MainQuestDraft): Promise<MainQuest>
+  // wirft CAMPAIGN_LIMIT_MESSAGE, wenn die neue Kampagne aktiv wäre und schon maxActiveCampaigns aktiv sind
+  // (Spieltag laut Uhr + gespeichertem Tageswechsel). blueprint/sharedHabitIds werden bereinigt übernommen.
 export async function updateMainQuest(id: string, patch: Partial<MainQuestDraft>): Promise<void>
+  // blueprint und sharedHabitIds bleiben, solange der Patch sie nicht ausdrücklich enthält. archived → nicht
+  // archiviert gilt wie restoreMainQuest (Limit, Vorlage nicht doppelt).
+export async function archiveMainQuest(id, today, options?, database?) / restoreMainQuest(...)  // siehe unten
 export async function deleteMainQuest(id: string): Promise<void>   // entfernt mainQuestId bei verknüpften Quests
 export async function setChapterManual(questId: string, chapterId: string, done: boolean, today: DayKey): Promise<void>
 export async function setChapterCounter(questId: string, chapterId: string, value: number, today: DayKey): Promise<void>
@@ -236,19 +247,10 @@ export function parseBackup(json: unknown): { ok: true; backup: BackupFile } | {
 export async function restoreBackup(backup: BackupFile): Promise<void>   // ersetzt ALLE Daten in einer Transaktion
 export function backupFileName(now: Date): string                      // "questlog-backup-2026-11-03.json"
 ```
-Neue **optionale** Felder (`Habit.scheduleHistory`, `Habit.pauses`, `GameData.deletedHabits`) erhöhen `BACKUP_SCHEMA_VERSION` nicht – ältere Backups ohne sie bleiben gültig. Geprüft wird: `scheduleHistory` streng aufsteigend nach `until` mit gültigen Rhythmen, Pausen mit `from < until`, Grabsteine mit eindeutigen IDs (gleiche Regeln für ihren Verlauf und ihre Pausen). `restoreBackup` schreibt `deletedHabits` in den kv-Speicher.
+Neue **optionale** Felder (`Habit.scheduleHistory`, `Habit.pauses`, `GameData.deletedHabits`, `MainQuest.blueprint` – `id` nicht leer, `level` `'beginner' | 'advanced'`, `pathId` optional nicht leer –, `MainQuest.sharedHabitIds` – nicht leere IDs) erhöhen `BACKUP_SCHEMA_VERSION` nicht – ältere Backups ohne sie bleiben gültig. Geprüft wird: `scheduleHistory` streng aufsteigend nach `until` mit gültigen Rhythmen, Pausen mit `from < until`, Grabsteine mit eindeutigen IDs (gleiche Regeln für ihren Verlauf und ihre Pausen). `restoreBackup` schreibt `deletedHabits` in den kv-Speicher.
 
 ### `seed.ts`
-```ts
-export function createScholarCampaign(today: DayKey): { mainQuest: MainQuest; habits: Habit[] }
-export async function installScholarCampaign(today: DayKey): Promise<void>
-  // eine Transaktion; wiederholbar: vorhandene Quests mit gleichem (getrimmtem) Titel, die heute nicht archiviert
-  // und mit keiner Kampagne verknüpft sind, werden neu verknüpft (und von den Kapiteln genutzt) statt verdoppelt;
-  // nur fehlende Vorlage-Quests kommen neu hinzu (hinter alle vorhandenen)
-export type AdventureTemplate = 'scholar' | 'none'
-export async function startAdventure(profile: CharacterProfile, template: AdventureTemplate, today: DayKey): Promise<void>
-  // Abschluss des Onboardings: Vorlage (optional) + Profil (wie saveProfile) in EINER Transaktion – alles oder nichts
-```
+Siehe „Kampagnen-Bibliothek“ unten: `createCampaignFromBlueprint`, `installBlueprint`, `startAdventure` sowie die Gelehrten-Wrapper `createScholarCampaign(today, createdAt?)` / `installScholarCampaign(today)` (Einsteiger-Stufe der Vorlage `'scholar'`).
 
 ### `hooks.ts`
 ```ts
@@ -280,7 +282,7 @@ Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten · `/k
 ## Tests & Entwicklung
 
 - Komponenten-Tests: `// @vitest-environment jsdom`, `import 'fake-indexeddb/auto'`, `afterEach(cleanup)` (keine Vitest-Globals), Animationen per `MotionGlobalConfig.skipAnimations = true` aus. Seiten mit `renderWithGame(<Seite />, { route })` aus `src/test/renderWithGame.tsx` rendern; Daten vorher mit `resetAllData()` + Repository-Funktionen anlegen.
-- Im Dev-Server (`npm run dev`) gibt es `window.questlog` (`src/dev/devtools.ts`): `await questlog.seedDemo(30)` legt einen Demo-Helden mit 30 Tagen Verlauf an, `await questlog.reset()` löscht alles. Ideal für Screenshots mit Playwright.
+- Im Dev-Server (`npm run dev`) gibt es `window.questlog` (`src/dev/devtools.ts`): `await questlog.seedDemo(30)` legt einen Demo-Helden mit 30 Tagen Verlauf an, `await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })` startet eine weitere Kampagne aus der Bibliothek (heutiger Spieltag, gleiche Prüfungen wie in der App), `await questlog.reset()` löscht alles. Ideal für Screenshots mit Playwright.
 
 ## Kampagnen-Bibliothek (Blueprints) & mehrere Kampagnen
 
@@ -291,32 +293,47 @@ Ziel: mehrere fertige Kampagnen-Vorlagen zur Auswahl, bis zu `BALANCING.maxActiv
 - **Pfade („Klassenwahl“):** Vorlagen mit `paths` verlangen genau einen Pfad (Sport: `strength` Krieger/Kraftsport, `endurance` Waldläufer/Ausdauer, `sports` Gladiator/Sport allgemein & Spielsport).
 - `MainQuest.blueprint?: { id, level, pathId? }` merkt sich die Herkunft (Anzeige von Klasse/Stufe; dieselbe Vorlage kann nicht zweimal gleichzeitig aktiv sein).
 - **Aktiv** = nicht archiviert und nicht abgeschlossen (`domain/campaigns.ts`). Abgeschlossene, nicht archivierte Kampagnen belegen keinen Platz.
-- **Geteilte Quests:** Beim Installieren wird eine vorhandene, nicht archivierte Quest mit gleichem (getrimmtem) Titel wiederverwendet statt verdoppelt. Ist sie noch keiner Kampagne zugeordnet, wird sie der neuen zugeordnet; sonst bleibt ihre Zuordnung, und die Kapitel der neuen Kampagne verweisen einfach auf sie.
-- `MainQuestState.linkedHabitIds` = Quests mit `mainQuestId === quest.id` **plus** alle Quests, auf die ein Kapitel der Kampagne verweist (sortiert nach `order`).
+- **Geteilte Quests:** Beim Installieren wird eine vorhandene, am Tag `today` nicht archivierte Quest mit gleichem (getrimmten) Titel wiederverwendet statt verdoppelt (ihre Einstellungen und ihr Verlauf bleiben). Ist sie keiner **aktiven** Kampagne zugeordnet (keine `mainQuestId`, oder ihre Kampagne ist archiviert, abgeschlossen oder gelöscht), wird sie der neuen zugeordnet; sonst bleibt ihre Zuordnung, die Kapitel der neuen Kampagne verweisen auf sie, und sie steht in `MainQuest.sharedHabitIds` der neuen Kampagne. Bei mehreren Kandidaten gewinnt eine nicht zugeordnete, dann die erste in der Liste. Neue Quests kommen hinter alle vorhandenen.
+- `MainQuest.sharedHabitIds?: string[]` – Quests, die die Kampagne mitbenutzt, obwohl sie einer anderen zugeordnet sind (vom Installieren gepflegt; fehlt ohne geteilte Quests).
+- `MainQuestState.linkedHabitIds` = Quests mit `mainQuestId === quest.id` **plus** alle (existierenden) Quests, auf die ein Kapitel der Kampagne verweist oder die in `sharedHabitIds` stehen (ohne Doppelte, sortiert nach `order`, dann Titel; archivierte inklusive).
 
 ### Domain (`src/domain/campaigns.ts`)
 ```ts
 export function isCampaignActive(campaign: MainQuestState): boolean        // !quest.archived && !complete
+export function activeCampaigns(data: GameData, today: DayKey): MainQuestState[]
 export function countActiveCampaigns(data: GameData, today: DayKey): number
 export function campaignSlotsLeft(data: GameData, today: DayKey): number   // max(0, maxActiveCampaigns - aktive)
+export function isBlueprintActive(data: GameData, today: DayKey, blueprintId: string): boolean // „Läuft bereits“
+export const CAMPAIGN_LIMIT_MESSAGE          // "Du hast schon 3 aktive Kampagnen. Schließe eine ab oder beende sie, um eine neue zu beginnen."
+export const CAMPAIGN_RESTORE_LIMIT_MESSAGE  // "… um diese fortzusetzen."
 ```
+„Abgeschlossen“ kommt aus `evaluateMainQuests` (engine) – dieselbe Auswertung wie `MainQuestState.complete` in der UI.
 `GameState.archivedMainQuests: MainQuestState[]` – archivierte Kampagnen (gleiche Auswertung wie aktive), für die Liste „Beendete & gemeisterte Kampagnen“.
 
 ### Daten (`src/data/seed.ts`, `src/data/repository.ts`)
 ```ts
 export function createCampaignFromBlueprint(blueprint: CampaignBlueprint, options: BlueprintOptions, today: DayKey, createdAt?: number): { mainQuest: MainQuest; habits: Habit[] }
+  // rein: prüft Stufe ("Unbekannte Stufe.") und Pfad ("Bitte wähle einen Pfad." / "Unbekannter Pfad."; ohne
+  // Pfade wird pathId ignoriert); Quests mit neuen IDs, mainQuestId, createdDay today, order 0..n-1; Kapitel-
+  // questKey → habitId; startDay today, deadline today + durationDays, blueprint { id, level, pathId? }
 export async function installBlueprint(blueprintId: string, options: BlueprintOptions, today: DayKey, database?): Promise<MainQuest>
-  // wirft deutsche Fehler: unbekannte Vorlage, fehlender/unbekannter Pfad, Limit erreicht, Vorlage läuft bereits
+  // EINE Transaktion; wirft (nichts gespeichert): "Diese Vorlage gibt es nicht.", Pfad-Fehler,
+  // "Diese Kampagne läuft bereits." (aktive Kampagne derselben Vorlage), CAMPAIGN_LIMIT_MESSAGE
 export type AdventureChoice = { blueprintId: string; options: BlueprintOptions }
 export async function startAdventure(profile: CharacterProfile, choice: AdventureChoice | null, today: DayKey, database?): Promise<void>
-// unverändert nutzbar (Einsteiger-Stufe der Gelehrten-Vorlage): createScholarCampaign(today, createdAt?), installScholarCampaign(today)
+  // Vorlage (optional, wie installBlueprint) + Profil (wie saveProfile) in EINER Transaktion – alles oder nichts.
+  // Übergangsweise auch noch 'scholar' | 'none' (veraltet: AdventureTemplate).
+// unverändert nutzbar (Einsteiger-Stufe der Gelehrten-Vorlage): createScholarCampaign(today, createdAt?), installScholarCampaign(today) → MainQuest
 
 // repository.ts
 createMainQuest(...)                                         // wirft, wenn das Limit erreicht ist
 export async function archiveMainQuest(id: string, today: DayKey, options?: { archiveQuests?: boolean }, database?): Promise<void>
-  // archiveQuests: archiviert die Quests mit mainQuestId === id, die nicht von Kapiteln anderer nicht archivierter Kampagnen gebraucht werden
+  // archived = true. archiveQuests: archiviert (wie archiveHabit: ab today, vorhandener archivedDay bleibt) die Quests
+  // mit mainQuestId === id, die keine andere nicht archivierte Kampagne braucht (Kapitel-Verweis oder sharedHabitIds)
 export async function restoreMainQuest(id: string, today: DayKey, options?: { restoreQuests?: boolean }, database?): Promise<void>
-  // wirft, wenn dadurch mehr als 3 Kampagnen aktiv wären; restoreQuests holt archivierte Quests mit mainQuestId === id zurück
+  // nicht archiviert → keine Änderung. Wäre sie danach aktiv (nicht abgeschlossen): wirft CAMPAIGN_RESTORE_LIMIT_MESSAGE,
+  // wenn schon 3 andere aktiv sind, bzw. "Eine Kampagne aus dieser Vorlage läuft bereits. …". restoreQuests holt
+  // archivierte Quests mit mainQuestId === id zurück (wie restoreHabit: archivierte Zeit wird Pause, keine XP gehen verloren)
 ```
 
 ### UI (`src/features/blueprints/`)

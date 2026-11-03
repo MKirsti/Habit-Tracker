@@ -1,5 +1,5 @@
 import { Dexie, type Table } from 'dexie'
-import type { Completion, Habit, MainQuest } from '../domain/types'
+import type { BlueprintRef, Completion, Habit, MainQuest } from '../domain/types'
 
 /** Ein Eintrag im Schlüssel-Wert-Speicher (`kv`). */
 export interface KeyValueEntry {
@@ -20,6 +20,26 @@ export const KV_KEYS = {
 /** Standardname der IndexedDB-Datenbank. */
 export const DEFAULT_DB_NAME = 'questlog'
 
+const SCHEMA = {
+  habits: '&id, order, mainQuestId',
+  completions: '&id, habitId, day',
+  mainQuests: '&id',
+  kv: '&key',
+} as const
+
+/** Titel der Kampagne, die das Onboarding vor der Kampagnen-Bibliothek angelegt hat. */
+const LEGACY_SCHOLAR_TITLE = 'Der Weg des Gelehrten'
+
+/**
+ * Herkunft einer Kampagne aus der Zeit vor der Kampagnen-Bibliothek: "Der Weg des Gelehrten" war die einzige
+ * Vorlage und entspricht der Einsteiger-Stufe der Gelehrten-Vorlage. Andere Kampagnen (oder solche, die ihre
+ * Herkunft schon kennen) → `undefined`.
+ */
+export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>): BlueprintRef | undefined {
+  if (quest.blueprint !== undefined || typeof quest.title !== 'string') return undefined
+  return quest.title.trim() === LEGACY_SCHOLAR_TITLE ? { id: 'scholar', level: 'beginner' } : undefined
+}
+
 /**
  * Die IndexedDB-Datenbank von Questlog.
  *
@@ -28,6 +48,12 @@ export const DEFAULT_DB_NAME = 'questlog'
  * - `completions`: `habitId` (Kaskaden-Löschen), `day`
  *
  * Schemaänderungen immer über eine neue `version(n)` mit Upgrade-Funktion – niemals `version(1)` ändern.
+ *
+ * Versionen:
+ * 1. Grundschema.
+ * 2. Kampagnen-Bibliothek: Eine vorhandene "Der Weg des Gelehrten"-Kampagne (aus dem früheren Onboarding)
+ *    bekommt ihre Herkunft `blueprint: { id: 'scholar', level: 'beginner' }` – damit sie in der Bibliothek als
+ *    laufend gilt und nicht ein zweites Mal gestartet wird. Indizes unverändert.
  */
 export class QuestlogDB extends Dexie {
   habits!: Table<Habit, string>
@@ -38,12 +64,18 @@ export class QuestlogDB extends Dexie {
   /** @param name Datenbankname – Tests verwenden pro Test einen eigenen Namen. */
   constructor(name: string = DEFAULT_DB_NAME) {
     super(name)
-    this.version(1).stores({
-      habits: '&id, order, mainQuestId',
-      completions: '&id, habitId, day',
-      mainQuests: '&id',
-      kv: '&key',
-    })
+    this.version(1).stores(SCHEMA)
+    this.version(2)
+      .stores(SCHEMA)
+      .upgrade((tx) =>
+        tx
+          .table<MainQuest, string>('mainQuests')
+          .toCollection()
+          .modify((quest) => {
+            const ref = legacyBlueprintRef(quest)
+            if (ref !== undefined) quest.blueprint = ref
+          }),
+      )
   }
 }
 

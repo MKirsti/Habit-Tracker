@@ -6,6 +6,7 @@ import { MotionGlobalConfig } from 'motion/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as repository from '../../data/repository'
 import type { HabitDraft } from '../../data/repository'
+import { installBlueprint } from '../../data/seed'
 import type { Completion, DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { DashboardPage } from '../DashboardPage'
@@ -135,7 +136,10 @@ describe('DashboardPage', () => {
     // Alle sechs Attribute, Kampagnen-Einladung
     const attributes = screen.getByRole('region', { name: /^Attribute/ })
     expect(within(attributes).getAllByRole('listitem')).toHaveLength(6)
+    expect(screen.getByRole('heading', { name: 'Starte deine erste Kampagne' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Kampagne starten/ })).toHaveAttribute('href', '/kampagne')
+    // Ohne Kampagne gibt es nur diese eine Einladung – kein zusätzliches „Neue“.
+    expect(screen.queryByRole('link', { name: /Neue Kampagne beginnen/ })).not.toBeInTheDocument()
   })
 
   it('hakt eine Quest per Tipp ab und wieder aus', async () => {
@@ -347,7 +351,63 @@ describe('DashboardPage', () => {
       'href',
       `/kampagne?id=${second.id}`,
     )
-    expect(screen.getByText('Aktuelles Kapitel: Erste 5 km · 0 / 1 abgeschlossen')).toBeInTheDocument()
+    // Mehrere Kampagnen: kompakte Karten, Zähler vorn (beim Kürzen wird nur der Kapiteltitel abgeschnitten).
+    expect(screen.getByText('0 / 1 Kapitel · Erste 5 km')).toBeInTheDocument()
+  })
+
+  it('zeigt mehrere Kampagnen kompakt – laufende zuerst, mit Klasse, Stufe und freien Plätzen', async () => {
+    await setup()
+    // Gemeistert (zählt nicht als aktiv) – steht trotz früherer Anlage hinter den laufenden.
+    await createMainQuest({
+      title: 'Erstes Projekt',
+      icon: '🏁',
+      why: 'Abschließen',
+      reward: '',
+      startDay: '2026-10-29',
+      chapters: [{ id: 'c1', title: 'Fertig', criterion: { type: 'manual' }, manualDone: true, completedDay: TODAY }],
+    })
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 1))
+    const warrior = await installBlueprint('body', { level: 'beginner', pathId: 'strength' }, TODAY)
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 2))
+    await installBlueprint('monk', { level: 'advanced' }, TODAY)
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 0))
+
+    const campaigns = await screen.findByRole('region', { name: /^Kampagnen/ })
+    await waitFor(() => expect(within(campaigns).getAllByRole('article')).toHaveLength(3))
+    expect(within(campaigns).getByRole('heading', { level: 2 })).toHaveTextContent('Kampagnen – 2 / 3 aktiv')
+    expect(within(campaigns).getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      'Der Pfad des Kriegers',
+      'Der stille Mönch',
+      'Erstes Projekt',
+    ])
+    const [warriorCard, monkCard, doneCard] = within(campaigns).getAllByRole('article')
+    expect(within(warriorCard).getByText('🗡️ Krieger · Einsteiger')).toBeInTheDocument()
+    expect(within(warriorCard).getByText('0 / 6 Kapitel · Die Feuertaufe')).toBeInTheDocument()
+    expect(within(warriorCard).getByRole('link', { name: 'Kampagne „Der Pfad des Kriegers“ öffnen' })).toHaveAttribute(
+      'href',
+      `/kampagne?id=${warrior.id}`,
+    )
+    expect(within(warriorCard).getByRole('progressbar', { name: 'Fortschritt: Der Pfad des Kriegers' })).toBeInTheDocument()
+    expect(within(monkCard).getByText('Fortgeschritten')).toBeInTheDocument()
+    expect(within(doneCard).getByText('Alle Kapitel gemeistert')).toBeInTheDocument()
+    // Ein Platz ist frei → „Neue“ führt direkt in die Bibliothek.
+    expect(within(campaigns).getByRole('link', { name: 'Neue Kampagne beginnen' })).toHaveAttribute(
+      'href',
+      '/kampagne?neu=1',
+    )
+  })
+
+  it('bietet keine neue Kampagne an, wenn alle Plätze belegt sind', async () => {
+    await setup()
+    for (const [index, id] of ['scholar', 'alchemist', 'fortress'].entries()) {
+      vi.setSystemTime(new Date(2026, 10, 3, 12, 0, index))
+      await installBlueprint(id, { level: 'beginner' }, TODAY)
+    }
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 0))
+    const campaigns = await screen.findByRole('region', { name: /^Kampagnen/ })
+    await waitFor(() => expect(within(campaigns).getAllByRole('article')).toHaveLength(3))
+    expect(within(campaigns).getByRole('heading', { level: 2 })).toHaveTextContent('3 / 3 aktiv')
+    expect(within(campaigns).queryByRole('link', { name: 'Neue Kampagne beginnen' })).not.toBeInTheDocument()
   })
 
   it('zeigt bei Wochenquests auch für „Gestern“ (gleiche Woche) den Wochen-Streak von heute', async () => {
@@ -374,10 +434,10 @@ describe('DashboardPage', () => {
     expect(runningRow()).toHaveTextContent('2 / 2 diese Woche – Wochenziel erreicht')
     expect(runningRow()).toHaveTextContent('3 Wo.')
     expect(within(runningRow()).getByText('3 Wochen in Folge')).toBeInTheDocument()
-    const meditationRow = within(section('Tagesquests'))
-      .getByRole('checkbox', { name: 'Meditieren erledigt' })
-      .closest('li') as HTMLElement
-    expect(within(meditationRow).getByText('3 Tage in Folge')).toBeInTheDocument()
+    const meditationRow = () =>
+      within(section('Tagesquests')).getByRole('checkbox', { name: 'Meditieren erledigt' }).closest('li') as HTMLElement
+    // Warten: Die Live-Daten können die letzten Erledigungen (Meditieren) erst nach denen fürs Laufen liefern.
+    await waitFor(() => expect(within(meditationRow()).getByText('3 Tage in Folge')).toBeInTheDocument())
   })
 
   it('zeigt im Modus „Gestern“ den damals gültigen Rhythmus', async () => {

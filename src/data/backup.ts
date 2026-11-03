@@ -5,15 +5,17 @@
  * geprüft, bevor irgendetwas in die Datenbank geschrieben wird. Unbekannte Felder werden
  * dabei verworfen. Fehlermeldungen sind deutsch und können direkt angezeigt werden.
  *
- * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest, `deletedHabits`) erhöhen die
- * Schema-Version nicht: Ältere Backups ohne diese Felder bleiben gültig.
+ * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest, `deletedHabits`, `blueprint` und
+ * `sharedHabitIds` einer Kampagne) erhöhen die Schema-Version nicht: Ältere Backups ohne sie bleiben gültig.
  */
 import { z } from 'zod'
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { DIFFICULTIES } from '../domain/balancing'
 import { isValidDayKey } from '../domain/dates'
-import type { GameData } from '../domain/types'
-import { db, KV_KEYS, type QuestlogDB } from './db'
+import type { BlueprintRef, GameData, MainQuest } from '../domain/types'
+import { getBlueprint } from './blueprints'
+import { BLUEPRINT_LEVELS } from './blueprints/types'
+import { db, KV_KEYS, legacyBlueprintRef, type QuestlogDB } from './db'
 import { completionId, resetAllData, loadGameData } from './repository'
 
 export const BACKUP_APP_ID = 'questlog'
@@ -153,6 +155,13 @@ const chapterSchema = z.object({
   completedDay: dayKeySchema.optional(),
 })
 
+/** Herkunft einer Kampagne aus einer Vorlage (`MainQuest.blueprint`). */
+const blueprintRefSchema = z.object({
+  id: idSchema,
+  level: z.enum(BLUEPRINT_LEVELS),
+  pathId: idSchema.optional(),
+})
+
 const mainQuestSchema = z.object({
   id: idSchema,
   title: z.string(),
@@ -164,6 +173,8 @@ const mainQuestSchema = z.object({
   deadline: dayKeySchema.optional(),
   chapters: z.array(chapterSchema),
   archived: z.boolean().optional(),
+  blueprint: blueprintRefSchema.optional(),
+  sharedHabitIds: z.array(idSchema).optional(),
   createdAt: z.number(),
 })
 
@@ -272,17 +283,25 @@ export function parseBackup(json: unknown): ParseBackupResult {
  * Ersetzt ALLE Daten durch den Inhalt des Backups – atomar in einer Transaktion:
  * Schlägt etwas fehl, bleibt der vorherige Stand vollständig erhalten.
  * Das Backup wird vorher (erneut) validiert; bei ungültigen Daten wird ein `Error` geworfen.
+ *
+ * Backups aus der Zeit vor der Kampagnen-Bibliothek bekommen beim Import die Herkunft ihrer früheren
+ * Onboarding-Kampagne (siehe `legacyOnboardingRef`) – sonst ließe sich der Gelehrte danach ein zweites Mal
+ * starten. Alle anderen Daten kommen unverändert zurück.
  */
 export async function restoreBackup(backup: BackupFile, database: QuestlogDB = db): Promise<void> {
   const parsed = parseBackup(backup)
   if (!parsed.ok) throw new Error(parsed.error)
   const { data } = parsed.backup
+  const mainQuests = data.mainQuests.map((quest) => {
+    const ref = legacyOnboardingRef(quest)
+    return ref === undefined ? quest : { ...quest, blueprint: ref }
+  })
 
   await database.transaction('rw', [database.habits, database.completions, database.mainQuests, database.kv], async () => {
     await resetAllData(database)
     await database.habits.bulkAdd(data.habits)
     await database.completions.bulkAdd(data.completions)
-    await database.mainQuests.bulkAdd(data.mainQuests)
+    await database.mainQuests.bulkAdd(mainQuests)
     await database.kv.put({ key: KV_KEYS.settings, value: data.settings })
     if (data.profile) await database.kv.put({ key: KV_KEYS.profile, value: data.profile })
     if (data.deletedHabits && data.deletedHabits.length > 0) {
@@ -305,6 +324,24 @@ export function backupFileName(now: Date): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Kapitel-Titel der früheren Onboarding-Kampagne (= Einsteiger-Stufe der Gelehrten-Vorlage). */
+let legacyScholarChapters: ReadonlySet<string> | undefined
+
+/**
+ * Herkunft einer importierten Kampagne aus dem früheren Onboarding: wie beim Datenbank-Upgrade
+ * (`legacyBlueprintRef`: „Der Weg des Gelehrten“ ohne `blueprint`) – zusätzlich muss sie noch mindestens die
+ * Hälfte der Kapitel der früheren Vorlage haben. So bleibt eine eigene, nur gleich benannte Kampagne aus einem
+ * neueren Backup beim Import unverändert (Export → Import ändert nichts).
+ */
+function legacyOnboardingRef(quest: MainQuest): BlueprintRef | undefined {
+  const ref = legacyBlueprintRef(quest)
+  if (ref === undefined) return undefined
+  legacyScholarChapters ??= new Set(getBlueprint(ref.id)?.build({ level: ref.level }).chapters.map((chapter) => chapter.title) ?? [])
+  const known = legacyScholarChapters
+  const matching = quest.chapters.filter((chapter) => known.has(chapter.title.trim())).length
+  return known.size > 0 && matching * 2 >= known.size ? ref : undefined
 }
 
 function formatIssue(issue: z.core.$ZodIssue | undefined): string {

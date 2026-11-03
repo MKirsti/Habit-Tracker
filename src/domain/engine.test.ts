@@ -406,7 +406,8 @@ describe('deriveGameState – Kampagnen', () => {
     expect(quest.currentChapterIndex).toBe(2)
     expect(quest.complete).toBe(false)
     expect(quest.daysLeft).toBe(57)
-    expect(quest.linkedHabitIds).toEqual(['reading'])
+    // Verknüpft (reading) plus von einem Kapitel referenziert (pushups), sortiert nach order.
+    expect(quest.linkedHabitIds).toEqual(['pushups', 'reading'])
     expect(state.totals.xpFromChapters).toBe(2 * BALANCING.chapterXp)
     expect(state.level.totalXp).toBe(90 + 21 + 200)
   })
@@ -433,6 +434,63 @@ describe('deriveGameState – Kampagnen', () => {
     expect(state.totals.xpFromChapters).toBe(
       BALANCING.chapterXp + BALANCING.mainQuestXp + 2 * BALANCING.chapterXp,
     )
+  })
+
+  it('archivierte Kampagnen stehen (gleich ausgewertet) in archivedMainQuests', () => {
+    const archivedScholar = { ...campaign, id: 'scholar-old', archived: true }
+    const second = makeMainQuest({ id: 'old-2', archived: true })
+    const data = baseData({
+      habits: [pushups, { ...reading, mainQuestId: 'scholar-old' }, library],
+      mainQuests: [second, campaign, archivedScholar],
+    })
+    const state = deriveGameState(data, '2026-11-04')
+    expect(state.mainQuests.map((q) => q.quest.id)).toEqual(['scholar'])
+    expect(state.archivedMainQuests.map((q) => q.quest.id)).toEqual(['old-2', 'scholar-old'])
+    const [, archivedState] = state.archivedMainQuests
+    const [activeState] = state.mainQuests
+    // Gleiche Kapitel → gleiche Auswertung wie eine aktive Kampagne.
+    expect(archivedState.chapters.map((c) => [c.done, c.current, c.doneDay])).toEqual(
+      activeState.chapters.map((c) => [c.done, c.current, c.doneDay]),
+    )
+    expect(archivedState).toMatchObject({ progress: activeState.progress, complete: false, daysLeft: 57 })
+    expect(archivedState.linkedHabitIds).toEqual(['pushups', 'reading'])
+    // Ohne archivierte Kampagnen ist die Liste leer.
+    expect(deriveGameState(baseData(), '2026-11-04').archivedMainQuests).toEqual([])
+  })
+
+  it('linkedHabitIds: verknüpfte plus von Kapiteln referenzierte Quests, ohne Doppelte und fehlende, nach order', () => {
+    const shared = makeMainQuest({
+      id: 'shared',
+      chapters: [
+        // library (order 0) gehört einer anderen Kampagne, wird hier aber von Kapiteln genutzt – zweimal.
+        makeChapter({ id: 'k1', criterion: { type: 'habit', habitId: 'library', metric: 'completions', target: 3 } }),
+        makeChapter({ id: 'k2', criterion: { type: 'habit', habitId: 'library', metric: 'streak', target: 2 } }),
+        // reading ist verknüpft UND referenziert → nur einmal.
+        makeChapter({ id: 'k3', criterion: { type: 'habit', habitId: 'reading', metric: 'total', target: 30 } }),
+        // gelöschte Quest → nicht enthalten.
+        makeChapter({ id: 'k4', criterion: { type: 'habit', habitId: 'weg', metric: 'total', target: 1 } }),
+        makeChapter({ id: 'k5', criterion: { type: 'manual' } }),
+      ],
+    })
+    const archivedPushups = { ...pushups, mainQuestId: 'shared', archivedDay: '2026-11-03' }
+    const data = baseData({
+      habits: [{ ...reading, mainQuestId: 'shared' }, archivedPushups, { ...library, mainQuestId: 'other' }],
+      mainQuests: [shared, makeMainQuest({ id: 'other' })],
+    })
+    const state = deriveGameState(data, '2026-11-04')
+    expect(state.mainQuests[0].linkedHabitIds).toEqual(['library', 'pushups', 'reading'])
+    expect(state.mainQuests[1].linkedHabitIds).toEqual(['library'])
+  })
+
+  it('linkedHabitIds: mitbenutzte Quests (sharedHabitIds) zählen dazu, fehlende nicht', () => {
+    const user = makeMainQuest({ id: 'user', sharedHabitIds: ['library', 'weg', 'library'] })
+    const owner = makeMainQuest({ id: 'owner' })
+    const data = baseData({
+      habits: [pushups, { ...library, mainQuestId: 'owner' }, { ...reading, mainQuestId: 'user' }],
+      mainQuests: [owner, user],
+    })
+    const state = deriveGameState(data, '2026-11-04')
+    expect(state.mainQuests.map((q) => q.linkedHabitIds)).toEqual([['library'], ['library', 'reading']])
   })
 
   it('eine Kampagne ohne Kapitel ist nie abgeschlossen und hat keinen Fortschritt', () => {

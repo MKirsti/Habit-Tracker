@@ -1,8 +1,9 @@
-import { CalendarDays, Flag, Hourglass, Sparkles, Trophy } from 'lucide-react'
+import { CalendarDays, Flag, Flame, Hourglass, Sparkles, Sprout, Trophy } from 'lucide-react'
 import type { ReactNode, Ref } from 'react'
 import { useId } from 'react'
 import type { DayKey, MainQuestState } from '../../domain/types'
-import { Card, ProgressBar, formatNumber } from '../../ui'
+import { Badge, Card, ProgressBar, formatNumber } from '../../ui'
+import { campaignOrigin, pathLabel } from './campaignOrigin'
 import { campaignDayText, deadlineText, formatDate, xpHint } from './campaignText'
 import type { DeadlineTone } from './campaignText'
 
@@ -20,8 +21,8 @@ const TONE_CLASS: Record<DeadlineTone, string> = {
 }
 
 /**
- * Kopf der Kampagne: Symbol, Titel, Beschreibung, das „Warum“ als Pergament-Zitat, Belohnung,
- * Zeitrahmen und Gesamtfortschritt.
+ * Kopf der Kampagne: Symbol, Titel, bei Vorlagen Klasse und Stufe, Beschreibung, das „Warum“ als
+ * Pergament-Zitat, Belohnung, Zeitrahmen und Gesamtfortschritt.
  */
 export function CampaignBanner({ campaign, today, headingRef }: CampaignBannerProps) {
   const { quest, chapters, progress, complete, daysLeft } = campaign
@@ -29,6 +30,7 @@ export function CampaignBanner({ campaign, today, headingRef }: CampaignBannerPr
   const percent = Math.round(progress * 100)
   const doneCount = chapters.filter((chapter) => chapter.done).length
   const deadline = deadlineText(daysLeft)
+  const origin = campaignOrigin(quest)
 
   return (
     <Card as="section" tone="gold" ornate padding="lg" aria-labelledby={titleId} className="overflow-hidden">
@@ -56,6 +58,30 @@ export function CampaignBanner({ campaign, today, headingRef }: CampaignBannerPr
           >
             {quest.title}
           </h2>
+          {origin && (
+            <ul aria-label="Aus der Bibliothek" className="mt-2 flex flex-wrap gap-1.5">
+              {origin.path && (
+                <li className="min-w-0 max-w-full">
+                  {/* Darf umbrechen: „Gladiator · Sport allgemein & Spielsport“ ist auf 360 px zu lang. */}
+                  <Badge
+                    tone="gold"
+                    size="md"
+                    // `!`: cn löst widersprüchliche Klassen nicht auf (Badge ist sonst einzeilig und 28 px hoch).
+                    className="h-auto! min-h-7 rounded-[0.875rem]! py-1! leading-snug whitespace-normal!"
+                  >
+                    <span className="sr-only">Klasse: </span>
+                    {pathLabel(origin.path)}
+                  </Badge>
+                </li>
+              )}
+              <li>
+                <Badge size="md" icon={origin.level === 'advanced' ? <Flame /> : <Sprout />}>
+                  <span className="sr-only">Stufe: </span>
+                  {origin.levelLabel}
+                </Badge>
+              </li>
+            </ul>
+          )}
         </div>
       </div>
 

@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deriveGameState } from '../domain/engine'
 import type { GameData, Habit } from '../domain/types'
 import { createBackup, parseBackup } from './backup'
 import { QuestlogDB } from './db'
@@ -40,6 +41,7 @@ describe('createScholarCampaign', () => {
       startDay: TODAY,
       deadline: '2027-11-03',
       chapters: mainQuest.chapters,
+      blueprint: { id: 'scholar', level: 'beginner' },
       createdAt: 1234,
     })
   })
@@ -272,7 +274,7 @@ describe('installScholarCampaign – erneut nach dem Löschen der Kampagne', () 
     expect(chapterHabitIds(data, quest.id)).toContain(thought.id)
   })
 
-  it('übernimmt keine Quests, die mit einer anderen Kampagne verknüpft sind', async () => {
+  it('teilt Quests, die mit einer anderen aktiven Kampagne verknüpft sind (ihre Zuordnung bleibt)', async () => {
     const other = await createMainQuest(
       { title: 'Eigene', icon: '🏃', why: '', reward: '', startDay: TODAY, chapters: [] },
       database,
@@ -282,10 +284,22 @@ describe('installScholarCampaign – erneut nach dem Löschen der Kampagne', () 
       TODAY,
       database,
     )
-    await installScholarCampaign(TODAY, database)
+    const scholar = await installScholarCampaign(TODAY, database)
     const data = await loadGameData(database)
-    expect(data.habits).toHaveLength(6)
-    expect(data.habits.find((h) => h.id === own.id)?.mainQuestId).toBe(other.id)
+    expect(data.habits).toHaveLength(5)
+    // Die vorhandene Quest bleibt bei ihrer Kampagne und unverändert; die Gelehrten-Kapitel zählen auf sie.
+    expect(data.habits.find((h) => h.id === own.id)).toStrictEqual(own)
+    expect(chapterHabitIds(data, scholar.id)).toContain(own.id)
+    expect(scholar.sharedHabitIds).toEqual([own.id])
+    const state = deriveGameState(data, TODAY)
+    for (const campaign of state.mainQuests) expect(campaign.linkedHabitIds).toContain(own.id)
+    expect(state.mainQuests.find((c) => c.quest.id === scholar.id)?.linkedHabitIds).toHaveLength(5)
+  })
+
+  it('lehnt eine zweite laufende Gelehrten-Kampagne ab', async () => {
+    await installScholarCampaign(TODAY, database)
+    await expect(installScholarCampaign(TODAY, database)).rejects.toThrow('Diese Kampagne läuft bereits.')
+    expect((await loadGameData(database)).mainQuests).toHaveLength(1)
   })
 })
 
@@ -305,6 +319,22 @@ describe('startAdventure', () => {
     expect(data.mainQuests).toHaveLength(1)
     expect(data.habits).toHaveLength(5)
     expect(data.habits.every((h) => h.mainQuestId === data.mainQuests[0].id)).toBe(true)
+  })
+
+  it('mit Auswahl aus der Bibliothek (Einsteiger-Gelehrter = frühere Vorlage)', async () => {
+    await startAdventure(hero, { blueprintId: 'scholar', options: { level: 'beginner' } }, TODAY, database)
+    const data = await loadGameData(database)
+    expect(data.profile?.name).toBe('Aria')
+    expect(data.mainQuests.map((q) => [q.title, q.blueprint])).toEqual([['Der Weg des Gelehrten', { id: 'scholar', level: 'beginner' }]])
+    expect(data.habits).toHaveLength(5)
+  })
+
+  it('ohne Vorlage (null): nur das Profil', async () => {
+    await startAdventure(hero, null, TODAY, database)
+    const data = await loadGameData(database)
+    expect(data.profile?.name).toBe('Aria')
+    expect(data.mainQuests).toEqual([])
+    expect(data.habits).toEqual([])
   })
 
   it('ohne Vorlage: nur das Profil', async () => {

@@ -157,12 +157,19 @@ export interface MainQuest {
   /** Reihenfolge = Erzählreihenfolge. Kapitel werden unabhängig voneinander ausgewertet. */
   chapters: Chapter[]
   /**
-   * Archiviert (beendet bzw. in die Ruhmeshalle gelegt): zählt nicht mehr als aktive Kampagne, erscheint nicht
-   * mehr in `GameState.mainQuests`; verdiente Kapitel- und Kampagnen-XP bleiben erhalten.
+   * Archiviert (beendet bzw. in die Ruhmeshalle gelegt): zählt nicht mehr als aktive Kampagne, erscheint statt
+   * in `GameState.mainQuests` in `GameState.archivedMainQuests`; verdiente Kapitel- und Kampagnen-XP bleiben
+   * erhalten.
    */
   archived?: boolean
   /** Gesetzt, wenn die Kampagne aus einer Vorlage gestartet wurde. */
   blueprint?: BlueprintRef
+  /**
+   * Geteilte Quests: Quests, die zu dieser Kampagne gehören, aber (über `mainQuestId`) einer anderen zugeordnet
+   * sind – z. B. "Wasser trinken", das beim Installieren einer zweiten Vorlage mitbenutzt statt verdoppelt
+   * wurde. Zählen für `MainQuestState.linkedHabitIds`. Fehlt ohne geteilte Quests.
+   */
+  sharedHabitIds?: string[]
   createdAt: number
 }
 
@@ -321,7 +328,11 @@ export interface MainQuestState {
   complete: boolean
   /** Tage bis zur Deadline (negativ = überschritten), undefined ohne Deadline. */
   daysLeft?: number
-  /** IDs der Quests mit `mainQuestId === quest.id`. */
+  /**
+   * IDs der Quests der Kampagne: alle mit `mainQuestId === quest.id` plus alle (existierenden) Quests, auf die
+   * ein Kapitel verweist oder die in `quest.sharedHabitIds` stehen (geteilte Quests, die einer anderen Kampagne
+   * zugeordnet sind). Ohne Doppelte, sortiert nach `order` (dann Titel). Archivierte Quests sind enthalten.
+   */
   linkedHabitIds: string[]
 }
 
@@ -352,5 +363,11 @@ export interface GameState {
   attributes: Record<AttributeId, AttributeState>
   totals: GameTotals
   todayState: DayState
+  /** Nicht archivierte Kampagnen (laufende und abgeschlossene), in gespeicherter Reihenfolge. */
   mainQuests: MainQuestState[]
+  /**
+   * Archivierte Kampagnen (beendet bzw. in die Ruhmeshalle gelegt) – gleiche Auswertung wie `mainQuests`,
+   * in gespeicherter Reihenfolge. Für die Liste „Beendete & gemeisterte Kampagnen“.
+   */
+  archivedMainQuests: MainQuestState[]
 }

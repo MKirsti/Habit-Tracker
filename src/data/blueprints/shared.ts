@@ -21,7 +21,7 @@ export function waterQuest(level: BlueprintLevel, key = 'water'): BlueprintQuest
   }
 }
 
-/** 🤸 Dehnen & Mobilität – Vitalität, täglich. */
+/** 🤸 Dehnen & Mobilität – Vitalität, täglich (Sport-Vorlage, alle Klassen). */
 export function stretchingQuest(level: BlueprintLevel, key = 'stretching'): BlueprintQuest {
   return {
     key,
@@ -48,6 +48,24 @@ export function bedtimeQuest(level: BlueprintLevel, key = 'bedtime'): BlueprintQ
     attribute: 'wisdom',
     difficulty: 'medium',
     schedule: { type: 'daily' },
+  }
+}
+
+/**
+ * ☀️ Morgenlicht-Spaziergang – Vitalität, pro Woche. Geteilt von "Der Frühaufsteher" (Fortgeschritten) und
+ * "Der stille Mönch": Tageslicht am Vormittag stellt die innere Uhr und hilft abends beim Einschlafen.
+ * Bewusst "am Vormittag" statt "direkt nach dem Aufstehen" – im Winter ist es um 6 oder 7 Uhr noch dunkel.
+ */
+export function morningLightQuest(times: number, key = 'morningLight'): BlueprintQuest {
+  return {
+    key,
+    icon: '☀️',
+    title: 'Morgenlicht-Spaziergang',
+    description:
+      '15 Minuten raus ins Tageslicht, am besten am Vormittag. Selbst bei Wolken ist es draußen viel heller als drinnen – das stellt deine innere Uhr, und abends wirst du leichter müde.',
+    attribute: 'vitality',
+    difficulty: 'medium',
+    schedule: { type: 'weekly', times },
   }
 }
 

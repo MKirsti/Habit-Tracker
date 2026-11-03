@@ -18,12 +18,15 @@
  *   vergangener Tag nachträglich perfekt wird.
  */
 import { ATTRIBUTE_IDS } from '../domain/attributes'
-import { DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
+import { BALANCING, DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
+import { CAMPAIGN_LIMIT_MESSAGE, CAMPAIGN_RESTORE_LIMIT_MESSAGE, isCampaignActive } from '../domain/campaigns'
 import { compareDays, isValidDayKey, toDayKey } from '../domain/dates'
 import { habitTombstone, withTombstone } from '../domain/deletion'
+import { evaluateMainQuests } from '../domain/engine'
 import { habitTarget, isArchivedOn, isDone, mergePauses, reachesTarget, sameSchedule } from '../domain/schedule'
 import type {
   AttributeId,
+  BlueprintRef,
   Chapter,
   ChapterCriterion,
   CharacterProfile,
@@ -41,6 +44,7 @@ import type {
   ScheduleHistoryEntry,
   Settings,
 } from '../domain/types'
+import { BLUEPRINT_LEVELS } from './blueprints/types'
 import { db, KV_KEYS, type QuestlogDB } from './db'
 import { newId } from './ids'
 
@@ -67,6 +71,7 @@ const MSG = {
   habitNotFound: 'Diese Quest gibt es nicht (mehr).',
   questNotFound: 'Diese Kampagne gibt es nicht (mehr).',
   chapterNotFound: 'Dieses Kapitel gibt es nicht (mehr).',
+  blueprintRunning: 'Eine Kampagne aus dieser Vorlage läuft bereits. Schließe sie ab oder beende sie zuerst.',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -263,7 +268,12 @@ function retargetCompletion(completion: Completion, before: Habit, after: Habit)
  */
 export async function archiveHabit(id: string, today: DayKey, database: QuestlogDB = db): Promise<void> {
   assertDayKey(today)
-  await mutateHabit(database, id, (habit) => (isArchivedOn(habit, today) ? habit : { ...habit, archivedDay: today }))
+  await mutateHabit(database, id, (habit) => archivedHabit(habit, today))
+}
+
+/** Die Quest nach dem Archivieren am Tag `today` (siehe `archiveHabit`); unverändert → dasselbe Objekt. */
+function archivedHabit(habit: Habit, today: DayKey): Habit {
+  return isArchivedOn(habit, today) ? habit : { ...habit, archivedDay: today }
 }
 
 /**
@@ -275,18 +285,21 @@ export async function archiveHabit(id: string, today: DayKey, database: Questlog
  */
 export async function restoreHabit(id: string, today: DayKey, database: QuestlogDB = db): Promise<void> {
   assertDayKey(today)
-  await mutateHabit(database, id, (habit) => {
-    if (habit.archivedDay === undefined) return habit
-    const next: Habit = { ...habit }
-    delete next.archivedDay
-    // Vor createdDay war die Quest ohnehin nicht aktiv – die Pause beginnt frühestens dort.
-    const from = compareDays(habit.archivedDay, habit.createdDay) > 0 ? habit.archivedDay : habit.createdDay
-    const pauses = sanitizePauses(habit.pauses)
-    const merged = compareDays(from, today) < 0 ? mergePauses([...pauses, { from, until: today }]) : pauses
-    if (merged.length > 0) next.pauses = merged
-    else delete next.pauses
-    return next
-  })
+  await mutateHabit(database, id, (habit) => restoredHabit(habit, today))
+}
+
+/** Die Quest nach dem Zurückholen am Tag `today` (siehe `restoreHabit`); nicht archiviert → dasselbe Objekt. */
+function restoredHabit(habit: Habit, today: DayKey): Habit {
+  if (habit.archivedDay === undefined) return habit
+  const next: Habit = { ...habit }
+  delete next.archivedDay
+  // Vor createdDay war die Quest ohnehin nicht aktiv – die Pause beginnt frühestens dort.
+  const from = compareDays(habit.archivedDay, habit.createdDay) > 0 ? habit.archivedDay : habit.createdDay
+  const pauses = sanitizePauses(habit.pauses)
+  const merged = compareDays(from, today) < 0 ? mergePauses([...pauses, { from, until: today }]) : pauses
+  if (merged.length > 0) next.pauses = merged
+  else delete next.pauses
+  return next
 }
 
 /**
@@ -414,24 +427,42 @@ export async function toggleCompletion(habitId: string, day: DayKey, database: Q
 // Kampagnen (MainQuests) & Kapitel
 // ---------------------------------------------------------------------------
 
-/** Legt eine Kampagne an. Kapitel ohne (oder mit doppelter) ID bekommen eine neue. */
+/**
+ * Legt eine Kampagne an. Kapitel ohne (oder mit doppelter) ID bekommen eine neue.
+ *
+ * Wirft `CAMPAIGN_LIMIT_MESSAGE`, wenn schon `BALANCING.maxActiveCampaigns` Kampagnen aktiv sind und die neue
+ * ebenfalls aktiv wäre (nicht archiviert, nicht abgeschlossen). Maßgeblich ist der Spieltag laut Uhr und
+ * gespeichertem Tageswechsel (wie `useToday`).
+ */
 export async function createMainQuest(draft: MainQuestDraft, database: QuestlogDB = db): Promise<MainQuest> {
-  const quest: MainQuest = { id: newId(), ...normalizeMainQuestDraft(draft), createdAt: Date.now() }
-  await database.mainQuests.add(quest)
-  return quest
+  const clean = normalizeMainQuestDraft(draft)
+  return database.transaction('rw', allTables(database), async () => {
+    const quest: MainQuest = { id: newId(), ...clean, createdAt: Date.now() }
+    const data = await loadGameData(database)
+    const today = toDayKey(new Date(), data.settings.dayStartHour)
+    assertCampaignCanBeActive({ ...data, mainQuests: [...data.mainQuests, quest] }, quest.id, today, CAMPAIGN_LIMIT_MESSAGE)
+    await database.mainQuests.add(quest)
+    return quest
+  })
 }
 
 /**
  * Ändert eine Kampagne. Pflichtfelder, die im Patch fehlen oder `undefined` sind, bleiben unverändert;
- * optionale Felder (`description`, `deadline`, `archived`), die explizit `undefined` sind, werden entfernt.
- * `chapters` ersetzt die komplette Kapitelliste.
+ * optionale Felder (`description`, `deadline`, `archived`, `blueprint`, `sharedHabitIds`), die explizit
+ * `undefined` sind, werden entfernt. `chapters` ersetzt die komplette Kapitelliste. Herkunft (`blueprint`) und
+ * geteilte Quests (`sharedHabitIds`) bleiben erhalten, solange der Patch sie nicht ausdrücklich enthält.
+ *
+ * Holt der Patch eine archivierte Kampagne zurück (`archived` → nicht mehr `true`), gelten dieselben Regeln wie
+ * bei `restoreMainQuest` (Limit aktiver Kampagnen, dieselbe Vorlage nicht doppelt, Übernahme geteilter Quests);
+ * archiviert er sie, werden geteilte Quests wie bei `archiveMainQuest` übergeben – jeweils ohne Quests zu
+ * archivieren bzw. zurückzuholen, zum Spieltag laut Uhr.
  */
 export async function updateMainQuest(
   id: string,
   patch: Partial<MainQuestDraft>,
   database: QuestlogDB = db,
 ): Promise<void> {
-  await database.transaction('rw', database.mainQuests, async () => {
+  await database.transaction('rw', allTables(database), async () => {
     const existing = await requireMainQuest(database, id)
     const merged: MainQuestDraft = {
       title: patch.title ?? existing.title,
@@ -443,21 +474,252 @@ export async function updateMainQuest(
       description: Object.hasOwn(patch, 'description') ? patch.description : existing.description,
       deadline: Object.hasOwn(patch, 'deadline') ? patch.deadline : existing.deadline,
       archived: Object.hasOwn(patch, 'archived') ? patch.archived : existing.archived,
+      blueprint: Object.hasOwn(patch, 'blueprint') ? patch.blueprint : existing.blueprint,
+      sharedHabitIds: Object.hasOwn(patch, 'sharedHabitIds') ? patch.sharedHabitIds : existing.sharedHabitIds,
     }
-    await database.mainQuests.put({ id: existing.id, ...normalizeMainQuestDraft(merged), createdAt: existing.createdAt })
+    const next: MainQuest = { id: existing.id, ...normalizeMainQuestDraft(merged), createdAt: existing.createdAt }
+    const archiving = existing.archived !== true && next.archived === true
+    const restoring = existing.archived === true && next.archived !== true
+    if (!archiving && !restoring) {
+      await database.mainQuests.put(next)
+      return
+    }
+    // Beenden bzw. Zurückholen per Patch: dieselben Übergaben geteilter Quests wie archiveMainQuest/restoreMainQuest.
+    const data = await loadGameData(database)
+    const today = toDayKey(new Date(), data.settings.dayStartHour)
+    const withNext: GameData = { ...data, mainQuests: data.mainQuests.map((quest) => (quest.id === id ? next : quest)) }
+    const changes = archiving ? handOverSharedHabits(withNext, id, today) : adoptSharedHabits(withNext, id)
+    const quests = new Map<string, MainQuest>([[id, next], ...changes.quests.map((quest) => [quest.id, quest] as const)])
+    if (restoring) {
+      const mainQuests = withNext.mainQuests.map((quest) => quests.get(quest.id) ?? quest)
+      assertCampaignCanBeActive({ ...data, mainQuests }, id, today, CAMPAIGN_RESTORE_LIMIT_MESSAGE)
+    }
+    await database.mainQuests.bulkPut([...quests.values()])
+    if (changes.habits.length > 0) await database.habits.bulkPut(changes.habits)
   })
 }
 
-/** Löscht eine Kampagne. Verknüpfte Quests bleiben bestehen, verlieren aber ihre `mainQuestId`. */
+/**
+ * Beendet eine Kampagne am Spieltag `today`: Sie wird archiviert (zählt nicht mehr als aktiv, verdiente
+ * Kapitel- und Kampagnen-XP bleiben). Bereits archiviert → bleibt archiviert.
+ *
+ * `archiveQuests: true` archiviert zusätzlich ihre Quests (`mainQuestId === id`) wie `archiveHabit` (ab
+ * `today`; ein vorhandener Archivierungstag bleibt) – außer denen, die eine andere, nicht archivierte Kampagne
+ * braucht (ein Kapitel zählt auf sie oder sie steht in deren `sharedHabitIds`): Geteilte Quests laufen dort
+ * weiter. Vergangene Tage behalten so ihre XP, Perfekten Tage und Streaks.
+ *
+ * Übergabe (mit und ohne `archiveQuests`): Eine eigene Quest, die eine andere nicht archivierte Kampagne
+ * mitbenutzt, geht an diese über (siehe `handOverSharedHabits`) – die beendete Kampagne führt sie danach in
+ * ihren `sharedHabitIds`. So endet die Quest mit der letzten Kampagne, die sie nutzt, statt verwaist
+ * weiterzulaufen, und kommt beim Zurückholen wieder mit.
+ */
+export async function archiveMainQuest(
+  id: string,
+  today: DayKey,
+  options: { archiveQuests?: boolean } = {},
+  database: QuestlogDB = db,
+): Promise<void> {
+  assertDayKey(today)
+  await database.transaction('rw', allTables(database), async () => {
+    const quest = await requireMainQuest(database, id)
+    const data = await loadGameData(database)
+    const archived: MainQuest = quest.archived === true ? quest : { ...quest, archived: true }
+    const next: GameData = { ...data, mainQuests: data.mainQuests.map((candidate) => (candidate.id === id ? archived : candidate)) }
+
+    const handover = handOverSharedHabits(next, id, today)
+    const quests = new Map(handover.quests.map((changed) => [changed.id, changed]))
+    if (archived !== quest && !quests.has(id)) quests.set(id, archived)
+    const habits = new Map(handover.habits.map((changed) => [changed.id, changed]))
+    if (options.archiveQuests === true) {
+      // Übergebene Quests braucht eine andere Kampagne – sie laufen weiter.
+      for (const habit of data.habits) {
+        if (habit.mainQuestId !== id || habits.has(habit.id)) continue
+        const nextHabit = archivedHabit(habit, today)
+        if (nextHabit !== habit) habits.set(habit.id, nextHabit)
+      }
+    }
+
+    if (quests.size > 0) await database.mainQuests.bulkPut([...quests.values()])
+    if (habits.size > 0) await database.habits.bulkPut([...habits.values()])
+  })
+}
+
+/**
+ * Holt eine archivierte Kampagne am Spieltag `today` zurück. Nicht archiviert → keine Änderung.
+ *
+ * Wäre sie danach aktiv (nicht abgeschlossen), gilt das Limit: Sind schon `BALANCING.maxActiveCampaigns`
+ * andere Kampagnen aktiv, wirft die Funktion (`CAMPAIGN_RESTORE_LIMIT_MESSAGE`); ebenso, wenn schon eine
+ * aktive Kampagne aus derselben Vorlage läuft. Eine abgeschlossene Kampagne kann immer zurückgeholt werden.
+ *
+ * Quests, die sie mitbenutzt und deren Kampagne archiviert ist, übernimmt sie wieder (siehe
+ * `adoptSharedHabits`) – z. B. eine geteilte Quest, die beim Beenden an eine andere Kampagne übergeben und mit
+ * dieser beendet wurde. Quests einer nicht archivierten Kampagne bleiben dort.
+ *
+ * `restoreQuests: true` holt zusätzlich ihre archivierten Quests (`mainQuestId === id`, inklusive der wieder
+ * übernommenen) wie `restoreHabit` zurück: Die archivierte Zeit wird zur Pause, vergangene XP, Perfekte Tage und
+ * Streaks bleiben.
+ */
+export async function restoreMainQuest(
+  id: string,
+  today: DayKey,
+  options: { restoreQuests?: boolean } = {},
+  database: QuestlogDB = db,
+): Promise<void> {
+  assertDayKey(today)
+  await database.transaction('rw', allTables(database), async () => {
+    const quest = await requireMainQuest(database, id)
+    if (quest.archived !== true) return
+    const restored: MainQuest = { ...quest }
+    delete restored.archived
+
+    const data = await loadGameData(database)
+    const withRestored: GameData = {
+      ...data,
+      mainQuests: data.mainQuests.map((candidate) => (candidate.id === id ? restored : candidate)),
+    }
+    const adoption = adoptSharedHabits(withRestored, id)
+    const quests = new Map<string, MainQuest>([[id, restored], ...adoption.quests.map((changed) => [changed.id, changed] as const)])
+    const habits = new Map(adoption.habits.map((changed) => [changed.id, changed]))
+    if (options.restoreQuests === true) {
+      for (const habit of data.habits) {
+        const current = habits.get(habit.id) ?? habit
+        if (current.mainQuestId !== id) continue
+        const nextHabit = restoredHabit(current, today)
+        if (nextHabit !== habit) habits.set(habit.id, nextHabit)
+      }
+    }
+    const next: GameData = {
+      ...data,
+      habits: data.habits.map((habit) => habits.get(habit.id) ?? habit),
+      mainQuests: data.mainQuests.map((candidate) => quests.get(candidate.id) ?? candidate),
+    }
+    assertCampaignCanBeActive(next, id, today, CAMPAIGN_RESTORE_LIMIT_MESSAGE)
+
+    await database.mainQuests.bulkPut([...quests.values()])
+    if (habits.size > 0) await database.habits.bulkPut([...habits.values()])
+  })
+}
+
+/** IDs der Quests, auf die Kapitel einer Kampagne zählen. */
+function chapterHabitIds(quest: MainQuest): string[] {
+  return quest.chapters.flatMap((chapter) => (chapter.criterion.type === 'habit' ? [chapter.criterion.habitId] : []))
+}
+
+/** Nutzt die Kampagne die Quest mit – zählt ein Kapitel auf sie oder steht sie in `sharedHabitIds`? */
+function usesHabit(quest: MainQuest, habitId: string): boolean {
+  return (quest.sharedHabitIds ?? []).includes(habitId) || chapterHabitIds(quest).includes(habitId)
+}
+
+/** Die Kampagne mit geänderten `sharedHabitIds` (`add` angehängt, `remove` entfernt; leer → Feld entfällt). */
+function withSharedHabits(quest: MainQuest, add: readonly string[], remove: readonly string[]): MainQuest {
+  const removed = new Set(remove)
+  const ids = [...new Set([...(quest.sharedHabitIds ?? []).filter((habitId) => !removed.has(habitId)), ...add])]
+  const next: MainQuest = { ...quest }
+  if (ids.length > 0) next.sharedHabitIds = ids
+  else delete next.sharedHabitIds
+  return next
+}
+
+/** Geänderte Quests und Kampagnen einer Übergabe (nur die tatsächlich geänderten, jeweils der Endstand). */
+interface OwnershipChanges {
+  habits: Habit[]
+  quests: MainQuest[]
+}
+
+/**
+ * Kampagne `fromId` gibt ihre Quests ab, weil sie archiviert oder gelöscht wird (in `next` schon archiviert
+ * bzw. entfernt). Jede ihrer Quests (`mainQuestId === fromId`), die eine andere **nicht archivierte** Kampagne
+ * mitbenutzt (Kapitel-Verweis oder `sharedHabitIds`), geht an diese über – an eine aktive vor einer
+ * abgeschlossenen, sonst an die erste in gespeicherter Reihenfolge. Bei ihr fällt die Quest aus
+ * `sharedHabitIds`; die abgebende Kampagne führt sie (falls es sie noch gibt) dort weiter.
+ *
+ * Dieselbe Regel wie beim Installieren: Eine Quest gehört einer laufenden Kampagne, die sie nutzt. Sonst liefe
+ * sie nach dem Beenden der letzten Kampagne, die sie nutzt, verwaist weiter (als Pflicht-Quest ohne Kampagne).
+ */
+function handOverSharedHabits(next: GameData, fromId: string, today: DayKey): OwnershipChanges {
+  const states = evaluateMainQuests(next, today).filter((state) => state.quest.id !== fromId && state.quest.archived !== true)
+  // Aktive zuerst, sonst gespeicherte Reihenfolge (sort ist stabil).
+  const candidates = states.sort((a, b) => Number(isCampaignActive(b)) - Number(isCampaignActive(a))).map((state) => state.quest)
+  const quests = new Map(next.mainQuests.map((quest) => [quest.id, quest]))
+  const changedQuests = new Map<string, MainQuest>()
+  const habits: Habit[] = []
+  for (const habit of next.habits) {
+    if (habit.mainQuestId !== fromId) continue
+    const target = candidates.find((candidate) => usesHabit(candidate, habit.id))
+    if (target === undefined) continue
+    habits.push({ ...habit, mainQuestId: target.id })
+    const current = changedQuests.get(target.id) ?? target
+    changedQuests.set(target.id, withSharedHabits(current, [], [habit.id]))
+    const from = changedQuests.get(fromId) ?? quests.get(fromId)
+    if (from !== undefined) changedQuests.set(fromId, withSharedHabits(from, [habit.id], []))
+  }
+  return { habits, quests: [...changedQuests.values()] }
+}
+
+/**
+ * Kampagne `toId` läuft wieder (in `next` schon nicht archiviert): Sie übernimmt die Quests, die sie mitbenutzt
+ * und deren Kampagne archiviert ist – und Quests ohne (existierende) Kampagne, die in ihren `sharedHabitIds`
+ * stehen. Bei ihr fallen sie aus `sharedHabitIds`, die bisherige Kampagne führt sie dort weiter. Quests einer
+ * nicht archivierten Kampagne bleiben dort (sie werden weiter geteilt). Gegenstück zu `handOverSharedHabits`.
+ */
+function adoptSharedHabits(next: GameData, toId: string): OwnershipChanges {
+  const quests = new Map(next.mainQuests.map((quest) => [quest.id, quest]))
+  const target = quests.get(toId)
+  if (target === undefined) return { habits: [], quests: [] }
+  const changedQuests = new Map<string, MainQuest>()
+  const habits: Habit[] = []
+  for (const habit of next.habits) {
+    if (habit.mainQuestId === toId || !usesHabit(target, habit.id)) continue
+    const owner = habit.mainQuestId === undefined ? undefined : quests.get(habit.mainQuestId)
+    if (owner !== undefined && owner.archived !== true) continue
+    if (owner === undefined && !(target.sharedHabitIds ?? []).includes(habit.id)) continue
+    habits.push({ ...habit, mainQuestId: toId })
+    changedQuests.set(toId, withSharedHabits(changedQuests.get(toId) ?? target, [], [habit.id]))
+    if (owner !== undefined) changedQuests.set(owner.id, withSharedHabits(changedQuests.get(owner.id) ?? owner, [habit.id], []))
+  }
+  return { habits, quests: [...changedQuests.values()] }
+}
+
+/**
+ * Prüft für den Datenstand `next` (in dem die Kampagne `questId` schon geändert bzw. enthalten ist), ob sie so
+ * sein darf: Ist sie aktiv (nicht archiviert, nicht abgeschlossen), dürfen höchstens
+ * `BALANCING.maxActiveCampaigns − 1` **andere** Kampagnen aktiv sein (sonst `limitMessage`), und keine andere
+ * aktive Kampagne darf aus derselben Vorlage stammen.
+ */
+function assertCampaignCanBeActive(next: GameData, questId: string, today: DayKey, limitMessage: string): void {
+  const states = evaluateMainQuests(next, today)
+  const own = states.find((state) => state.quest.id === questId)
+  if (own === undefined || !isCampaignActive(own)) return
+  const others = states.filter((state) => state.quest.id !== questId && isCampaignActive(state))
+  const blueprintId = own.quest.blueprint?.id
+  if (blueprintId !== undefined && others.some((state) => state.quest.blueprint?.id === blueprintId)) {
+    throw new Error(MSG.blueprintRunning)
+  }
+  if (others.length >= BALANCING.maxActiveCampaigns) throw new Error(limitMessage)
+}
+
+/**
+ * Löscht eine Kampagne. Verknüpfte Quests bleiben bestehen, verlieren aber ihre `mainQuestId` – außer denen,
+ * die eine andere nicht archivierte Kampagne mitbenutzt: Die gehen an diese über (wie beim Beenden, siehe
+ * `handOverSharedHabits`; aktiv/abgeschlossen zum Spieltag laut Uhr und gespeichertem Tageswechsel).
+ */
 export async function deleteMainQuest(id: string, database: QuestlogDB = db): Promise<void> {
-  await database.transaction('rw', database.mainQuests, database.habits, async () => {
-    await database.habits
-      .where('mainQuestId')
-      .equals(id)
-      .modify((habit) => {
-        delete habit.mainQuestId
-      })
+  await database.transaction('rw', allTables(database), async () => {
+    const data = await loadGameData(database)
+    const today = toDayKey(new Date(), data.settings.dayStartHour)
+    const next: GameData = { ...data, mainQuests: data.mainQuests.filter((quest) => quest.id !== id) }
+    const handover = handOverSharedHabits(next, id, today)
+    const handedOver = new Set(handover.habits.map((habit) => habit.id))
+    const freed = data.habits.flatMap((habit) => {
+      if (habit.mainQuestId !== id || handedOver.has(habit.id)) return []
+      const unlinked: Habit = { ...habit }
+      delete unlinked.mainQuestId
+      return [unlinked]
+    })
     await database.mainQuests.delete(id)
+    if (handover.quests.length > 0) await database.mainQuests.bulkPut(handover.quests)
+    const habits = [...handover.habits, ...freed]
+    if (habits.length > 0) await database.habits.bulkPut(habits)
   })
 }
 
@@ -908,5 +1170,34 @@ function normalizeMainQuestDraft(draft: MainQuestDraft): MainQuestDraft {
     result.deadline = draft.deadline
   }
   if (draft.archived === true) result.archived = true
+  const blueprint = sanitizeBlueprintRef(draft.blueprint)
+  if (blueprint !== undefined) result.blueprint = blueprint
+  const shared = sanitizeIdList(draft.sharedHabitIds)
+  if (shared.length > 0) result.sharedHabitIds = shared
   return result
+}
+
+/** Nicht leere, eindeutige IDs (Reihenfolge bleibt); alles andere entfällt. */
+function sanitizeIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const ids = new Set<string>()
+  for (const entry of value as unknown[]) {
+    const id = optionalId(entry)
+    if (id !== undefined) ids.add(id)
+  }
+  return [...ids]
+}
+
+/** Gültige Herkunftsangabe (nicht leere ID, bekannte Stufe, optional nicht leerer Pfad) oder `undefined`. */
+function sanitizeBlueprintRef(value: unknown): BlueprintRef | undefined {
+  if (!isRecord(value)) return undefined
+  const id = optionalId(value.id)
+  const level = value.level
+  if (id === undefined || typeof level !== 'string' || !(BLUEPRINT_LEVELS as readonly string[]).includes(level)) {
+    return undefined
+  }
+  const ref: BlueprintRef = { id, level: level as BlueprintRef['level'] }
+  const pathId = optionalId(value.pathId)
+  if (pathId !== undefined) ref.pathId = pathId
+  return ref
 }

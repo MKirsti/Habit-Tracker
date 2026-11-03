@@ -1,15 +1,20 @@
-import { Pencil, Plus } from 'lucide-react'
+import { Archive, Landmark, Pencil, Plus } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
-import { updateMainQuest } from '../data/repository'
-import { installScholarCampaign } from '../data/seed'
+import { restoreMainQuest, updateMainQuest } from '../data/repository'
+import { installBlueprint } from '../data/seed'
+import type { AdventureChoice } from '../data/seed'
 import { BALANCING } from '../domain/balancing'
+import { isCampaignActive } from '../domain/campaigns'
 import type { Chapter, Habit, MainQuest, MainQuestState } from '../domain/types'
-import { Button, PageHeader, SectionTitle, SegmentedControl, Select, formatNumber, useMediaQuery, useToast } from '../ui'
+import { activeSlotsText, freeSlotsText } from '../features/blueprints'
+import { Button, Card, PageHeader, SectionTitle, SegmentedControl, Select, formatNumber, useMediaQuery, useToast } from '../ui'
+import { ArchiveCampaignDialog } from './campaign/ArchiveCampaignDialog'
+import { ArchivedCampaigns } from './campaign/ArchivedCampaigns'
 import { CampaignBanner } from './campaign/CampaignBanner'
-import { CampaignChoice } from './campaign/CampaignChoice'
 import { CampaignFormDialog } from './campaign/CampaignFormDialog'
+import { CampaignStarter } from './campaign/CampaignStarter'
 import { CampaignVictory } from './campaign/CampaignVictory'
 import { isArchived } from './campaign/campaignText'
 import { campaignEditLoss, campaignEditLossText } from './campaign/campaignXp'
@@ -25,19 +30,27 @@ interface ChapterTarget {
   number: number
 }
 
+/** Was die Seite gerade zeigt: eine Kampagne oder die Bibliothek zum Beginnen (`starter`). */
+interface ShownView {
+  shown: MainQuestState | undefined
+  starter: boolean
+}
+
 /**
  * Wohin der Fokus nach einer Aktion springt, die erst mit den nächsten Live-Daten sichtbar wird:
- * - heading: nach Anlegen/Einrichten/Löschen einer Kampagne die Überschrift der gezeigten Kampagne
- *   (bzw. der Auswahl ohne Kampagne), sobald `ready` für die gezeigte Kampagne zutrifft;
+ * - heading: nach Beginnen/Anlegen/Beenden/Zurückholen/Löschen einer Kampagne die Überschrift der gezeigten
+ *   Kampagne (bzw. der Bibliothek), sobald `ready` für die gezeigte Ansicht zutrifft;
  * - addChapter: nach dem Löschen eines Kapitels „Kapitel hinzufügen“ (die Zeile ist ja weg).
  */
 interface FocusWish {
   target: 'heading' | 'addChapter'
-  ready: (shown: MainQuestState | undefined) => boolean
+  ready: (view: ShownView) => boolean
 }
 
 /** Parameter der gewählten Kampagne: `/kampagne?id=<questId>` (Dashboard-Karten verlinken so). */
 const CAMPAIGN_PARAM = 'id'
+/** `/kampagne?neu=1` zeigt die Bibliothek, um eine weitere Kampagne zu beginnen. */
+const NEW_PARAM = 'neu'
 
 /**
  * Zuletzt ausdrücklich gewählte Kampagne (Adresse oder Auswahl) – für `/kampagne` ohne Parameter, z. B.
@@ -46,8 +59,9 @@ const CAMPAIGN_PARAM = 'id'
 let rememberedCampaignId: string | null = null
 
 /**
- * Kampagne (`/kampagne`): das große Ziel mit seinen Kapiteln als Questkarte. Ohne Kampagne gibt es
- * die Wahl zwischen der Vorlage „Der Weg des Gelehrten“ und einer eigenen Kampagne.
+ * Kampagne (`/kampagne`): das große Ziel mit seinen Kapiteln als Questkarte. Ohne laufende Kampagne (und mit
+ * `?neu=1`) zeigt sie die Kampagnen-Bibliothek samt eigener Kampagne; bis zu `BALANCING.maxActiveCampaigns`
+ * Kampagnen laufen gleichzeitig. Darunter stehen die beendeten & gemeisterten Kampagnen zum Zurückholen.
  * Die gezeigte Kampagne steht in der Adresse (`?id=`), damit Zurück und Links sie behalten.
  */
 export function CampaignPage() {
@@ -56,12 +70,16 @@ export function CampaignPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const chaptersTitleId = useId()
-  // Unter `sm` wären die Segmente zu schmal für die Titel – dann die Auswahlliste.
-  const narrow = useMediaQuery('(max-width: 639.98px)')
 
   const campaigns = state.mainQuests
+  // Wären die Segmente zu schmal für die Titel, kommt die Auswahlliste: bei zwei Kampagnen unter `sm`, bei
+  // dreien (z. B. „Der Pfad des Waldläufers“ neben zwei weiteren) unter `lg` – dort teilt sich die Breite mit
+  // der Seitenleiste.
+  const narrow = useMediaQuery(campaigns.length >= 3 ? '(max-width: 1023.98px)' : '(max-width: 639.98px)')
+  const active = useMemo(() => campaigns.filter(isCampaignActive), [campaigns])
   // Ausdrücklich gewählte Kampagne aus der Adresse (kann kurz noch fehlen, z. B. direkt nach dem Anlegen) …
   const urlId = searchParams.get(CAMPAIGN_PARAM)
+  const wantsNew = searchParams.get(NEW_PARAM) === '1'
   // … und die zuletzt gezeigte: Sie bleibt stehen, auch wenn sie gerade gemeistert wird.
   const [shownId, setShownId] = useState<string | null>(null)
   const findCampaign = (id: string | null) => (id === null ? undefined : campaigns.find((c) => c.quest.id === id))
@@ -79,14 +97,49 @@ export function CampaignPage() {
     if (urlId !== null && findCampaign(urlId)) rememberedCampaignId = urlId
   })
 
-  /** Schreibt die Auswahl in die Adresse (ersetzt den Eintrag – Zurück führt nicht durch jede Auswahl). */
+  // Gerade begonnene bzw. angelegte Kampagne: Bis sie in den Live-Daten auftaucht, bleibt die Bibliothek
+  // stehen – sonst blitzte kurz die bisherige Kampagne auf.
+  const [awaitingId, setAwaitingId] = useState<string | null>(null)
+  const awaiting = awaitingId !== null && findCampaign(awaitingId) === undefined
+  if (awaitingId !== null && !awaiting) setAwaitingId(null)
+  const showStarter = campaigns.length === 0 || wantsNew || awaiting
+
+  /**
+   * Schreibt die Auswahl in die Adresse (ersetzt den Eintrag – Zurück führt nicht durch jede Auswahl) und
+   * verlässt dabei die Bibliothek (`?neu=1`).
+   */
   function selectCampaign(id: string | null) {
     rememberedCampaignId = id
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current)
+        next.delete(NEW_PARAM)
         if (id === null) next.delete(CAMPAIGN_PARAM)
         else next.set(CAMPAIGN_PARAM, id)
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  /** Bibliothek öffnen, um eine weitere Kampagne zu beginnen (eigener Verlaufseintrag: Zurück führt zurück). */
+  function openNew() {
+    focusWish.current = { target: 'heading', ready: (view) => view.starter }
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set(NEW_PARAM, '1')
+      // Die gezeigte Kampagne festhalten – „Zurück zur Kampagne“ führt genau hierher.
+      if (selected) next.set(CAMPAIGN_PARAM, selected.quest.id)
+      return next
+    })
+  }
+
+  function closeNew() {
+    focusWish.current = { target: 'heading', ready: (view) => !view.starter }
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current)
+        next.delete(NEW_PARAM)
         return next
       },
       { replace: true },
@@ -98,7 +151,9 @@ export function CampaignPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [chapterTarget, setChapterTarget] = useState<ChapterTarget | null>(null)
   const [chapterOpen, setChapterOpen] = useState(false)
-  const [installing, setInstalling] = useState(false)
+  // Rückfrage „Kampagne beenden“ / „In die Ruhmeshalle legen“ – die Kampagne bleibt fürs Ausblenden gesetzt.
+  const [archiveTarget, setArchiveTarget] = useState<MainQuestState | null>(null)
+  const [archiveOpen, setArchiveOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
 
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -106,7 +161,7 @@ export function CampaignPage() {
   const focusWish = useRef<FocusWish | null>(null)
   useEffect(() => {
     const wish = focusWish.current
-    if (!wish || !wish.ready(selected)) return
+    if (!wish || !wish.ready({ shown: showStarter ? undefined : selected, starter: showStarter })) return
     const element = wish.target === 'heading' ? headingRef.current : addChapterRef.current
     if (!element) return
     element.focus()
@@ -138,22 +193,53 @@ export function CampaignPage() {
     setFormOpen(true)
   }
 
-  async function handleInstall() {
-    if (installing) return
-    setInstalling(true)
+  /** Kampagne aus der Bibliothek beginnen; wirft nach dem Fehler-Toast weiter (die Einrichtung bleibt offen). */
+  async function handleStart(choice: AdventureChoice) {
+    let quest: MainQuest
     try {
-      await installScholarCampaign(today)
-      focusWish.current = { target: 'heading', ready: (shown) => shown !== undefined }
-      toast({
-        tone: 'success',
-        title: 'Kampagne begonnen',
-        description: '„Der Weg des Gelehrten“ liegt vor dir – deine neuen Quests stehen ab heute bereit.',
-      })
+      quest = await installBlueprint(choice.blueprintId, choice.options, today)
     } catch (error) {
-      toast({ tone: 'error', title: 'Kampagne konnte nicht eingerichtet werden', description: errorMessage(error) })
-    } finally {
-      setInstalling(false)
+      toast({ tone: 'error', title: 'Kampagne konnte nicht beginnen', description: errorMessage(error) })
+      throw error
     }
+    toast({
+      tone: 'success',
+      title: 'Kampagne begonnen',
+      description: `„${quest.title}“ liegt vor dir – deine neuen Quests stehen ab heute bereit.`,
+    })
+    showNewCampaign(quest.id)
+  }
+
+  /** Neue Kampagne zeigen, sobald sie in den Live-Daten ist – mit dem Fokus auf ihrer Überschrift. */
+  function showNewCampaign(id: string) {
+    setAwaitingId(id)
+    selectCampaign(id)
+    focusWish.current = { target: 'heading', ready: (view) => view.shown?.quest.id === id }
+  }
+
+  function openArchive(campaign: MainQuestState) {
+    setArchiveTarget(campaign)
+    setArchiveOpen(true)
+  }
+
+  async function handleRestore(campaign: MainQuestState) {
+    const { quest } = campaign
+    try {
+      await restoreMainQuest(quest.id, today, { restoreQuests: true })
+    } catch (error) {
+      toast({ tone: 'error', title: 'Kampagne konnte nicht zurückgeholt werden', description: errorMessage(error) })
+      return
+    }
+    toast({
+      tone: 'success',
+      title: 'Kampagne zurückgeholt',
+      description: campaign.complete
+        ? `„${quest.title}“ steht wieder bei deinen Kampagnen.`
+        : `„${quest.title}“ geht weiter – ihre Quests stehen ab heute wieder bereit.`,
+    })
+    // Bis sie in den Live-Daten auftaucht, bleibt die bisherige Ansicht stehen (die Adresse kennt sie schon).
+    selectCampaign(quest.id)
+    focusWish.current = { target: 'heading', ready: (view) => view.shown?.quest.id === quest.id }
   }
 
   function openChapter(quest: MainQuest, chapter: Chapter | undefined, index: number | null) {
@@ -211,9 +297,11 @@ export function CampaignPage() {
       <PageHeader
         eyebrow="Dein großes Ziel"
         title="Kampagne"
-        subtitle={selected ? undefined : 'Ein Abenteuer, Kapitel für Kapitel erzählt.'}
+        // Nur ohne Kampagne: Beim Beginnen einer weiteren erklärt die Bibliothek selbst, worum es geht.
+        subtitle={campaigns.length === 0 ? 'Ein Abenteuer, Kapitel für Kapitel erzählt.' : undefined}
         action={
-          selected && (
+          selected &&
+          !showStarter && (
             <Button variant="secondary" size="sm" icon={<Pencil />} onClick={() => openEdit(selected.quest)}>
               Bearbeiten
             </Button>
@@ -225,7 +313,7 @@ export function CampaignPage() {
         {announcement}
       </p>
 
-      {campaigns.length > 1 && selected && (
+      {campaigns.length > 1 && selected && !showStarter && (
         <div className="mb-5">
           {campaigns.length <= 3 && !narrow ? (
             <SegmentedControl
@@ -243,16 +331,30 @@ export function CampaignPage() {
               label="Kampagne"
               value={selected.quest.id}
               onChange={selectCampaign}
-              options={campaigns.map(({ quest }) => ({ value: quest.id, label: `${quest.icon} ${quest.title}` }))}
+              options={campaigns.map(({ quest, complete }) => ({
+                value: quest.id,
+                label: `${quest.icon} ${quest.title}${complete ? ' · gemeistert' : ''}`,
+              }))}
               fieldClassName="sm:max-w-sm"
             />
           )}
         </div>
       )}
 
-      {selected ? (
+      {showStarter || !selected ? (
+        <CampaignStarter
+          variant={campaigns.length === 0 ? 'first' : 'next'}
+          headingRef={headingRef}
+          onStart={handleStart}
+          onCreateCustom={openCreate}
+          onBack={campaigns.length > 0 && !awaiting ? closeNew : undefined}
+          active={active}
+        />
+      ) : (
         <>
-          {selected.complete && <CampaignVictory campaign={selected} onNewCampaign={openCreate} />}
+          {selected.complete && (
+            <CampaignVictory campaign={selected} onNewCampaign={openNew} onArchive={() => openArchive(selected)} />
+          )}
           <CampaignBanner campaign={selected} today={today} headingRef={headingRef} />
 
           <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-10">
@@ -287,35 +389,48 @@ export function CampaignPage() {
                   navigate(`/quests?${new URLSearchParams({ neu: '1', kampagne: selected.quest.id }).toString()}`)
                 }}
               />
-              <Button variant="ghost" icon={<Plus />} onClick={openCreate} className="self-center lg:self-start">
-                Weitere Kampagne beginnen
-              </Button>
+              <CampaignManageCard
+                campaign={selected}
+                activeCount={active.length}
+                onNew={openNew}
+                onArchive={() => openArchive(selected)}
+              />
             </aside>
           </div>
         </>
-      ) : (
-        <CampaignChoice
-          today={today}
-          installing={installing}
-          onInstall={handleInstall}
-          onCreateCustom={openCreate}
-          headingRef={headingRef}
-        />
       )}
+
+      {/* Auch unter der Bibliothek (`?neu=1`): Eine beendete Kampagne fortzusetzen ist ebenfalls ein Neubeginn. */}
+      <ArchivedCampaigns
+        campaigns={state.archivedMainQuests}
+        onRestore={handleRestore}
+        onDeleted={() => {
+          focusWish.current = { target: 'heading', ready: () => true }
+        }}
+      />
 
       <CampaignFormDialog
         open={formOpen}
         onClose={() => setFormOpen(false)}
         quest={formQuest}
-        onCreated={(quest) => {
-          selectCampaign(quest.id)
-          focusWish.current = { target: 'heading', ready: (shown) => shown?.quest.id === quest.id }
-        }}
+        onCreated={(quest) => showNewCampaign(quest.id)}
         onDeleted={(quest) => {
           selectCampaign(null)
-          focusWish.current = { target: 'heading', ready: (shown) => shown?.quest.id !== quest.id }
+          focusWish.current = { target: 'heading', ready: (view) => view.shown?.quest.id !== quest.id }
         }}
       />
+
+      {archiveTarget && (
+        <ArchiveCampaignDialog
+          open={archiveOpen}
+          onClose={() => setArchiveOpen(false)}
+          campaign={archiveTarget}
+          onArchived={(campaign) => {
+            selectCampaign(null)
+            focusWish.current = { target: 'heading', ready: (view) => view.shown?.quest.id !== campaign.quest.id }
+          }}
+        />
+      )}
 
       {chapterTarget && (
         <ChapterFormDialog
@@ -339,7 +454,7 @@ export function CampaignPage() {
                   const removedId = chapterTarget.chapter?.id
                   focusWish.current = {
                     target: 'addChapter',
-                    ready: (shown) => !shown?.quest.chapters.some((chapter) => chapter.id === removedId),
+                    ready: ({ shown }) => !shown?.quest.chapters.some((chapter) => chapter.id === removedId),
                   }
                   return saveChapters(
                     chapterQuestId,
@@ -355,5 +470,41 @@ export function CampaignPage() {
         />
       )}
     </>
+  )
+}
+
+/**
+ * Verwaltung in der Seitenleiste: freie Plätze, „Neue Kampagne beginnen“ und – je nach Stand –
+ * „Kampagne beenden“ (laufend) bzw. „In die Ruhmeshalle legen“ (gemeistert).
+ */
+function CampaignManageCard({
+  campaign,
+  activeCount,
+  onNew,
+  onArchive,
+}: {
+  campaign: MainQuestState
+  activeCount: number
+  onNew: () => void
+  onArchive: () => void
+}) {
+  const max = BALANCING.maxActiveCampaigns
+  const left = Math.max(0, max - activeCount)
+  return (
+    <Card tone="flat" title="Deine Kampagnen" subtitle={`${activeSlotsText(activeCount, max)} · ${freeSlotsText(left)}`}>
+      <div className="flex flex-col gap-2">
+        <Button variant="secondary" icon={<Plus />} onClick={onNew} fullWidth>
+          Neue Kampagne beginnen
+        </Button>
+        <Button
+          variant="ghost"
+          icon={campaign.complete ? <Landmark /> : <Archive />}
+          onClick={onArchive}
+          fullWidth
+        >
+          {campaign.complete ? 'In die Ruhmeshalle legen' : 'Kampagne beenden'}
+        </Button>
+      </div>
+    </Card>
   )
 }

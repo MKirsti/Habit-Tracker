@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createBackup } from '../../data/backup'
 import * as repository from '../../data/repository'
 import { createScholarCampaign } from '../../data/seed'
+import { BLUEPRINTS } from '../../data/blueprints'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { OnboardingPage } from '../OnboardingPage'
@@ -66,8 +67,27 @@ async function toCampaignStep(user: ReturnType<typeof userEvent.setup>, name = '
   return screen.findByRole('heading', { level: 1, name: 'Wähle deine erste Kampagne' })
 }
 
+type User = ReturnType<typeof userEvent.setup>
+
+/** Vorlage in der Bibliothek öffnen (Einrichtungsdialog). */
+async function openBlueprint(user: User, title: string) {
+  await user.click(screen.getByRole('button', { name: title }))
+  return screen.findByRole('dialog', { name: title })
+}
+
+/** „Der Weg des Gelehrten“ (Einsteiger) auswählen. */
+async function chooseScholar(user: User) {
+  const dialog = await openBlueprint(user, 'Der Weg des Gelehrten')
+  await user.click(within(dialog).getByRole('button', { name: 'Auswählen' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+}
+
+function summary() {
+  return screen.getByRole('region', { name: 'Deine Wahl' })
+}
+
 describe('Onboarding', () => {
-  it('führt mit der Vorlage durch alle drei Schritte und legt Kampagne und Held an', async () => {
+  it('führt mit einer Vorlage aus der Bibliothek durch alle drei Schritte und legt Kampagne und Held an', async () => {
     const user = await start()
     const steps = screen.getByRole('list', { name: 'Fortschritt der Einrichtung' })
     expect(within(steps).getAllByRole('listitem')[0]).toHaveAttribute('aria-current', 'step')
@@ -85,10 +105,20 @@ describe('Onboarding', () => {
     await user.click(screen.getByRole('button', { name: 'Weiter' }))
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Wähle deine erste Kampagne' })).toHaveFocus()
-    // Die Vorlage ist empfohlen und vorausgewählt.
-    expect(screen.getByRole('radio', { name: 'Der Weg des Gelehrten' })).toBeChecked()
-    expect(screen.getByRole('radio', { name: 'Ohne Vorlage starten' })).not.toBeChecked()
-    expect(screen.getByText('Empfohlen')).toBeInTheDocument()
+    // Nichts ist vorausgewählt – die Bibliothek zeigt alle Vorlagen, dazu „Ohne Vorlage starten“.
+    for (const blueprint of BLUEPRINTS) {
+      expect(screen.getByRole('heading', { level: 2, name: blueprint.title })).toBeInTheDocument()
+    }
+    expect(screen.getByRole('button', { name: 'Ohne Vorlage starten' })).toHaveAttribute('aria-pressed', 'false')
+    expect(summary()).toHaveTextContent('Noch keine Wahl')
+    expect(screen.getByText(/bis zu 3 gleichzeitig/)).toBeInTheDocument()
+
+    await chooseScholar(user)
+    expect(summary()).toHaveTextContent('Der Weg des Gelehrten')
+    expect(summary()).toHaveTextContent('Einsteiger · 5 Quests · 6 Kapitel')
+    expect(screen.getByRole('button', { name: 'Der Weg des Gelehrten' })).toHaveAccessibleDescription(
+      expect.stringContaining('Ausgewählt'),
+    )
 
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
 
@@ -97,7 +127,11 @@ describe('Onboarding', () => {
     })
     const data = await loadGameData()
     expect(data.mainQuests).toHaveLength(1)
-    expect(data.mainQuests[0]).toMatchObject({ title: 'Der Weg des Gelehrten', startDay: TODAY })
+    expect(data.mainQuests[0]).toMatchObject({
+      title: 'Der Weg des Gelehrten',
+      startDay: TODAY,
+      blueprint: { id: 'scholar', level: 'beginner' },
+    })
     expect(data.habits).toHaveLength(5)
     expect(data.habits.every((habit) => habit.createdDay === TODAY && habit.mainQuestId === data.mainQuests[0].id)).toBe(
       true,
@@ -107,18 +141,82 @@ describe('Onboarding', () => {
   it('zeigt in der Vorschau genau die Quests und Kapitel der echten Vorlage', async () => {
     const user = await start()
     await toCampaignStep(user)
+    const dialog = await openBlueprint(user, 'Der Weg des Gelehrten')
     const { mainQuest, habits } = createScholarCampaign(TODAY)
-    for (const habit of habits) expect(screen.getByText(habit.title)).toBeInTheDocument()
-    for (const chapter of mainQuest.chapters) expect(screen.getByText(chapter.title)).toBeInTheDocument()
-    expect(screen.getByText(`${habits.length} Quests`)).toBeInTheDocument()
-    expect(screen.getByText(`${mainQuest.chapters.length} Kapitel`)).toBeInTheDocument()
+    for (const habit of habits) expect(within(dialog).getByText(habit.title)).toBeInTheDocument()
+    for (const chapter of mainQuest.chapters) expect(within(dialog).getByText(chapter.title)).toBeInTheDocument()
+  })
+
+  it('verlangt beim Sport die Klassenwahl und legt den Pfad des Kriegers samt Held an', async () => {
+    const user = await start()
+    await toCampaignStep(user, 'Brakka')
+    let dialog = await openBlueprint(user, 'Der Weg des Körpers')
+    // Ohne Klasse geht es nicht weiter.
+    await user.click(within(dialog).getByRole('button', { name: 'Auswählen' }))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Bitte wähle deine Klasse')
+    expect(screen.getByRole('dialog', { name: 'Der Weg des Körpers' })).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('radio', { name: /Krieger/ }))
+    await user.click(within(dialog).getByRole('radio', { name: /Fortgeschritten/ }))
+    await user.click(within(dialog).getByRole('button', { name: 'Auswählen' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // Die Wahl steht auf der Karte und in der Zusammenfassung vor „Los geht’s“.
+    expect(screen.getByRole('button', { name: 'Der Weg des Körpers' })).toHaveAccessibleDescription(
+      expect.stringContaining('Fortgeschritten · 🗡️ Krieger'),
+    )
+    expect(summary()).toHaveTextContent('Der Pfad des Kriegers')
+    expect(summary()).toHaveTextContent('Fortgeschritten · 🗡️ Krieger')
+
+    // Erneutes Öffnen zeigt die bisherige Wahl.
+    dialog = await openBlueprint(user, 'Der Weg des Körpers')
+    expect(within(dialog).getByRole('radio', { name: /Krieger/ })).toBeChecked()
+    await user.click(within(dialog).getByRole('button', { name: 'Abbrechen' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
+    await waitFor(async () => {
+      expect((await loadGameData()).profile).toEqual({ name: 'Brakka', avatar: '🧙', createdDay: TODAY })
+    })
+    const data = await loadGameData()
+    expect(data.mainQuests).toHaveLength(1)
+    expect(data.mainQuests[0]).toMatchObject({
+      title: 'Der Pfad des Kriegers',
+      startDay: TODAY,
+      blueprint: { id: 'body', level: 'advanced', pathId: 'strength' },
+    })
+    expect(data.habits.map((habit) => habit.title)).toContain('Krafttraining')
+    expect(data.habits.every((habit) => habit.mainQuestId === data.mainQuests[0].id)).toBe(true)
+  })
+
+  it('verlangt eine Wahl, bevor das Abenteuer beginnt', async () => {
+    const user = await start()
+    await toCampaignStep(user)
+    await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
+    expect(within(summary()).getByRole('alert')).toHaveTextContent('Wähle eine Vorlage – oder starte ohne Vorlage.')
+    expect(screen.getByRole('button', { name: 'Los geht’s' })).toHaveAccessibleDescription(
+      'Wähle eine Vorlage – oder starte ohne Vorlage.',
+    )
+    expect((await loadGameData()).profile).toBeUndefined()
+
+    // Sobald gewählt ist, verschwindet der Hinweis.
+    await user.click(screen.getByRole('button', { name: 'Ohne Vorlage starten' }))
+    expect(within(summary()).queryByRole('alert')).not.toBeInTheDocument()
+    expect(summary()).toHaveTextContent('Ohne Vorlage')
   })
 
   it('startet ohne Vorlage mit leerem Questlog', async () => {
     const user = await start()
     await toCampaignStep(user, 'Borin')
-    await user.click(screen.getByRole('radio', { name: 'Ohne Vorlage starten' }))
-    expect(screen.getByRole('radio', { name: 'Der Weg des Gelehrten' })).not.toBeChecked()
+    await chooseScholar(user)
+    // „Ohne Vorlage“ ersetzt die Auswahl der Vorlage.
+    const none = screen.getByRole('button', { name: 'Ohne Vorlage starten' })
+    await user.click(none)
+    expect(none).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Der Weg des Gelehrten' })).not.toHaveAccessibleDescription(
+      expect.stringContaining('Ausgewählt'),
+    )
+    expect(summary()).toHaveTextContent('Ohne Vorlage')
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
 
     await waitFor(async () => {
@@ -178,7 +276,7 @@ describe('Onboarding', () => {
     expect(screen.getByRole('button', { name: 'Eigener Avatar gewählt' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Weiter' }))
     await screen.findByRole('heading', { level: 1, name: 'Wähle deine erste Kampagne' })
-    await user.click(screen.getByRole('radio', { name: 'Ohne Vorlage starten' }))
+    await user.click(screen.getByRole('button', { name: 'Ohne Vorlage starten' }))
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
     await waitFor(async () => {
       expect((await loadGameData()).profile?.avatar).toBe('🐙')
@@ -189,6 +287,7 @@ describe('Onboarding', () => {
     failures.saveProfile = true
     const user = await start()
     await toCampaignStep(user)
+    await chooseScholar(user)
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
     expect(await screen.findByText('Dein Abenteuer konnte nicht beginnen')).toBeInTheDocument()
     expect(screen.getByText('Die Datenbank ist gerade nicht erreichbar.')).toBeInTheDocument()
@@ -210,11 +309,12 @@ describe('Onboarding', () => {
     failures.saveProfile = true
     const user = await start()
     await toCampaignStep(user)
+    await chooseScholar(user)
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
     expect(await screen.findByText('Dein Abenteuer konnte nicht beginnen')).toBeInTheDocument()
 
     failures.saveProfile = false
-    await user.click(screen.getByRole('radio', { name: 'Ohne Vorlage starten' }))
+    await user.click(screen.getByRole('button', { name: 'Ohne Vorlage starten' }))
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
     await waitFor(async () => {
       expect((await loadGameData()).profile?.name).toBe('Aria')

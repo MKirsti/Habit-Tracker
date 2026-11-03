@@ -1,4 +1,4 @@
-import { Plus, Trophy } from 'lucide-react'
+import { Landmark, Plus, Trophy } from 'lucide-react'
 import { useId } from 'react'
 import { BALANCING } from '../../domain/balancing'
 import type { MainQuestState } from '../../domain/types'
@@ -8,13 +8,15 @@ import { countLabel } from './campaignText'
 export interface CampaignVictoryProps {
   campaign: MainQuestState
   onNewCampaign: () => void
+  /** „In die Ruhmeshalle legen“ (archivieren, verdiente XP bleiben). */
+  onArchive: () => void
 }
 
 /**
  * Feierlicher Hinweis für eine abgeschlossene Kampagne mit Erinnerung an die Belohnung.
  * (Die große Feier-Animation zeigt `GameFeedback` zentral.)
  */
-export function CampaignVictory({ campaign, onNewCampaign }: CampaignVictoryProps) {
+export function CampaignVictory({ campaign, onNewCampaign, onArchive }: CampaignVictoryProps) {
   const titleId = useId()
   const { quest, chapters } = campaign
   return (
@@ -55,9 +57,14 @@ export function CampaignVictory({ campaign, onNewCampaign }: CampaignVictoryProp
       <p className="relative mt-3 text-sm font-medium text-gold-bright tabular-nums">
         +{formatNumber(BALANCING.mainQuestXp)} XP Kampagnen-Bonus
       </p>
-      <Button variant="secondary" icon={<Plus />} onClick={onNewCampaign} className="relative mt-5">
-        Neue Kampagne beginnen
-      </Button>
+      <div className="relative mt-5 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center">
+        <Button icon={<Landmark />} onClick={onArchive}>
+          In die Ruhmeshalle legen
+        </Button>
+        <Button variant="secondary" icon={<Plus />} onClick={onNewCampaign}>
+          Neue Kampagne beginnen
+        </Button>
+      </div>
     </Card>
   )
 }

@@ -22,7 +22,8 @@ const stepMotion = {
 }
 
 /**
- * Onboarding in drei Schritten: Willkommen → Held erschaffen → erste Kampagne wählen.
+ * Onboarding in drei Schritten: Willkommen → Held erschaffen → erste Kampagne aus der Bibliothek wählen
+ * (Stufe, beim Sport die Klasse) oder ohne Vorlage starten.
  * Wird von `ProfileGate` bildschirmfüllend ohne Layout und ohne Router gezeigt (keine Router-Hooks!).
  * Sobald das Profil gespeichert ist, schaltet die App von selbst um.
  */
@@ -36,7 +37,8 @@ export function OnboardingPage() {
   const [navigated, setNavigated] = useState(false)
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState(DEFAULT_HERO_AVATAR)
-  const [campaign, setCampaign] = useState<CampaignChoice>('scholar')
+  // `undefined` = noch nichts gewählt; `null` = ohne Vorlage starten.
+  const [campaign, setCampaign] = useState<CampaignChoice | undefined>(undefined)
   const [saving, setSaving] = useState(false)
 
   function goTo(next: Step) {
@@ -51,6 +53,7 @@ export function OnboardingPage() {
       goTo(1)
       return
     }
+    if (campaign === undefined) return
     setSaving(true)
     try {
       // Eine Transaktion: Vorlage und Profil werden gemeinsam gespeichert oder gar nicht. Schlägt etwas fehl,
@@ -114,7 +117,6 @@ export function OnboardingPage() {
             )}
             {step === 2 && (
               <CampaignStep
-                today={today}
                 choice={campaign}
                 onChoiceChange={setCampaign}
                 onFinish={finish}

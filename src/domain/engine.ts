@@ -10,7 +10,8 @@
  *    Pflicht sind auch Grabsteine gelöschter Quests (`data.deletedHabits`) – ohne Erledigungen, also offen:
  *    Löschen macht so keinen vergangenen Tag nachträglich perfekt.
  * 3. Kapitel: `chapterXp` pro abgeschlossenem Kapitel, `mainQuestXp` pro komplett abgeschlossener Kampagne
- *    (auch archivierte). Nur Charakter-XP.
+ *    (auch archivierte). Nur Charakter-XP. Archivierte Kampagnen stehen in `archivedMainQuests` (gleiche
+ *    Auswertung wie aktive), alle übrigen in `mainQuests`.
  * 4. adventureDay = diffDays(profile.createdDay, today) + 1 (ohne Profil: 1).
  * 5. getDayState sortiert sichtbare Quests nach `order` (dann `title`); Streaks gelten zum Stichtag `day`.
  *
@@ -238,12 +239,25 @@ export function getDayState(data: GameData, day: DayKey): DayState {
 // Kampagnen
 // ---------------------------------------------------------------------------
 
-function buildMainQuestState(
-  quest: MainQuest,
-  habits: readonly Habit[],
-  ctx: ChapterContext,
-  today: DayKey,
-): MainQuestState {
+/**
+ * Quests einer Kampagne: die mit ihr verknüpften (`mainQuestId`) plus alle (existierenden) Quests, auf die
+ * ein Kapitel verweist oder die sie mitbenutzt (`sharedHabitIds`) – geteilte Quests, die einer anderen
+ * Kampagne zugeordnet sind. Ohne Doppelte, sortiert wie die Listen (`order`, dann Titel).
+ */
+function linkedHabitIdsOf(quest: MainQuest, index: GameIndex): string[] {
+  const linked = new Map<string, Habit>()
+  for (const habit of index.habits) {
+    if (habit.mainQuestId === quest.id) linked.set(habit.id, habit)
+  }
+  const referenced = quest.chapters.flatMap(({ criterion }) => (criterion.type === 'habit' ? [criterion.habitId] : []))
+  for (const id of [...referenced, ...(quest.sharedHabitIds ?? [])]) {
+    const habit = index.habitsById.get(id)
+    if (habit !== undefined) linked.set(habit.id, habit)
+  }
+  return [...linked.values()].sort(compareHabits).map((habit) => habit.id)
+}
+
+function buildMainQuestState(quest: MainQuest, index: GameIndex, ctx: ChapterContext, today: DayKey): MainQuestState {
   const chapters = quest.chapters.map((chapter) => evaluateChapter(chapter, quest, ctx))
   const progress =
     chapters.length === 0 ? 0 : chapters.reduce((sum, chapter) => sum + chapter.progress, 0) / chapters.length
@@ -254,10 +268,29 @@ function buildMainQuestState(
     progress,
     currentChapterIndex,
     complete: chapters.length > 0 && currentChapterIndex === -1,
-    linkedHabitIds: habits.filter((habit) => habit.mainQuestId === quest.id).map((habit) => habit.id),
+    linkedHabitIds: linkedHabitIdsOf(quest, index),
   }
   if (quest.deadline !== undefined) state.daysLeft = diffDays(today, quest.deadline)
   return state
+}
+
+/** Alle Kampagnen (aktive und archivierte) in gespeicherter Reihenfolge, ausgewertet zum Tag `today`. */
+function buildMainQuestStates(data: GameData, index: GameIndex, today: DayKey): MainQuestState[] {
+  const ctx: ChapterContext = {
+    habitsById: index.habitsById,
+    completionsByHabit: index.completionsByHabit,
+    today,
+  }
+  return data.mainQuests.map((quest) => buildMainQuestState(quest, index, ctx, today))
+}
+
+/**
+ * Wertet alle Kampagnen – aktive **und** archivierte, in gespeicherter Reihenfolge – zum Spieltag `today`
+ * aus, genau wie `deriveGameState` (dieselben `MainQuestState`s, nur ohne den restlichen Spielzustand).
+ * Für Prüfungen wie das Limit aktiver Kampagnen (`domain/campaigns.ts`).
+ */
+export function evaluateMainQuests(data: GameData, today: DayKey): MainQuestState[] {
+  return buildMainQuestStates(data, buildIndex(data, today), today)
 }
 
 // ---------------------------------------------------------------------------
@@ -320,18 +353,14 @@ export function deriveGameState(data: GameData, today: DayKey): GameState {
   }
 
   // --- Regel 3: Kapitel & Kampagnen (archivierte zählen für XP mit) -------------------------
-  const ctx: ChapterContext = {
-    habitsById: index.habitsById,
-    completionsByHabit: index.completionsByHabit,
-    today,
-  }
   let xpFromChapters = 0
   const mainQuests: MainQuestState[] = []
-  for (const quest of data.mainQuests) {
-    const state = buildMainQuestState(quest, index.habits, ctx, today)
+  const archivedMainQuests: MainQuestState[] = []
+  for (const state of buildMainQuestStates(data, index, today)) {
     xpFromChapters += state.chapters.filter((chapter) => chapter.done).length * BALANCING.chapterXp
     if (state.complete) xpFromChapters += BALANCING.mainQuestXp
-    if (quest.archived !== true) mainQuests.push(state)
+    if (state.quest.archived === true) archivedMainQuests.push(state)
+    else mainQuests.push(state)
   }
 
   // --- Level, Rang, Attribute -----------------------------------------------------------------
@@ -366,5 +395,6 @@ export function deriveGameState(data: GameData, today: DayKey): GameState {
     },
     todayState,
     mainQuests,
+    archivedMainQuests,
   }
 }

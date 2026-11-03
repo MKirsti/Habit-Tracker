@@ -3,6 +3,7 @@
  * Nützlich zum Ausprobieren und für automatisierte Screenshots, z. B. in der Konsole:
  *
  *   await questlog.seedDemo(30)   // Held + Gelehrten-Kampagne + 30 Tage Verlauf
+ *   await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })  // weitere Kampagne
  *   await questlog.reset()        // alles löschen → Onboarding
  *
  * Wird in Produktions-Builds nicht eingebunden (siehe main.tsx).
@@ -13,8 +14,9 @@ import { isRequiredOn } from '../domain/schedule'
 import type { DayKey } from '../domain/types'
 import * as backup from '../data/backup'
 import { db } from '../data/db'
+import type { BlueprintOptions } from '../data/blueprints/types'
 import * as repository from '../data/repository'
-import { createScholarCampaign } from '../data/seed'
+import * as seed from '../data/seed'
 
 /** Deterministischer Pseudo-Zufall (mulberry32), damit Demo-Daten reproduzierbar sind. */
 function random(seed: number): () => number {
@@ -43,7 +45,7 @@ async function seedDemo(days = 30, options: { completeToday?: boolean; seed?: nu
   const start = addDays(today, -days)
   const rnd = random(options.seed ?? 42)
   await repository.resetAllData()
-  const { mainQuest, habits } = createScholarCampaign(start)
+  const { mainQuest, habits } = seed.createScholarCampaign(start)
   await db.transaction('rw', db.mainQuests, db.habits, async () => {
     await db.mainQuests.put(mainQuest)
     await db.habits.bulkPut(habits)
@@ -69,11 +71,18 @@ async function seedDemo(days = 30, options: { completeToday?: boolean; seed?: nu
   await repository.saveProfile({ name: 'Aria', avatar: '🧙', createdDay: start })
 }
 
+/** Startet eine Kampagne aus der Bibliothek am heutigen Spieltag (wie die App, gleiche Prüfungen). */
+async function installBlueprint(blueprintId: string, options: BlueprintOptions = { level: 'beginner' }) {
+  return seed.installBlueprint(blueprintId, options, await currentDay())
+}
+
 export const devtools = {
   db,
   repository,
   backup,
+  seed,
   seedDemo,
+  installBlueprint,
   reset: () => repository.resetAllData(),
   today: currentDay,
 }
