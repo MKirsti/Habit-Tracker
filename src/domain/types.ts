@@ -128,6 +128,18 @@ export interface Chapter {
   completedDay?: DayKey
 }
 
+/** Stufe einer Kampagnen-Vorlage: andere Startwerte (Häufigkeit, Zielwerte, Kapitel-Ziele). */
+export type BlueprintLevel = 'beginner' | 'advanced'
+
+/** Herkunft einer Kampagne, die aus einer Vorlage (Blueprint) gestartet wurde. */
+export interface BlueprintRef {
+  /** Stabile ID der Vorlage, z. B. 'scholar' oder 'body'. */
+  id: string
+  level: BlueprintLevel
+  /** Gewählter Pfad (Klasse), nur bei Vorlagen mit Pfaden – z. B. 'strength'. */
+  pathId?: string
+}
+
 /** Kampagne = Hauptquest mit Kapiteln (Meilensteinen). */
 export interface MainQuest {
   id: string
@@ -144,7 +156,13 @@ export interface MainQuest {
   deadline?: DayKey
   /** Reihenfolge = Erzählreihenfolge. Kapitel werden unabhängig voneinander ausgewertet. */
   chapters: Chapter[]
+  /**
+   * Archiviert (beendet bzw. in die Ruhmeshalle gelegt): zählt nicht mehr als aktive Kampagne, erscheint nicht
+   * mehr in `GameState.mainQuests`; verdiente Kapitel- und Kampagnen-XP bleiben erhalten.
+   */
   archived?: boolean
+  /** Gesetzt, wenn die Kampagne aus einer Vorlage gestartet wurde. */
+  blueprint?: BlueprintRef
   createdAt: number
 }
 

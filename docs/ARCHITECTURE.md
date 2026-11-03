@@ -281,3 +281,51 @@ Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten · `/k
 
 - Komponenten-Tests: `// @vitest-environment jsdom`, `import 'fake-indexeddb/auto'`, `afterEach(cleanup)` (keine Vitest-Globals), Animationen per `MotionGlobalConfig.skipAnimations = true` aus. Seiten mit `renderWithGame(<Seite />, { route })` aus `src/test/renderWithGame.tsx` rendern; Daten vorher mit `resetAllData()` + Repository-Funktionen anlegen.
 - Im Dev-Server (`npm run dev`) gibt es `window.questlog` (`src/dev/devtools.ts`): `await questlog.seedDemo(30)` legt einen Demo-Helden mit 30 Tagen Verlauf an, `await questlog.reset()` löscht alles. Ideal für Screenshots mit Playwright.
+
+## Kampagnen-Bibliothek (Blueprints) & mehrere Kampagnen
+
+Ziel: mehrere fertige Kampagnen-Vorlagen zur Auswahl, bis zu `BALANCING.maxActiveCampaigns` (3) gleichzeitig aktiv.
+
+- **Vorlagen** liegen in `src/data/blueprints/` – eine Datei pro Vorlage (`scholar.ts`, `body.ts`, `alchemist.ts`, `monk.ts`, `earlyRiser.ts`, `fortress.ts`, `fellowship.ts`, `polyglot.ts`), jeweils `export const <name>Blueprint: CampaignBlueprint`. Typen in `types.ts`, gemeinsam genutzte Quests in `shared.ts`, Register in `index.ts` (`BLUEPRINTS`, `getBlueprint(id)`). Inhaltliche Prüfung aller Stufen/Pfade: `blueprints.test.ts`.
+- **Stufen:** `'beginner'` (Einsteiger) / `'advanced'` (Fortgeschritten) – andere Startwerte und Kapitel-Ziele.
+- **Pfade („Klassenwahl“):** Vorlagen mit `paths` verlangen genau einen Pfad (Sport: `strength` Krieger/Kraftsport, `endurance` Waldläufer/Ausdauer, `sports` Gladiator/Sport allgemein & Spielsport).
+- `MainQuest.blueprint?: { id, level, pathId? }` merkt sich die Herkunft (Anzeige von Klasse/Stufe; dieselbe Vorlage kann nicht zweimal gleichzeitig aktiv sein).
+- **Aktiv** = nicht archiviert und nicht abgeschlossen (`domain/campaigns.ts`). Abgeschlossene, nicht archivierte Kampagnen belegen keinen Platz.
+- **Geteilte Quests:** Beim Installieren wird eine vorhandene, nicht archivierte Quest mit gleichem (getrimmtem) Titel wiederverwendet statt verdoppelt. Ist sie noch keiner Kampagne zugeordnet, wird sie der neuen zugeordnet; sonst bleibt ihre Zuordnung, und die Kapitel der neuen Kampagne verweisen einfach auf sie.
+- `MainQuestState.linkedHabitIds` = Quests mit `mainQuestId === quest.id` **plus** alle Quests, auf die ein Kapitel der Kampagne verweist (sortiert nach `order`).
+
+### Domain (`src/domain/campaigns.ts`)
+```ts
+export function isCampaignActive(campaign: MainQuestState): boolean        // !quest.archived && !complete
+export function countActiveCampaigns(data: GameData, today: DayKey): number
+export function campaignSlotsLeft(data: GameData, today: DayKey): number   // max(0, maxActiveCampaigns - aktive)
+```
+`GameState.archivedMainQuests: MainQuestState[]` – archivierte Kampagnen (gleiche Auswertung wie aktive), für die Liste „Beendete & gemeisterte Kampagnen“.
+
+### Daten (`src/data/seed.ts`, `src/data/repository.ts`)
+```ts
+export function createCampaignFromBlueprint(blueprint: CampaignBlueprint, options: BlueprintOptions, today: DayKey, createdAt?: number): { mainQuest: MainQuest; habits: Habit[] }
+export async function installBlueprint(blueprintId: string, options: BlueprintOptions, today: DayKey, database?): Promise<MainQuest>
+  // wirft deutsche Fehler: unbekannte Vorlage, fehlender/unbekannter Pfad, Limit erreicht, Vorlage läuft bereits
+export type AdventureChoice = { blueprintId: string; options: BlueprintOptions }
+export async function startAdventure(profile: CharacterProfile, choice: AdventureChoice | null, today: DayKey, database?): Promise<void>
+// unverändert nutzbar (Einsteiger-Stufe der Gelehrten-Vorlage): createScholarCampaign(today, createdAt?), installScholarCampaign(today)
+
+// repository.ts
+createMainQuest(...)                                         // wirft, wenn das Limit erreicht ist
+export async function archiveMainQuest(id: string, today: DayKey, options?: { archiveQuests?: boolean }, database?): Promise<void>
+  // archiveQuests: archiviert die Quests mit mainQuestId === id, die nicht von Kapiteln anderer nicht archivierter Kampagnen gebraucht werden
+export async function restoreMainQuest(id: string, today: DayKey, options?: { restoreQuests?: boolean }, database?): Promise<void>
+  // wirft, wenn dadurch mehr als 3 Kampagnen aktiv wären; restoreQuests holt archivierte Quests mit mainQuestId === id zurück
+```
+
+### UI (`src/features/blueprints/`)
+```tsx
+<BlueprintLibrary
+  mode="start" | "select"                 // start: direkt installieren; select: nur auswählen (Onboarding)
+  selected?: AdventureChoice | null       // nur mode="select": hervorgehobene Auswahl
+  onConfirm(choice: AdventureChoice): Promise<void> | void
+  busy?: boolean
+/>
+```
+Zeigt alle Vorlagen als Karten (Icon, Titel, Tagline, Haupt-/Neben-Attribute, Laufzeit, „Läuft bereits“). Ein Tipp öffnet `BlueprintSetupDialog`: Stufe wählen (Einsteiger/Fortgeschritten mit Hinweis), bei Pfaden die **Klassenwahl** (Pflicht), Live-Vorschau der Quests und Kapitel aus `build()`, Hinweis auf geteilte Quests, Bestätigen. Im Modus `start` respektiert die Bibliothek das Limit (`campaignSlotsLeft`) und blockiert bereits laufende Vorlagen.

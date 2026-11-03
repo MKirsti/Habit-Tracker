@@ -19,6 +19,8 @@ export const BALANCING = {
   mainQuestXp: 500,
   /** Wie viele Tage rückwirkend Quests nachgetragen werden dürfen. */
   backfillDays: 1,
+  /** Höchstens so viele aktive Kampagnen gleichzeitig (aktiv = nicht archiviert und nicht abgeschlossen). */
+  maxActiveCampaigns: 3,
   /** Sicherheitsgrenze für Level-Berechnungen. */
   maxLevel: 999,
 } as const
