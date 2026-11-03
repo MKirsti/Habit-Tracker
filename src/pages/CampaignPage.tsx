@@ -1,17 +1,18 @@
 import { Pencil, Plus } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
 import { updateMainQuest } from '../data/repository'
 import { installScholarCampaign } from '../data/seed'
 import { BALANCING } from '../domain/balancing'
 import type { Chapter, Habit, MainQuest, MainQuestState } from '../domain/types'
-import { Button, PageHeader, SectionTitle, SegmentedControl, Select, formatNumber, useToast } from '../ui'
+import { Button, PageHeader, SectionTitle, SegmentedControl, Select, formatNumber, useMediaQuery, useToast } from '../ui'
 import { CampaignBanner } from './campaign/CampaignBanner'
 import { CampaignChoice } from './campaign/CampaignChoice'
 import { CampaignFormDialog } from './campaign/CampaignFormDialog'
 import { CampaignVictory } from './campaign/CampaignVictory'
 import { isArchived } from './campaign/campaignText'
+import { campaignEditLoss, campaignEditLossText } from './campaign/campaignXp'
 import { ChapterFormDialog } from './campaign/ChapterFormDialog'
 import { ChapterTimeline } from './campaign/ChapterTimeline'
 import { errorMessage } from './campaign/errors'
@@ -35,27 +36,62 @@ interface FocusWish {
   ready: (shown: MainQuestState | undefined) => boolean
 }
 
+/** Parameter der gewählten Kampagne: `/kampagne?id=<questId>` (Dashboard-Karten verlinken so). */
+const CAMPAIGN_PARAM = 'id'
+
 /**
- * Kampagne (`/kampagne`): die Hauptquest mit ihren Kapiteln als Questkarte. Ohne Kampagne gibt es
+ * Zuletzt ausdrücklich gewählte Kampagne (Adresse oder Auswahl) – für `/kampagne` ohne Parameter, z. B.
+ * über die Navigation. Bewusst nur im Speicher: Sie gilt für die laufende Sitzung.
+ */
+let rememberedCampaignId: string | null = null
+
+/**
+ * Kampagne (`/kampagne`): das große Ziel mit seinen Kapiteln als Questkarte. Ohne Kampagne gibt es
  * die Wahl zwischen der Vorlage „Der Weg des Gelehrten“ und einer eigenen Kampagne.
+ * Die gezeigte Kampagne steht in der Adresse (`?id=`), damit Zurück und Links sie behalten.
  */
 export function CampaignPage() {
   const { data, today, state } = useGameContext()
   const { toast } = useToast()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const chaptersTitleId = useId()
+  // Unter `sm` wären die Segmente zu schmal für die Titel – dann die Auswahlliste.
+  const narrow = useMediaQuery('(max-width: 639.98px)')
 
   const campaigns = state.mainQuests
-  // Ausdrücklich gewählte Kampagne (kann kurz noch fehlen, z. B. direkt nach dem Anlegen) …
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Ausdrücklich gewählte Kampagne aus der Adresse (kann kurz noch fehlen, z. B. direkt nach dem Anlegen) …
+  const urlId = searchParams.get(CAMPAIGN_PARAM)
   // … und die zuletzt gezeigte: Sie bleibt stehen, auch wenn sie gerade gemeistert wird.
   const [shownId, setShownId] = useState<string | null>(null)
   const findCampaign = (id: string | null) => (id === null ? undefined : campaigns.find((c) => c.quest.id === id))
-  // Ohne Auswahl: die erste laufende Kampagne – nicht eine längst gemeisterte.
+  // Ohne (gültige) Auswahl: die zuletzt gewählte, sonst die erste laufende Kampagne – nicht eine längst
+  // gemeisterte. Unbekannte und archivierte IDs (nicht in `state.mainQuests`) fallen ebenfalls zurück.
   const selected: MainQuestState | undefined =
-    findCampaign(selectedId) ?? findCampaign(shownId) ?? campaigns.find((c) => !c.complete) ?? campaigns[0]
+    findCampaign(urlId) ??
+    findCampaign(urlId === null ? rememberedCampaignId : null) ??
+    findCampaign(shownId) ??
+    campaigns.find((c) => !c.complete) ??
+    campaigns[0]
   const selectedQuestId = selected?.quest.id ?? null
   if (selectedQuestId !== shownId) setShownId(selectedQuestId)
+  useEffect(() => {
+    if (urlId !== null && findCampaign(urlId)) rememberedCampaignId = urlId
+  })
+
+  /** Schreibt die Auswahl in die Adresse (ersetzt den Eintrag – Zurück führt nicht durch jede Auswahl). */
+  function selectCampaign(id: string | null) {
+    rememberedCampaignId = id
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current)
+        if (id === null) next.delete(CAMPAIGN_PARAM)
+        else next.set(CAMPAIGN_PARAM, id)
+        return next
+      },
+      { replace: true },
+    )
+  }
 
   // Formular-Ziele bleiben beim Schließen erhalten (für die Ausblend-Animation).
   const [formQuest, setFormQuest] = useState<MainQuest | undefined>(undefined)
@@ -138,6 +174,26 @@ export function CampaignPage() {
     setAnnouncement(success)
   }
 
+  /** Bearbeitetes Kapitel ersetzen bzw. neues anhängen (Kapitel-Dialog aus der Zeitleiste). */
+  function applyChapter(target: ChapterTarget, chapter: Chapter) {
+    return (chapters: Chapter[]) =>
+      target.chapter
+        ? chapters.map((existing) => (existing.id === chapter.id ? chapter : existing))
+        : [...chapters, chapter]
+  }
+
+  /**
+   * Rückfrage vor dem Speichern, falls das Kapitel dadurch XP kostet (höheres Ziel, neues offenes Kapitel
+   * in einer gemeisterten Kampagne …). `undefined` = ohne Rückfrage speichern.
+   */
+  function chapterSaveWarning(target: ChapterTarget, chapter: Chapter): string | undefined {
+    const quest = data.mainQuests.find((candidate) => candidate.id === target.questId)
+    if (!quest) return undefined
+    const chapters = applyChapter(target, chapter)(quest.chapters)
+    const loss = campaignEditLoss(data, today, quest.id, { ...quest, chapters })
+    return loss.xp > 0 ? campaignEditLossText(loss) : undefined
+  }
+
   const chapterQuestId = chapterTarget?.questId ?? ''
   const doneCount = selected ? selected.chapters.filter((chapter) => chapter.done).length : 0
 
@@ -153,9 +209,9 @@ export function CampaignPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Hauptquest"
+        eyebrow="Dein großes Ziel"
         title="Kampagne"
-        subtitle={selected ? undefined : 'Dein großes Ziel – Kapitel für Kapitel.'}
+        subtitle={selected ? undefined : 'Ein Abenteuer, Kapitel für Kapitel erzählt.'}
         action={
           selected && (
             <Button variant="secondary" size="sm" icon={<Pencil />} onClick={() => openEdit(selected.quest)}>
@@ -171,11 +227,11 @@ export function CampaignPage() {
 
       {campaigns.length > 1 && selected && (
         <div className="mb-5">
-          {campaigns.length <= 3 ? (
+          {campaigns.length <= 3 && !narrow ? (
             <SegmentedControl
               aria-label="Kampagne wählen"
               value={selected.quest.id}
-              onChange={setSelectedId}
+              onChange={selectCampaign}
               options={campaigns.map(({ quest }) => ({
                 value: quest.id,
                 label: quest.title,
@@ -186,7 +242,7 @@ export function CampaignPage() {
             <Select
               label="Kampagne"
               value={selected.quest.id}
-              onChange={setSelectedId}
+              onChange={selectCampaign}
               options={campaigns.map(({ quest }) => ({ value: quest.id, label: `${quest.icon} ${quest.title}` }))}
               fieldClassName="sm:max-w-sm"
             />
@@ -205,7 +261,7 @@ export function CampaignPage() {
                 id={chaptersTitleId}
                 meta={
                   selected.chapters.length > 0
-                    ? `${formatNumber(doneCount)} / ${formatNumber(selected.chapters.length)}`
+                    ? `${formatNumber(doneCount)} / ${formatNumber(selected.chapters.length)} abgeschlossen`
                     : undefined
                 }
               >
@@ -225,9 +281,11 @@ export function CampaignPage() {
               <LinkedQuests
                 habits={linkedHabits}
                 today={today}
-                onAddQuest={() =>
+                onAddQuest={() => {
+                  // Erst die gezeigte Kampagne in der Adresse festhalten – „Zurück“ führt dann genau hierher.
+                  if (urlId !== selected.quest.id) selectCampaign(selected.quest.id)
                   navigate(`/quests?${new URLSearchParams({ neu: '1', kampagne: selected.quest.id }).toString()}`)
-                }
+                }}
               />
               <Button variant="ghost" icon={<Plus />} onClick={openCreate} className="self-center lg:self-start">
                 Weitere Kampagne beginnen
@@ -250,11 +308,11 @@ export function CampaignPage() {
         onClose={() => setFormOpen(false)}
         quest={formQuest}
         onCreated={(quest) => {
-          setSelectedId(quest.id)
+          selectCampaign(quest.id)
           focusWish.current = { target: 'heading', ready: (shown) => shown?.quest.id === quest.id }
         }}
         onDeleted={(quest) => {
-          setSelectedId(null)
+          selectCampaign(null)
           focusWish.current = { target: 'heading', ready: (shown) => shown?.quest.id !== quest.id }
         }}
       />
@@ -267,18 +325,13 @@ export function CampaignPage() {
           number={chapterTarget.number}
           campaignId={chapterTarget.questId}
           deleteXp={chapterDeleteXp}
+          submitWarning={(chapter) => chapterSaveWarning(chapterTarget, chapter)}
           onSubmit={(chapter) =>
-            chapterTarget.chapter
-              ? saveChapters(
-                  chapterQuestId,
-                  (chapters) => chapters.map((existing) => (existing.id === chapter.id ? chapter : existing)),
-                  `Kapitel „${chapter.title}“ gespeichert.`,
-                )
-              : saveChapters(
-                  chapterQuestId,
-                  (chapters) => [...chapters, chapter],
-                  `Kapitel „${chapter.title}“ hinzugefügt.`,
-                )
+            saveChapters(
+              chapterQuestId,
+              applyChapter(chapterTarget, chapter),
+              `Kapitel „${chapter.title}“ ${chapterTarget.chapter ? 'gespeichert' : 'hinzugefügt'}.`,
+            )
           }
           onDelete={
             chapterTarget.chapter

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -63,6 +63,20 @@ describe('App-Rahmen', () => {
     expect(within(bottomNav()).getByRole('link', { name: 'Heute' })).not.toHaveAttribute('aria-current')
   })
 
+  // Alle Seiten außer „Heute“ werden nachgeladen (Code-Splitting) – auch direkt per Adresse geöffnet.
+  it.each([
+    ['#/quests', 'Quests'],
+    ['#/kampagne', 'Kampagne'],
+    ['#/held', 'Held'],
+    ['#/einstellungen', 'Einstellungen'],
+  ])('öffnet die nachgeladene Seite %s direkt per Adresse', async (hash, title) => {
+    window.location.hash = hash
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()
+    expect(within(bottomNav()).getByRole('link', { name: NAV_ITEMS.find((item) => `#${item.to}` === hash)?.label }))
+      .toHaveAttribute('aria-current', 'page')
+  })
+
   it('leitet unbekannte Adressen auf "Heute" um', async () => {
     window.location.hash = '#/gibt-es-nicht'
     render(<App />)
@@ -86,5 +100,41 @@ describe('Onboarding-Weiche', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Willkommen' })).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'Hauptnavigation' })).not.toBeInTheDocument()
     await saveProfile({ name: 'Testheld', avatar: '🧙', createdDay: '2026-11-03' })
+  })
+})
+
+describe('Dauerhafter Speicher', () => {
+  /** Simuliert die StorageManager-API (jsdom hat keine) mit noch nicht geschütztem Speicher. */
+  function mockStorage() {
+    const persist = vi.fn(async () => true)
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: { persisted: vi.fn(async () => false), persist },
+    })
+    return persist
+  }
+
+  afterEach(async () => {
+    delete (navigator as { storage?: StorageManager }).storage
+    await saveProfile({ name: 'Testheld', avatar: '🧙', createdDay: '2026-11-03' })
+  })
+
+  it('bittet mit vorhandenem Helden beim Start um dauerhaften Speicher', async () => {
+    const persist = mockStorage()
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Heute' })
+    await waitFor(() => expect(persist).toHaveBeenCalled())
+  })
+
+  it('fragt vor dem Onboarding noch nicht, erst sobald der Held angelegt ist', async () => {
+    const persist = mockStorage()
+    await resetAllData()
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Willkommen' })
+    expect(persist).not.toHaveBeenCalled()
+
+    await saveProfile({ name: 'Testheld', avatar: '🧙', createdDay: '2026-11-03' })
+    await screen.findByRole('heading', { level: 1, name: 'Heute' })
+    await waitFor(() => expect(persist).toHaveBeenCalled())
   })
 })

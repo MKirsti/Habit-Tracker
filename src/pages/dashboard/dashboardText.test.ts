@@ -1,19 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SETTINGS } from '../../domain/balancing'
+import { deriveGameState, getDayState } from '../../domain/engine'
+import { makeCompletion } from '../../domain/testing'
 import type { GameData, Habit } from '../../domain/types'
 import {
+  campaignChapterLine,
+  compactDayLabel,
   countLabel,
   dayOffsetLabel,
   dayOffsetWord,
   deadlineText,
   formatValue,
   hasActiveHabits,
+  perfectBonusExplanation,
   perfectBonusPercent,
   selectableDayOffsets,
   stepValue,
   streakShort,
   streakText,
   weekWord,
+  withCurrentWeekStreaks,
 } from './dashboardText'
 
 const TODAY = '2026-11-03' // Dienstag
@@ -118,5 +124,82 @@ describe('wählbare Tage', () => {
     // Heute archiviert, gestern noch aktiv → gestern kann noch nachgetragen werden.
     expect(hasActiveHabits(data({ profile, habits: [habit({ archivedDay: TODAY })] }), TODAY)).toBe(true)
     expect(hasActiveHabits(data({ profile, habits: [habit({ archivedDay: '2026-11-02' })] }), TODAY)).toBe(false)
+  })
+})
+
+describe('perfectBonusExplanation', () => {
+  it('erklärt, dass der Bonus mit jeder Quest wächst', () => {
+    expect(perfectBonusExplanation(0)).toBe('25 % deiner heutigen Quest-XP – wächst mit jeder weiteren Quest (auch Wochenquests)')
+    expect(perfectBonusExplanation(1)).toBe('25 % deiner gestrigen Quest-XP – wächst mit jeder weiteren Quest (auch Wochenquests)')
+  })
+})
+
+describe('withCurrentWeekStreaks', () => {
+  // 2× pro Woche: erfüllt in den Wochen ab 19.10. und 26.10.; diese Woche gestern (Mo) und heute (Di).
+  const weekly = habit({ id: 'run', schedule: { type: 'weekly', times: 2 } })
+  const daily = habit({ id: 'read' })
+  const game = data({
+    profile: { name: 'Aria', avatar: '🧙', createdDay: '2026-10-01' },
+    habits: [weekly, daily],
+    completions: [
+      ...['2026-10-20', '2026-10-21', '2026-10-27', '2026-10-28', '2026-11-02', TODAY].map((day) => makeCompletion(weekly, day)),
+      ...['2026-11-01', '2026-11-02'].map((day) => makeCompletion(daily, day)),
+    ],
+  })
+  const todayState = deriveGameState(game, TODAY).todayState
+  const streakOf = (state: ReturnType<typeof getDayState>, id: string) =>
+    state.habits.find((status) => status.habit.id === id)?.streak.current
+
+  it('übernimmt für Wochenquests derselben Woche den Streak von heute', () => {
+    const yesterday = getDayState(game, '2026-11-02')
+    expect(streakOf(yesterday, 'run')).toBe(2) // zum Stichtag gestern: diese Woche noch nicht erfüllt
+    const merged = withCurrentWeekStreaks(yesterday, todayState, TODAY)
+    expect(streakOf(merged, 'run')).toBe(3)
+    // Tagesquests behalten den Streak zum gewählten Tag (heute ist „read“ noch offen).
+    expect(streakOf(merged, 'read')).toBe(2)
+  })
+
+  it('lässt Tage einer früheren Woche und heute unverändert', () => {
+    const sunday = getDayState(game, '2026-11-01')
+    expect(withCurrentWeekStreaks(sunday, todayState, TODAY)).toBe(sunday)
+    expect(withCurrentWeekStreaks(todayState, todayState, TODAY)).toBe(todayState)
+  })
+})
+
+describe('campaignChapterLine', () => {
+  const chapter = (title: string, done: boolean) => ({ chapter: { title }, done })
+
+  it('nennt das aktuelle Kapitel und zählt die abgeschlossenen', () => {
+    expect(
+      campaignChapterLine({
+        chapters: [chapter('Funke', true), chapter('Das erste Buch', false), chapter('Finale', false)],
+        currentChapterIndex: 1,
+        complete: false,
+      }),
+    ).toBe('Aktuelles Kapitel: Das erste Buch · 1 / 3 abgeschlossen')
+  })
+
+  it('zählt auch abgeschlossene Kapitel hinter dem aktuellen mit', () => {
+    expect(
+      campaignChapterLine({
+        chapters: [chapter('A', false), chapter('B', true), chapter('C', true)],
+        currentChapterIndex: 0,
+        complete: false,
+      }),
+    ).toBe('Aktuelles Kapitel: A · 2 / 3 abgeschlossen')
+  })
+
+  it('erklärt leere und gemeisterte Kampagnen', () => {
+    expect(campaignChapterLine({ chapters: [], currentChapterIndex: -1, complete: false })).toBe('Noch keine Kapitel')
+    expect(campaignChapterLine({ chapters: [chapter('A', true)], currentChapterIndex: -1, complete: true })).toBe(
+      'Alle Kapitel gemeistert',
+    )
+  })
+})
+
+describe('compactDayLabel', () => {
+  it('zeigt Wochentag und Datum kurz', () => {
+    expect(compactDayLabel(TODAY)).toBe('Di., 3. Nov.')
+    expect(compactDayLabel('2027-03-28')).toBe('So., 28. März')
   })
 })

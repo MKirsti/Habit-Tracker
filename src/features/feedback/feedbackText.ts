@@ -49,11 +49,25 @@ export function xpToastText(
   return { title: xpLabel(amount), description: parts.join(' · ') }
 }
 
-export function perfectDayToastText(event: PerfectDayEvent): ToastText {
-  const bonus = `+${formatNumber(event.bonusXp)} Bonus-XP`
+/** "+28 Bonus-XP" */
+function bonusLabel(bonusXp: number): string {
+  return `+${formatNumber(bonusXp)} Bonus-XP`
+}
+
+/** Heute: `bonusXp` ist die Tagessumme (wie in der Tagesbilanz), auch nachdem der Bonus gewachsen ist. */
+export function perfectDayToastText(event: Pick<PerfectDayEvent, 'bonusXp' | 'today'>): ToastText {
+  const title = `Perfekter Tag! ${bonusLabel(event.bonusXp)}`
   return event.today
-    ? { title: `Perfekter Tag! ${bonus}`, description: 'Alle heutigen Pflicht-Quests erfüllt.' }
-    : { title: `Perfekter Tag! ${bonus}`, description: 'Nachgetragen – ein vergangener Tag ist jetzt makellos.' }
+    ? { title, description: 'Alle heutigen Tagesquests erfüllt.' }
+    : { title, description: 'Nachgetragen – ein vergangener Tag ist jetzt makellos.' }
+}
+
+/**
+ * Kurzer Hinweis, wenn der Bonus eines schon perfekten Tages wächst und der Perfekter-Tag-Toast
+ * nicht mehr steht. `bonusXp` ist die neue Tagessumme.
+ */
+export function bonusGrowthToastText(bonusXp: number): ToastText {
+  return { title: `Tagesbonus steigt auf ${bonusLabel(bonusXp)}`, description: 'Perfekter Tag – jede weitere Quest erhöht ihn.' }
 }
 
 export function chapterToastText(event: ChapterCompletedEvent): ToastText {
@@ -63,12 +77,12 @@ export function chapterToastText(event: ChapterCompletedEvent): ToastText {
   }
 }
 
-/** "Intelligenz steigt auf Stufe 3" · "Noch 61 XP bis Stufe 4" (das Emoji kommt ins Toast-Icon). */
+/** "Intelligenz steigt auf Level 3" · "Noch 61 XP bis Level 4" (das Emoji kommt ins Toast-Icon). */
 export function attributeToastText(event: AttributeLevelUpEvent): ToastText {
   const remaining = Math.max(0, Math.ceil(event.xpForNextLevel - event.xpIntoLevel))
   return {
-    title: `${ATTRIBUTES[event.attribute].name} steigt auf Stufe ${formatNumber(event.to)}`,
-    description: `Noch ${formatNumber(remaining)} XP bis Stufe ${formatNumber(event.to + 1)}`,
+    title: `${ATTRIBUTES[event.attribute].name} steigt auf Level ${formatNumber(event.to)}`,
+    description: `Noch ${formatNumber(remaining)} XP bis Level ${formatNumber(event.to + 1)}`,
   }
 }
 

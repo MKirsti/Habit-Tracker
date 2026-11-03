@@ -3,9 +3,15 @@
  * Kapitel-Fortschritt. Bewusst ohne React, damit sie einzeln testbar sind.
  */
 import { BALANCING } from '../../domain/balancing'
-import { compareDays, diffDays, formatDay } from '../../domain/dates'
+import { diffDays, formatDay } from '../../domain/dates'
+import { streakUnit } from '../../domain/streaks'
 import type { ChapterCriterion, ChapterState, DayKey, Habit } from '../../domain/types'
 import { formatNumber } from '../../ui'
+
+/** Ist die Quest am Tag `today` archiviert? Dieselbe Regel wie überall (`isArchivedOn` aus domain/schedule). */
+export { isArchivedOn as isArchived } from '../../domain/schedule'
+
+type StreakUnit = 'day' | 'week'
 
 /** "1 Kapitel" / "2 Tage" – Zahl de-DE formatiert, Singular nur bei genau 1. */
 export function countLabel(n: number, singular: string, plural: string): string {
@@ -81,31 +87,32 @@ export const METRIC_LABELS: Record<HabitMetric, string> = {
   streak: 'Streak',
 }
 
-/** Zählt die Quest in Wochen (Wochenquest) statt in Tagen? */
-function countsWeeks(habit: Habit | undefined): boolean {
-  return habit?.schedule.type === 'weekly'
+/** Einheit, in der ein Streak der Quest nach ihrem **aktuellen** Rhythmus zählt (ohne Quest: Tage). */
+function currentStreakUnit(habit: Habit | undefined): StreakUnit {
+  return habit ? streakUnit(habit.schedule) : 'day'
 }
 
 /**
  * Einheit eines Quest-Ziels, passend zur Zahl `n`:
  * completions → "Tag"/"Tage", total → Einheit der Quest (sonst "gesamt"), streak → "Tag(e)" bzw. "Woche(n)".
+ * Für Streaks gilt `unit`, sonst die Einheit des aktuellen Rhythmus der Quest.
  */
-export function metricUnit(metric: HabitMetric, habit: Habit | undefined, n: number): string {
+export function metricUnit(metric: HabitMetric, habit: Habit | undefined, n: number, unit?: StreakUnit): string {
   switch (metric) {
     case 'completions':
       return n === 1 ? 'Tag' : 'Tage'
     case 'total':
       return habit?.measure?.unit ?? 'gesamt'
     case 'streak':
-      if (countsWeeks(habit)) return n === 1 ? 'Woche' : 'Wochen'
+      if ((unit ?? currentStreakUnit(habit)) === 'week') return n === 1 ? 'Woche' : 'Wochen'
       return n === 1 ? 'Tag' : 'Tage'
   }
 }
 
 /** Einheit im Dativ für vorgelesene Texte ("5 von 7 Tagen"). */
-function metricUnitDative(metric: HabitMetric, habit: Habit | undefined, n: number): string {
+function metricUnitDative(metric: HabitMetric, habit: Habit | undefined, n: number, unit?: StreakUnit): string {
   if (metric === 'total') return metricUnit(metric, habit, n)
-  if (metric === 'streak' && countsWeeks(habit)) return n === 1 ? 'Woche' : 'Wochen'
+  if (metric === 'streak' && (unit ?? currentStreakUnit(habit)) === 'week') return n === 1 ? 'Woche' : 'Wochen'
   return n === 1 ? 'Tag' : 'Tagen'
 }
 
@@ -123,6 +130,8 @@ export interface ChapterProgressText {
 /**
  * Fortschritt eines Zähler- oder Quest-Kapitels als Text: "5 / 7 Tage", "430 / 1.000 Seiten",
  * "Bester Streak 12 / 21 Tage", "3 / 12 Bücher beendet". Für 'manual' gibt es keinen Zahlenwert.
+ * Streaks nennen die Einheit des Werts (`state.unit`): Nach einer Umstellung zwischen Tages- und Wochenquest
+ * kann ein vorher erreichtes Ziel in der früheren Einheit zählen ("21 / 21 Tage" bei einer Wochenquest).
  */
 export function chapterProgressText(state: ChapterState, habit: Habit | undefined): ChapterProgressText | undefined {
   const { criterion } = state.chapter
@@ -139,8 +148,8 @@ export function chapterProgressText(state: ChapterState, habit: Habit | undefine
       return { prefix: '', value, suffix: criterion.label, spoken: `${criterion.label}: ${current} von ${target}` }
     case 'habit': {
       const { metric } = criterion
-      const suffix = metricUnit(metric, habit, state.target)
-      const dative = metricUnitDative(metric, habit, state.target)
+      const suffix = metricUnit(metric, habit, state.target, state.unit)
+      const dative = metricUnitDative(metric, habit, state.target, state.unit)
       const prefix = metric === 'streak' ? 'Bester Streak' : ''
       const spokenLabel = metric === 'streak' ? 'Bester Streak' : metric === 'total' ? 'Gesamt' : 'Erledigt'
       return { prefix, value, suffix, spoken: `${spokenLabel}: ${current} von ${target} ${dative}` }
@@ -166,9 +175,4 @@ export function criterionSummary(criterion: ChapterCriterion, habitsById: Readon
       return `${name} · ${prefix}${formatValue(criterion.target)} ${unit}`
     }
   }
-}
-
-/** Ist die Quest am Tag `today` archiviert? */
-export function isArchived(habit: Habit, today: DayKey): boolean {
-  return habit.archivedDay !== undefined && compareDays(habit.archivedDay, today) <= 0
 }

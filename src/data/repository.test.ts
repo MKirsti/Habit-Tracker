@@ -4,9 +4,10 @@ import { DEFAULT_SETTINGS } from '../domain/balancing'
 import { evaluateChapter } from '../domain/chapters'
 import { addDays, dayRange } from '../domain/dates'
 import { deriveGameState } from '../domain/engine'
-import { isActiveOn, isDone, isRequiredOn, isVisibleOn, scheduleOn } from '../domain/schedule'
+import { isActiveOn, isArchivedOn, isDone, isRequiredOn, isVisibleOn, scheduleOn } from '../domain/schedule'
 import { seededRandom } from '../domain/testing'
 import type { Chapter, Completion, DayKey, GameData, Habit, MainQuest, Schedule } from '../domain/types'
+import { applyHabitDeletion } from '../domain/deletion'
 import { createBackup, parseBackup } from './backup'
 import { KV_KEYS, QuestlogDB } from './db'
 import {
@@ -102,10 +103,10 @@ async function storedChapter(questId: string, chapterId: string): Promise<Chapte
   return chapter
 }
 
-/** Titel der aktiven Quests in Anzeige-Reihenfolge. */
-async function activeTitles(): Promise<string[]> {
+/** Titel der am Tag `day` aktiven (nicht archivierten) Quests in Anzeige-Reihenfolge. */
+async function activeTitles(day: DayKey = DAY): Promise<string[]> {
   const { habits } = await loadGameData(database)
-  return habits.filter((h) => h.archivedDay === undefined).map((h) => h.title)
+  return habits.filter((h) => !isArchivedOn(h, day)).map((h) => h.title)
 }
 
 // ---------------------------------------------------------------------------
@@ -510,10 +511,18 @@ describe('archiveHabit / restoreHabit / deleteHabit', () => {
     await expect(archiveHabit('unbekannt', DAY, database)).rejects.toThrow('Diese Quest gibt es nicht')
   })
 
+  it('archiveHabit zieht einen künftigen archivedDay auf heute vor', async () => {
+    const habit = await createHabit(checkDraft(), '2026-10-01', database)
+    await database.habits.update(habit.id, { archivedDay: NEXT_DAY })
+    await archiveHabit(habit.id, DAY, database)
+    expect((await storedHabit(habit.id)).archivedDay).toBe(DAY)
+    expect(isArchivedOn(await storedHabit(habit.id), DAY)).toBe(true)
+  })
+
   it('deleteHabit und deleteMainQuest ignorieren unbekannte IDs', async () => {
     const habit = await createHabit(checkDraft(), DAY, database)
     const before = await loadGameData(database)
-    await deleteHabit('unbekannt', database)
+    await deleteHabit('unbekannt', DAY, database)
     await deleteMainQuest('unbekannt', database)
     expect(await loadGameData(database)).toStrictEqual(before)
     expect(before.habits.map((h) => h.id)).toEqual([habit.id])
@@ -526,11 +535,190 @@ describe('archiveHabit / restoreHabit / deleteHabit', () => {
     await toggleCompletion(doomed.id, NEXT_DAY, database)
     await toggleCompletion(kept.id, DAY, database)
 
-    await deleteHabit(doomed.id, database)
+    await deleteHabit(doomed.id, NEXT_DAY, database)
 
     const data = await loadGameData(database)
     expect(data.habits.map((h) => h.id)).toEqual([kept.id])
     expect(data.completions.map((c) => c.habitId)).toEqual([kept.id])
+  })
+})
+
+describe('deleteHabit – Grabsteine', () => {
+  const D3 = '2026-10-31'
+  const D2 = '2026-11-01'
+  const D1 = '2026-11-02'
+
+  /** Laufen (Mittel) an D-3…D-1 erledigt; Vokabeln (Leicht) heute (DAY) archiviert. */
+  async function setup() {
+    await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: D3 }, database)
+    const running = await createHabit(checkDraft({ title: 'Laufen', difficulty: 'medium', attribute: 'strength' }), D3, database)
+    const vocabulary = await createHabit(checkDraft({ title: 'Vokabeln', difficulty: 'easy', attribute: 'intellect' }), D3, database)
+    for (const day of [D3, D2, D1]) await toggleCompletion(running.id, day, database)
+    await archiveHabit(vocabulary.id, DAY, database)
+    return { running, vocabulary }
+  }
+
+  it('macht keinen vergangenen Tag perfekt und bringt keine XP (nie erledigte Pflicht-Quest)', async () => {
+    const { vocabulary } = await setup()
+    const before = deriveGameState(await loadGameData(database), DAY)
+    expect(before.level.totalXp).toBe(60)
+    expect(before.totals.perfectDays).toBe(0)
+
+    await deleteHabit(vocabulary.id, DAY, database)
+    const data = await loadGameData(database)
+    expect(data.habits.map((h) => h.title)).toEqual(['Laufen'])
+    expect(data.deletedHabits).toStrictEqual([
+      { id: vocabulary.id, createdDay: D3, archivedDay: DAY, schedule: { type: 'daily' } },
+    ])
+    const after = deriveGameState(data, DAY)
+    expect(after.level.totalXp).toBe(60)
+    expect(after.totals.perfectDays).toBe(0)
+  })
+
+  it('kostet nur: die eigenen XP und den Perfekten Tag, an dem die Quest erledigt war', async () => {
+    const { vocabulary } = await setup()
+    await toggleCompletion(vocabulary.id, D3, database)
+    const before = deriveGameState(await loadGameData(database), DAY)
+    expect(before.level.totalXp).toBe(78)
+    expect(before.totals.perfectDays).toBe(1)
+
+    await deleteHabit(vocabulary.id, DAY, database)
+    const after = deriveGameState(await loadGameData(database), DAY)
+    expect(after.level.totalXp).toBe(60)
+    expect(after.totals.perfectDays).toBe(0)
+  })
+
+  it('ergibt denselben Spielstand wie applyHabitDeletion', async () => {
+    await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: '2026-10-01' }, database)
+    const reading = await createHabit(measureDraft(), '2026-10-01', database)
+    const gym = await createHabit(checkDraft({ title: 'Training', schedule: { type: 'weekdays', days: [1, 3, 5] } }), '2026-10-01', database)
+    const talk = await createHabit(checkDraft({ title: 'Anrufen', schedule: { type: 'weekly', times: 2 } }), '2026-10-02', database)
+    const quiet = await createHabit(checkDraft({ title: 'Stille' }), '2026-10-03', database)
+    await updateHabit(gym.id, { schedule: { type: 'daily' } }, '2026-10-10', database)
+    await archiveHabit(gym.id, '2026-10-12', database)
+    await restoreHabit(gym.id, '2026-10-15', database)
+    await archiveHabit(talk.id, '2026-10-25', database)
+    for (const day of dayRange('2026-10-01', DAY)) {
+      await setCompletionValue(reading.id, day, day.endsWith('7') ? 4 : 10, database)
+      if (!day.endsWith('3')) await toggleCompletion(gym.id, day, database)
+      if (day.endsWith('5')) await toggleCompletion(talk.id, day, database)
+      if (!day.endsWith('9')) await toggleCompletion(quiet.id, day, database)
+    }
+    await createMainQuest(
+      questDraft({
+        startDay: '2026-10-01',
+        chapters: [
+          { id: 'a', title: 'A', criterion: { type: 'habit', habitId: gym.id, metric: 'streak', target: 3 } },
+          { id: 'b', title: 'B', criterion: { type: 'habit', habitId: talk.id, metric: 'completions', target: 2 } },
+        ],
+      }),
+      database,
+    )
+
+    for (const habit of [talk, gym, quiet, reading]) {
+      const data = await loadGameData(database)
+      const expected = applyHabitDeletion(data, habit.id, DAY)
+      await deleteHabit(habit.id, DAY, database)
+      const stored = await loadGameData(database)
+      expect(stored, habit.title).toStrictEqual(expected)
+      for (const day of [DAY, D1]) {
+        expect(deriveGameState(stored, day), `${habit.title}, ${day}`).toStrictEqual(deriveGameState(expected, day))
+      }
+    }
+    expect((await loadGameData(database)).deletedHabits?.map((t) => t.id)).toEqual([talk.id, gym.id, quiet.id, reading.id])
+  })
+
+  it('der Grabstein endet am Archivierungstag (≤ heute), sonst am Löschtag', async () => {
+    const archived = await createHabit(checkDraft({ title: 'Archiviert' }), '2026-10-01', database)
+    const active = await createHabit(checkDraft({ title: 'Aktiv' }), '2026-10-01', database)
+    const future = await createHabit(checkDraft({ title: 'Morgen archiviert' }), '2026-10-01', database)
+    await archiveHabit(archived.id, '2026-10-20', database)
+    await database.habits.update(future.id, { archivedDay: NEXT_DAY })
+    for (const habit of [archived, active, future]) await deleteHabit(habit.id, DAY, database)
+    const tombstones = (await loadGameData(database)).deletedHabits ?? []
+    expect(tombstones.map((t) => [t.id, t.archivedDay])).toEqual([
+      [archived.id, '2026-10-20'],
+      [active.id, DAY],
+      [future.id, DAY],
+    ])
+  })
+
+  it('übernimmt Rhythmus-Verlauf und Pausen in den Grabstein', async () => {
+    const habit = await createHabit(checkDraft(), '2026-10-01', database)
+    await updateHabit(habit.id, { schedule: { type: 'weekly', times: 2 } }, '2026-10-10', database)
+    await archiveHabit(habit.id, '2026-10-12', database)
+    await restoreHabit(habit.id, '2026-10-15', database)
+    const stored = await storedHabit(habit.id)
+    await deleteHabit(habit.id, DAY, database)
+    expect((await loadGameData(database)).deletedHabits).toStrictEqual([
+      {
+        id: habit.id,
+        createdDay: '2026-10-01',
+        archivedDay: DAY,
+        schedule: stored.schedule,
+        scheduleHistory: stored.scheduleHistory,
+        pauses: stored.pauses,
+      },
+    ])
+  })
+
+  it('ohne Spieltag gilt der heutige laut Uhr und Tageswechsel', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date(2026, 10, 4, 3, 30)) // 3:30 Uhr → mit Tageswechsel 4 Uhr noch der 3. November
+      const habit = await createHabit(checkDraft(), '2026-10-01', database)
+      await deleteHabit(habit.id, undefined, database)
+      expect((await loadGameData(database)).deletedHabits?.[0].archivedDay).toBe(DAY)
+
+      await updateSettings({ dayStartHour: 0 }, database)
+      const other = await createHabit(checkDraft(), '2026-10-01', database)
+      await deleteHabit(other.id, undefined, database)
+      expect((await loadGameData(database)).deletedHabits?.[1].archivedDay).toBe(NEXT_DAY)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lädt nur gültige Grabsteine (kaputte Einträge entfallen, Rhythmen werden normalisiert)', async () => {
+    await database.kv.put({
+      key: KV_KEYS.deletedHabits,
+      value: [
+        { id: 'ok', createdDay: '2026-10-01', archivedDay: DAY, schedule: { type: 'weekdays', days: [5, 1, 1] } },
+        { id: '', createdDay: '2026-10-01', archivedDay: DAY, schedule: { type: 'daily' } },
+        { id: 'kaputt', createdDay: 'gestern', archivedDay: DAY, schedule: { type: 'daily' } },
+        { id: 'ohne-rhythmus', createdDay: '2026-10-01', archivedDay: DAY, schedule: { type: 'monthly' } },
+        {
+          id: 'verlauf',
+          createdDay: '2026-10-01',
+          archivedDay: DAY,
+          schedule: { type: 'daily' },
+          scheduleHistory: [{ until: '2026-10-09', schedule: { type: 'weekly', times: 2 } }, { until: 'x' }],
+          pauses: [{ from: '2026-10-20', until: '2026-10-18' }, { from: '2026-10-21', until: '2026-10-24' }],
+        },
+        'Unsinn',
+      ],
+    })
+    const { deletedHabits } = await loadGameData(database)
+    expect(deletedHabits).toStrictEqual([
+      { id: 'ok', createdDay: '2026-10-01', archivedDay: DAY, schedule: { type: 'weekdays', days: [1, 5] } },
+      {
+        id: 'verlauf',
+        createdDay: '2026-10-01',
+        archivedDay: DAY,
+        schedule: { type: 'daily' },
+        scheduleHistory: [{ until: '2026-10-09', schedule: { type: 'weekly', times: 2 } }],
+        pauses: [{ from: '2026-10-21', until: '2026-10-24' }],
+      },
+    ])
+    // Was geladen wird, besteht auch die Backup-Prüfung.
+    const parsed = parseBackup(await createBackup(new Date(), database))
+    expect(parsed.ok ? '' : parsed.error).toBe('')
+  })
+
+  it('verlangt einen gültigen Spieltag und ändert sonst nichts', async () => {
+    const habit = await createHabit(checkDraft(), DAY, database)
+    await expect(deleteHabit(habit.id, '2026-02-30', database)).rejects.toThrow('Ungültiges Datum')
+    expect(await storedHabit(habit.id)).toBeDefined()
   })
 })
 
@@ -696,25 +884,25 @@ describe('moveHabit', () => {
 
   it('tauscht mit dem Nachbarn nach oben und unten', async () => {
     const [a, , c] = await createNamed('A', 'B', 'C')
-    await moveHabit(c.id, 'up', database)
+    await moveHabit(c.id, 'up', DAY, database)
     expect(await activeTitles()).toEqual(['A', 'C', 'B'])
-    await moveHabit(a.id, 'down', database)
+    await moveHabit(a.id, 'down', DAY, database)
     expect(await activeTitles()).toEqual(['C', 'A', 'B'])
   })
 
   it('macht am Anfang/Ende und bei unbekannten IDs nichts', async () => {
     const [a, , c] = await createNamed('A', 'B', 'C')
     const before = await loadGameData(database)
-    await moveHabit(a.id, 'up', database)
-    await moveHabit(c.id, 'down', database)
-    await moveHabit('unbekannt', 'up', database)
+    await moveHabit(a.id, 'up', DAY, database)
+    await moveHabit(c.id, 'down', DAY, database)
+    await moveHabit('unbekannt', 'up', DAY, database)
     expect(await loadGameData(database)).toStrictEqual(before)
   })
 
   it('überspringt archivierte Quests', async () => {
     const [a, b, c] = await createNamed('A', 'B', 'C')
     await archiveHabit(b.id, DAY, database)
-    await moveHabit(c.id, 'up', database)
+    await moveHabit(c.id, 'up', DAY, database)
     expect(await activeTitles()).toEqual(['C', 'A'])
     expect((await storedHabit(b.id)).order).toBe(1) // archivierte Quest unverändert
     expect((await storedHabit(c.id)).order).toBe(0)
@@ -722,8 +910,33 @@ describe('moveHabit', () => {
 
     // Archivierte Quests selbst werden nicht verschoben.
     const before = await loadGameData(database)
-    await moveHabit(b.id, 'up', database)
+    await moveHabit(b.id, 'up', DAY, database)
     expect(await loadGameData(database)).toStrictEqual(before)
+  })
+
+  it('eine erst künftig archivierte Quest gilt heute als aktiv (wie in der Quest-Liste)', async () => {
+    // Entsteht, wenn nach dem Archivieren der Tageswechsel später gelegt wird: archivedDay liegt dann nach heute.
+    const [a, b, c] = await createNamed('A', 'B', 'C')
+    await database.habits.update(b.id, { archivedDay: NEXT_DAY })
+    expect(await activeTitles()).toEqual(['A', 'B', 'C'])
+
+    // Der Nachbar von C ist B – kein Sprung über B hinweg.
+    await moveHabit(c.id, 'up', DAY, database)
+    expect(await activeTitles()).toEqual(['A', 'C', 'B'])
+    // B selbst lässt sich verschieben.
+    await moveHabit(b.id, 'up', DAY, database)
+    expect(await activeTitles()).toEqual(['A', 'B', 'C'])
+    await moveHabit(b.id, 'up', DAY, database)
+    expect(await activeTitles()).toEqual(['B', 'A', 'C'])
+    // Ab dem Archivierungstag wird B übersprungen.
+    await moveHabit(c.id, 'up', NEXT_DAY, database)
+    expect(await activeTitles(NEXT_DAY)).toEqual(['C', 'A'])
+    expect((await storedHabit(a.id)).order).toBeGreaterThan((await storedHabit(c.id)).order)
+  })
+
+  it('verlangt einen gültigen Spieltag', async () => {
+    const [a] = await createNamed('A', 'B')
+    await expect(moveHabit(a.id, 'down', 'heute', database)).rejects.toThrow('Ungültiges Datum')
   })
 
   it('nummeriert doppelte order-Werte vorher neu durch', async () => {
@@ -735,12 +948,12 @@ describe('moveHabit', () => {
     ])
     expect(await activeTitles()).toEqual(['A', 'B', 'C']) // Gleichstand → nach Titel
 
-    await moveHabit(c.id, 'up', database)
+    await moveHabit(c.id, 'up', DAY, database)
     expect(await activeTitles()).toEqual(['A', 'C', 'B'])
     const orders = (await loadGameData(database)).habits.map((h) => h.order)
     expect(orders).toEqual([0, 1, 2])
 
-    await moveHabit(a.id, 'down', database)
+    await moveHabit(a.id, 'down', DAY, database)
     expect(await activeTitles()).toEqual(['C', 'A', 'B'])
   })
 })
@@ -839,18 +1052,18 @@ describe('Erledigungen', () => {
   })
 
   it('toggleCompletion verringert nie einen bereits erfassten Wert', async () => {
-    // Ziel 20 Seiten, 12 erfasst (Teilfortschritt). Danach wird das Ziel auf 10 gesenkt; der Snapshot
-    // der heutigen Erledigung bleibt bei 20, die Quest ist also weiterhin "nicht erledigt".
+    // Ziel 20 Seiten, gestern 12 erfasst (Teilfortschritt). Heute wird das Ziel auf 10 gesenkt; der Snapshot
+    // von gestern bleibt bei 20, die Quest ist dort also weiterhin "nicht erledigt" (Nachtragen).
     const habit = await createHabit(measureDraft({ measure: { target: 20, unit: 'Seiten' } }), DAY, database)
     await setCompletionValue(habit.id, DAY, 12, database)
-    await updateHabit(habit.id, { measure: { target: 10, unit: 'Seiten' } }, DAY, database)
+    await updateHabit(habit.id, { measure: { target: 10, unit: 'Seiten' } }, NEXT_DAY, database)
 
     await toggleCompletion(habit.id, DAY, database)
     // Erledigt mit dem aktuellen Ziel – die gelesenen 12 Seiten bleiben erhalten (zählen z. B. für "Seiten gesamt").
     expect(await database.completions.get(completionId(habit.id, DAY))).toMatchObject({ value: 12, target: 10 })
   })
 
-  it('Snapshots bleiben bei späteren Änderungen der Quest unverändert', async () => {
+  it('Snapshots früherer Tage bleiben bei späteren Änderungen der Quest unverändert', async () => {
     const habit = await createHabit(measureDraft(), DAY, database)
     await setCompletionValue(habit.id, DAY, 10, database)
     const before = await database.completions.get(completionId(habit.id, DAY))
@@ -858,7 +1071,7 @@ describe('Erledigungen', () => {
     await updateHabit(
       habit.id,
       { measure: { target: 20, unit: 'Seiten' }, difficulty: 'epic', attribute: 'wisdom' },
-      DAY,
+      NEXT_DAY,
       database,
     )
     expect(await database.completions.get(completionId(habit.id, DAY))).toStrictEqual(before)
@@ -876,6 +1089,105 @@ describe('Erledigungen', () => {
     // Wird die Quest zur Abhak-Quest, bleibt die Vergangenheit ebenfalls unangetastet.
     await updateHabit(habit.id, { measure: undefined }, NEXT_DAY, database)
     expect(await database.completions.get(completionId(habit.id, DAY))).toStrictEqual(before)
+  })
+})
+
+describe('updateHabit – der heutige Eintrag folgt der Änderung', () => {
+  const YESTERDAY = '2026-11-02'
+
+  async function todayStatus(habitId: string) {
+    const state = deriveGameState(await loadGameData(database), DAY)
+    const status = state.todayState.habits.find((s) => s.habit.id === habitId)
+    if (!status) throw new Error('Quest fehlt in der Tagesansicht')
+    return { state, status }
+  }
+
+  it('gesenktes Ziel: 7 / 10 wird zu 7 / 5 – erledigt und mit XP', async () => {
+    const habit = await createHabit(measureDraft(), YESTERDAY, database)
+    await setCompletionValue(habit.id, DAY, 7, database)
+    expect((await todayStatus(habit.id)).state.totals.xpFromQuests).toBe(0)
+
+    await updateHabit(habit.id, { measure: { target: 5, unit: 'Seiten' } }, DAY, database)
+    expect(await database.completions.get(completionId(habit.id, DAY))).toMatchObject({ value: 7, target: 5 })
+    const { state, status } = await todayStatus(habit.id)
+    expect(status).toMatchObject({ value: 7, target: 5, done: true, xp: 20 })
+    expect(state.totals.xpFromQuests).toBe(20)
+    expect(state.todayState.perfect).toBe(true)
+  })
+
+  it('erhöhtes Ziel: 10 / 10 wird zu 10 / 20 – wieder offen, die XP entfallen', async () => {
+    const habit = await createHabit(measureDraft(), YESTERDAY, database)
+    await setCompletionValue(habit.id, DAY, 10, database)
+    expect((await todayStatus(habit.id)).state.level.totalXp).toBe(25) // 20 + Perfekter Tag
+
+    await updateHabit(habit.id, { measure: { target: 20, unit: 'Seiten' } }, DAY, database)
+    const { state, status } = await todayStatus(habit.id)
+    expect(status).toMatchObject({ value: 10, target: 20, done: false })
+    expect(state.level.totalXp).toBe(0)
+    // Eine weitere Seite führt nun zu 11 / 20 statt 11 / 10 (kein Sprung von erledigt nach offen).
+    await setCompletionValue(habit.id, DAY, 11, database)
+    expect((await todayStatus(habit.id)).status).toMatchObject({ value: 11, target: 20, done: false })
+  })
+
+  it('Schwierigkeit: gutgeschriebene XP und Anzeige stimmen überein (Leicht → Episch)', async () => {
+    const habit = await createHabit(checkDraft({ difficulty: 'easy' }), YESTERDAY, database)
+    await toggleCompletion(habit.id, DAY, database)
+    await updateHabit(habit.id, { difficulty: 'epic' }, DAY, database)
+    const { state, status } = await todayStatus(habit.id)
+    expect(status).toMatchObject({ done: true, xp: 80 })
+    expect(state.totals.xpFromQuests).toBe(80)
+    expect(await database.completions.get(completionId(habit.id, DAY))).toMatchObject({ difficulty: 'epic' })
+  })
+
+  it('Attribut: die heutigen Attribut-XP wandern zum neuen Attribut', async () => {
+    const habit = await createHabit(checkDraft({ attribute: 'strength', difficulty: 'medium' }), YESTERDAY, database)
+    await toggleCompletion(habit.id, YESTERDAY, database)
+    await toggleCompletion(habit.id, DAY, database)
+    await updateHabit(habit.id, { attribute: 'charisma' }, DAY, database)
+    const { state } = await todayStatus(habit.id)
+    expect(state.attributes.strength.totalXp).toBe(20) // gestern bleibt bei Stärke
+    expect(state.attributes.charisma.totalXp).toBe(20)
+  })
+
+  it('Abhaken → messbar: erledigt bleibt erledigt (Wert = neues Ziel)', async () => {
+    const habit = await createHabit(checkDraft(), YESTERDAY, database)
+    await toggleCompletion(habit.id, DAY, database)
+    await updateHabit(habit.id, { measure: { target: 5, unit: 'Seiten' } }, DAY, database)
+    expect(await database.completions.get(completionId(habit.id, DAY))).toMatchObject({ value: 5, target: 5 })
+    expect((await todayStatus(habit.id)).status).toMatchObject({ value: 5, target: 5, done: true })
+  })
+
+  it('messbar → Abhaken: erledigt wird zu 1 / 1, Teilfortschritt entfällt', async () => {
+    const done = await createHabit(measureDraft({ title: 'Erledigt' }), YESTERDAY, database)
+    const partial = await createHabit(measureDraft({ title: 'Angefangen' }), YESTERDAY, database)
+    await setCompletionValue(done.id, DAY, 12, database)
+    await setCompletionValue(partial.id, DAY, 3, database)
+    await updateHabit(done.id, { measure: undefined }, DAY, database)
+    await updateHabit(partial.id, { measure: undefined }, DAY, database)
+    expect(await database.completions.get(completionId(done.id, DAY))).toMatchObject({ value: 1, target: 1 })
+    expect(await database.completions.get(completionId(partial.id, DAY))).toBeUndefined()
+  })
+
+  it('frühere Tage und andere Änderungen lassen die Erledigungen unangetastet', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const habit = await createHabit(measureDraft(), YESTERDAY, database)
+    await setCompletionValue(habit.id, YESTERDAY, 7, database)
+    await setCompletionValue(habit.id, DAY, 7, database)
+    const before = await database.completions.toArray()
+    vi.spyOn(Date, 'now').mockReturnValue(2_000)
+    // Nur Titel/Rhythmus: kein neuer Schnappschuss nötig.
+    await updateHabit(habit.id, { title: 'Abends lesen', schedule: { type: 'weekly', times: 3 } }, DAY, database)
+    expect(await database.completions.toArray()).toStrictEqual(before)
+
+    await updateHabit(habit.id, { measure: { target: 5, unit: 'Seiten' }, difficulty: 'hard' }, DAY, database)
+    const yesterday = await database.completions.get(completionId(habit.id, YESTERDAY))
+    expect(yesterday).toStrictEqual(before.find((c) => c.day === YESTERDAY))
+    expect(await database.completions.get(completionId(habit.id, DAY))).toMatchObject({
+      value: 7,
+      target: 5,
+      difficulty: 'hard',
+      updatedAt: 2_000,
+    })
   })
 })
 

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useGameContext } from '../../app/gameContext'
 import { ATTRIBUTES } from '../../domain/attributes'
-import type { CharacterProfile, GameState } from '../../domain/types'
+import type { CharacterProfile, Completion, GameState } from '../../domain/types'
 import { useMediaQuery, useToast } from '../../ui'
 import type { ToastApi, ToastOptions } from '../../ui'
 import { CelebrationOverlay } from './CelebrationOverlay'
@@ -20,14 +20,22 @@ import {
 import type { Celebration } from './celebrations'
 import { Confetti } from './Confetti'
 import type { ConfettiBurstSpec } from './Confetti'
-import { diffGameStates, feedbackStillHolds, isBulkChange } from './feedbackEvents'
-import type { FeedbackEvent, XpGainedEvent } from './feedbackEvents'
-import { attributeToastText, chapterToastText, perfectDayToastText, xpToastText } from './feedbackText'
+import { creditedCompletions, diffGameStates, feedbackStillHolds, isBulkChange } from './feedbackEvents'
+import type { FeedbackEvent, PerfectDayEvent, XpGainedEvent } from './feedbackEvents'
+import {
+  attributeToastText,
+  bonusGrowthToastText,
+  chapterToastText,
+  perfectDayToastText,
+  xpToastText,
+} from './feedbackText'
 import { nextXpSession } from './xpSession'
 import type { XpSession } from './xpSession'
 
 /** Besondere Toasts (Perfekter Tag, Kapitel) bleiben etwas länger stehen. */
 const HIGHLIGHT_TOAST_MS = 5000
+/** Kurzer Hinweis „Tagesbonus steigt auf …“ (wie ein XP-Toast). */
+const BONUS_GROWTH_TOAST_MS = 3500
 
 type ConfettiIntensity = ConfettiBurstSpec['intensity']
 
@@ -44,6 +52,9 @@ type ConfettiIntensity = ConfettiBurstSpec['intensity']
  * - Toasts, die während einer Szene ankommen, erscheinen erst danach (sonst liefen sie ungesehen ab).
  * - Was nicht mehr stimmt (Haken sofort wieder entfernt), verschwindet wieder – Toast wie Szene.
  * - Eine schon gesehene Szene (gleicher Level, gleiche Kampagne) kommt nicht noch einmal.
+ * - Der Bonus des Perfekten Tages erscheint immer als Tagessumme (wie in der Tagesbilanz): Wächst er,
+ *   wird der Toast ersetzt statt ein „inkl. … Bonus-XP“ an XP-Toasts zu hängen.
+ * - XP werden über die geänderten Erledigungen den Quests zugeordnet – auch nachgetragene.
  */
 export function GameFeedback() {
   const { data, state } = useGameContext()
@@ -51,7 +62,7 @@ export function GameFeedback() {
   const fancy = data.settings.effects && !prefersReducedMotion
 
   const ownedToasts = useOwnedToasts()
-  const { present, revoke, resetXp } = useFeedbackToasts(ownedToasts)
+  const { present, revoke, syncPerfectBonus, resetSessions } = useFeedbackToasts(ownedToasts)
   const { bursts, addBurst, removeBurst } = useConfettiBursts()
 
   // Die Warteschlange wird synchron über die Ref geführt (für die Logik im Effekt) und als State
@@ -67,14 +78,19 @@ export function GameFeedback() {
   /** Toast-Ereignisse, die während einer Szene ankamen – sie folgen nach der letzten Szene. */
   const deferred = useRef<FeedbackEvent[]>([])
 
-  // Vergleichsbasis: der zuletzt gesehene Zustand (beim Mounten der aktuelle – keine Rückmeldung).
-  const baseline = useRef({ state, profile: profileKey(data.profile) })
+  // Vergleichsbasis: der zuletzt gesehene Zustand (beim Mounten der aktuelle – keine Rückmeldung) samt
+  // Erledigungen, damit sich XP-Gewinne den Quests zuordnen lassen.
+  const baseline = useRef<{ state: GameState; profile: string; completions: readonly Completion[] }>({
+    state,
+    profile: profileKey(data.profile),
+    completions: data.completions,
+  })
   const memory = useRef(celebrationMemoryOf(state))
 
   useEffect(() => {
     const previous = baseline.current
     const profile = profileKey(data.profile)
-    baseline.current = { state, profile }
+    baseline.current = { state, profile, completions: data.completions }
     if (previous.state === state) return
 
     // Rückgängig gemacht: Toasts und Szenen, die nicht mehr stimmen, verschwinden.
@@ -85,11 +101,15 @@ export function GameFeedback() {
     if (previous.profile !== profile || isBulkChange(previous.state, state)) {
       memory.current = celebrationMemoryOf(state)
       deferred.current = []
-      resetXp()
+      resetSessions()
       return
     }
 
-    const events = withoutCelebrated(diffGameStates(previous.state, state), memory.current)
+    // Gesunkener Tagesbonus (z. B. Wochenquest wieder offen): Der sichtbare Toast zeigt die neue Summe.
+    syncPerfectBonus(state)
+
+    const credits = creditedCompletions(previous.completions, data.completions, data.habits, state.today)
+    const events = withoutCelebrated(diffGameStates(previous.state, state, credits), memory.current)
     if (events.length === 0) return
 
     const celebrate = hasCelebration(events)
@@ -103,8 +123,20 @@ export function GameFeedback() {
     }
     // Höchstens ein Konfetti pro Änderung.
     const confetti = present(toastEvents, state)
-    if (confetti && fancy) addBurst({ mode: 'cannon', intensity: confetti, ...toastOrigin() })
-  }, [state, data.profile, fancy, present, revoke, resetXp, addBurst, setQueue])
+    if (confetti && fancy) addBurst({ intensity: confetti, ...toastOrigin() })
+  }, [
+    state,
+    data.profile,
+    data.completions,
+    data.habits,
+    fancy,
+    present,
+    revoke,
+    syncPerfectBonus,
+    resetSessions,
+    addBurst,
+    setQueue,
+  ])
 
   // Nach der letzten Szene: die zurückgehaltenen Toasts zeigen (soweit sie noch stimmen).
   useEffect(() => {
@@ -162,14 +194,28 @@ function profileKey(profile: CharacterProfile | undefined): string {
   return profile ? `${profile.createdDay}|${profile.name}|${profile.avatar}` : ''
 }
 
-/** Konfetti-Ursprung beim Toast-Stapel: Handy unten mittig, Desktop unten rechts. */
-function toastOrigin(): { x: number; y: number } {
+/**
+ * Konfetti am Toast-Stapel: Desktop unten rechts als Fontäne nach oben; Handy oben mittig (der Stapel
+ * sitzt dort unter dem Sicherheitsabstand) als Fächer nach unten – nach oben flöge es aus dem Bild.
+ */
+function toastOrigin(): Pick<ConfettiBurstSpec, 'mode' | 'x' | 'y'> {
   const width = Math.max(1, window.innerWidth)
   const height = Math.max(1, window.innerHeight)
   const desktop = typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 768px)').matches
   return desktop
-    ? { x: Math.max(0.5, (width - 24 - 192) / width), y: Math.min(0.95, (height - 64) / height) }
-    : { x: 0.5, y: Math.min(0.92, (height - 64 - 48) / height) }
+    ? { mode: 'cannon', x: Math.max(0.5, (width - 24 - 192) / width), y: Math.min(0.95, (height - 64) / height) }
+    : { mode: 'spray', x: 0.5, y: Math.min(0.5, Math.max(0.06, (safeAreaTop() + 48) / height)) }
+}
+
+/** `env(safe-area-inset-top)` in px (Notch/Statusleiste), 0 ohne Unterstützung. */
+function safeAreaTop(): number {
+  if (typeof document === 'undefined' || !document.body) return 0
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-top, 0px)'
+  document.body.appendChild(probe)
+  const inset = probe.getBoundingClientRect().height
+  probe.remove()
+  return Number.isFinite(inset) ? inset : 0
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +274,46 @@ interface ToastClaim {
   at: number
 }
 
+/** Der Toast zum heutigen Perfekten Tag – wird ersetzt, wenn der Bonus wächst. */
+interface PerfectToast {
+  toastId: string
+  /** „Perfekter Tag! …“ oder der kurze Hinweis „Tagesbonus steigt auf …“. */
+  kind: 'perfect' | 'growth'
+  /** Gezeigte Tagessumme. */
+  bonusXp: number
+  shownAt: number
+  duration: number
+}
+
+/**
+ * Steht der Toast noch? Gemessen an seiner Anzeigedauer (Hover verlängert sie; dann wird er eben
+ * durch den kurzen Hinweis ersetzt – die Zahl stimmt in jedem Fall).
+ */
+function isShown(record: PerfectToast): boolean {
+  return performance.now() - record.shownAt < record.duration
+}
+
 /**
  * Zeigt die Toasts zu Ereignissen und nimmt sie zurück, sobald sie nicht mehr stimmen.
  * XP-Toasts: Folgt ein Gewinn innerhalb von `XP_MERGE_WINDOW_MS` auf den vorigen, ersetzt ein
  * gemeinsamer Toast („+40 XP · Lesen und Meditieren“) den alten (siehe `xpSession.ts`).
+ * Perfekter Tag (heute): ein einziger Toast mit der Tagessumme. Wächst der Bonus, ersetzt ihn
+ * „Perfekter Tag! +28 Bonus-XP“ – oder, wenn er schon abgelaufen ist, ein kurzer Hinweis
+ * „Tagesbonus steigt auf +28 Bonus-XP“.
  */
 function useFeedbackToasts({ toast, dismiss }: ToastApi) {
   const xp = useRef<{ session: XpSession; toastId: string; events: XpGainedEvent[] } | null>(null)
+  const perfect = useRef<PerfectToast | null>(null)
   const claims = useRef<ToastClaim[]>([])
+
+  /** Schließt einen eigenen Toast und vergisst seine Meldung. */
+  const withdraw = useCallback(
+    (toastId: string) => {
+      dismiss(toastId)
+      claims.current = claims.current.filter((entry) => entry.toastId !== toastId)
+    },
+    [dismiss],
+  )
 
   const claim = useCallback((toastId: string, events: readonly FeedbackEvent[]) => {
     const now = performance.now()
@@ -249,10 +327,7 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
     (event: XpGainedEvent) => {
       const previous = xp.current
       const { session, merged } = nextXpSession(previous?.session ?? null, event, performance.now())
-      if (merged && previous) {
-        dismiss(previous.toastId)
-        claims.current = claims.current.filter((entry) => entry.toastId !== previous.toastId)
-      }
+      if (merged && previous) withdraw(previous.toastId)
       const toastId = toast({
         tone: 'xp',
         icon: session.quests.length === 1 ? session.quests[0].icon : undefined,
@@ -262,7 +337,33 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
       xp.current = { session, toastId, events }
       claim(toastId, events)
     },
-    [toast, dismiss, claim],
+    [toast, withdraw, claim],
+  )
+
+  /** Zeigt den Toast zum heutigen Perfekten Tag mit der Tagessumme `bonusXp` – anstelle des bisherigen. */
+  const replacePerfectToast = useCallback(
+    (kind: PerfectToast['kind'], bonusXp: number, event: PerfectDayEvent) => {
+      if (perfect.current) withdraw(perfect.current.toastId)
+      const duration = kind === 'perfect' ? HIGHLIGHT_TOAST_MS : BONUS_GROWTH_TOAST_MS
+      const text = kind === 'perfect' ? perfectDayToastText({ bonusXp, today: true }) : bonusGrowthToastText(bonusXp)
+      const toastId = toast({ tone: 'xp', icon: <Star />, duration, ...text })
+      perfect.current = { toastId, kind, bonusXp, shownAt: performance.now(), duration }
+      claim(toastId, [{ ...event, bonusXp }])
+    },
+    [toast, withdraw, claim],
+  )
+
+  /**
+   * Heutiger Perfekter Tag mit der Tagessumme `bonusXp`. Neu perfekt oder der Toast steht noch:
+   * „Perfekter Tag! …“ (bzw. derselbe Hinweis). Ist er abgelaufen, meldet ein kurzer Hinweis die neue Summe.
+   */
+  const showPerfectToday = useCallback(
+    (event: PerfectDayEvent, bonusXp: number) => {
+      const previous = perfect.current
+      const stillShown = previous !== null && isShown(previous) ? previous.kind : undefined
+      replacePerfectToast(event.update ? (stillShown ?? 'growth') : 'perfect', bonusXp, event)
+    },
+    [replacePerfectToast],
   )
 
   /**
@@ -279,8 +380,18 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
             showXp(event)
             break
           case 'perfect-day':
-            claim(toast({ tone: 'xp', icon: <Star />, duration: HIGHLIGHT_TOAST_MS, ...perfectDayToastText(event) }), [event])
-            confetti ??= 'light'
+            if (!event.today) {
+              claim(toast({ tone: 'xp', icon: <Star />, duration: HIGHLIGHT_TOAST_MS, ...perfectDayToastText(event) }), [event])
+              confetti ??= 'light'
+              break
+            }
+            // Immer die aktuelle Tagessumme – auch für Toasts, die nach einer Szene nachgeholt werden.
+            showPerfectToday(event, state.todayState.perfectBonusXp)
+            if (!event.update) {
+              confetti ??= 'light'
+              // Neue XP-Sitzung: Quests von vor dem Perfekten Tag landen nicht in einem Toast danach.
+              xp.current = null
+            }
             break
           case 'chapter-completed':
             claim(
@@ -299,7 +410,7 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
       }
       return confetti
     },
-    [toast, showXp, claim],
+    [toast, showXp, showPerfectToday, claim],
   )
 
   /** Schließt Toasts, deren Meldung im neuen Zustand nicht mehr stimmt (z. B. Haken entfernt). */
@@ -316,17 +427,34 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
         dismiss(entry.toastId)
         // Ein zurückgenommener XP-Toast wird nicht mehr fortgeschrieben (sonst stünde gleich „+40 XP“ da).
         if (xp.current?.toastId === entry.toastId) xp.current = null
+        if (perfect.current?.toastId === entry.toastId) perfect.current = null
       }
       claims.current = kept
     },
     [dismiss],
   )
 
-  const resetXp = useCallback(() => {
+  /**
+   * Ist der heutige Bonus gesunken (Wochenquest wieder offen, Quest leichter), während der Tag perfekt
+   * bleibt, zeigt ein noch sichtbarer Perfekter-Tag-Toast die neue Summe. Rückgänge melden sonst nichts.
+   */
+  const syncPerfectBonus = useCallback(
+    (state: GameState) => {
+      const current = perfect.current
+      const bonusXp = state.todayState.perfectBonusXp
+      if (!current || !isShown(current) || !state.todayState.perfect || bonusXp >= current.bonusXp) return
+      replacePerfectToast(current.kind, bonusXp, { type: 'perfect-day', bonusXp, addedXp: 0, today: true, update: true })
+    },
+    [replacePerfectToast],
+  )
+
+  /** Neuer Ausgangspunkt (Massenänderung): nichts wird mehr fortgeschrieben oder ersetzt. */
+  const resetSessions = useCallback(() => {
     xp.current = null
+    perfect.current = null
   }, [])
 
-  return { present, revoke, resetXp }
+  return { present, revoke, syncPerfectBonus, resetSessions }
 }
 
 // ---------------------------------------------------------------------------

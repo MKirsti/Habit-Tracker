@@ -66,14 +66,20 @@ export function Layout({ header, children }: LayoutProps) {
   )
 }
 
-/** Schlanke Kopfzeile nur auf dem Handy (berücksichtigt die Statusleiste bei viewport-fit=cover). */
+/**
+ * Schlanke Kopfzeile nur auf dem Handy (berücksichtigt die Statusleiste bei viewport-fit=cover).
+ * 44 px + Haarlinie statt Ornament-Trenner, damit die heutigen Quests möglichst weit oben stehen.
+ */
 function MobileTopBar() {
   return (
-    <header className="pt-safe md:hidden">
-      <div className="flex h-14 items-center justify-center pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]">
+    <header className="relative pt-safe md:hidden">
+      <div className="flex h-11 items-center justify-center pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]">
         <AppLogo size="sm" />
       </div>
-      <Divider ornament className="px-12" />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-12 bottom-0 h-px bg-linear-to-r from-transparent via-gold-dim/50 to-transparent"
+      />
     </header>
   )
 }
@@ -131,7 +137,7 @@ function Sidebar() {
         </ul>
       </nav>
 
-      <p className="px-6 pb-6 text-xs leading-relaxed text-faint">
+      <p className="px-6 pb-6 text-xs leading-relaxed text-muted">
         Jeder Tag ist ein neues Kapitel deines Abenteuers.
       </p>
     </aside>

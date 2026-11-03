@@ -5,6 +5,7 @@ import {
   hasErrors,
   initialHabitFormValues,
   sameFormValues,
+  todayEntryNote,
   toggleWeekday,
   validateHabitForm,
 } from './habitForm'
@@ -166,5 +167,36 @@ describe('sameFormValues', () => {
     expect(sameFormValues(a, { ...a, weekdays: [1, 2, 3, 4] })).toBe(false)
     expect(sameFormValues(a, { ...a, target: 0 })).toBe(false)
     expect(sameFormValues(a, { ...a, measurable: true })).toBe(false)
+  })
+})
+
+describe('todayEntryNote', () => {
+  const reading = makeHabit({ id: 'r', measure: { target: 10, unit: 'Seiten' } })
+  const edit = (overrides: Partial<HabitFormValues>) => ({ ...initialHabitFormValues(reading), ...overrides })
+
+  it('warnt, wenn ein erhöhtes Ziel die heute erledigte Quest wieder öffnet', () => {
+    expect(todayEntryNote(reading, { value: 10, target: 10 }, edit({ target: 20 }))).toBe(
+      'Heute: 10 / 20 Seiten – die Quest ist danach wieder offen.',
+    )
+    expect(todayEntryNote(reading, { value: 2.5, target: 2 }, edit({ target: 3, unit: ' L ' }))).toBe(
+      'Heute: 2,5 / 3 L – die Quest ist danach wieder offen.',
+    )
+  })
+
+  it('schweigt, wenn nichts verloren geht', () => {
+    expect(todayEntryNote(reading, undefined, edit({ target: 20 }))).toBeUndefined() // kein Eintrag
+    expect(todayEntryNote(reading, { value: 12, target: 10 }, edit({ target: 12 }))).toBeUndefined() // bleibt erledigt
+    expect(todayEntryNote(reading, { value: 7, target: 10 }, edit({ target: 20 }))).toBeUndefined() // war offen
+    expect(todayEntryNote(reading, { value: 7, target: 10 }, edit({ target: 5 }))).toBeUndefined() // wird erledigt
+    expect(todayEntryNote(reading, { value: 10, target: 10 }, edit({ target: null }))).toBeUndefined() // ungültig
+    expect(todayEntryNote(reading, { value: 10, target: 10 }, edit({ measurable: false }))).toBeUndefined() // → 1 / 1
+    const check = makeHabit({ id: 'c' })
+    expect(todayEntryNote(check, { value: 1, target: 1 }, { ...initialHabitFormValues(check), measurable: true, target: 5 })).toBeUndefined()
+  })
+
+  it('warnt, wenn der Wechsel zur Abhak-Quest einen Teilfortschritt verwirft', () => {
+    expect(todayEntryNote(reading, { value: 3, target: 10 }, edit({ measurable: false }))).toBe(
+      'Heute erfasst: 3 / 10 Seiten – als Abhak-Quest entfällt dieser Teilfortschritt.',
+    )
   })
 })

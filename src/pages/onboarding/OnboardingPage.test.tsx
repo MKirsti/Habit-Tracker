@@ -11,7 +11,8 @@ import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { OnboardingPage } from '../OnboardingPage'
 
-// saveProfile kann gezielt fehlschlagen, sonst gilt die echte Implementierung.
+// saveProfile kann gezielt fehlschlagen, sonst gilt die echte Implementierung. Der Start des Abenteuers
+// (`startAdventure` in seed.ts) speichert das Profil über saveProfile – in derselben Transaktion wie die Vorlage.
 const failures = vi.hoisted(() => ({ saveProfile: false }))
 vi.mock('../../data/repository', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../data/repository')>()
@@ -192,6 +193,8 @@ describe('Onboarding', () => {
     expect(await screen.findByText('Dein Abenteuer konnte nicht beginnen')).toBeInTheDocument()
     expect(screen.getByText('Die Datenbank ist gerade nicht erreichbar.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Los geht’s' })).toBeEnabled()
+    // Alles oder nichts: Ohne Profil bleibt auch keine Kampagne zurück (auch nicht nach einem Neuladen).
+    expect(await loadGameData()).toMatchObject({ habits: [], mainQuests: [] })
 
     failures.saveProfile = false
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
@@ -201,6 +204,24 @@ describe('Onboarding', () => {
     const data = await loadGameData()
     expect(data.mainQuests).toHaveLength(1)
     expect(data.habits).toHaveLength(5)
+  })
+
+  it('startet nach einem Fehlschlag mit der Vorlage auf Wunsch wirklich ohne Vorlage', async () => {
+    failures.saveProfile = true
+    const user = await start()
+    await toCampaignStep(user)
+    await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
+    expect(await screen.findByText('Dein Abenteuer konnte nicht beginnen')).toBeInTheDocument()
+
+    failures.saveProfile = false
+    await user.click(screen.getByRole('radio', { name: 'Ohne Vorlage starten' }))
+    await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
+    await waitFor(async () => {
+      expect((await loadGameData()).profile?.name).toBe('Aria')
+    })
+    const data = await loadGameData()
+    expect(data.mainQuests).toEqual([])
+    expect(data.habits).toEqual([])
   })
 
   it('stellt auf Wunsch ein Backup wieder her', async () => {

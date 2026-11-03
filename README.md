@@ -40,8 +40,17 @@ Architektur, Datenmodell und Spielregeln: [`docs/ARCHITECTURE.md`](docs/ARCHITEC
 
 ## Veröffentlichen auf GitHub Pages
 
-Einmalig im Repository: **Settings → Pages → Build and deployment → Source: „GitHub Actions“**.
+> [!IMPORTANT]
+> **Einmalig von Hand nötig, sonst schlägt jedes Deployment fehl:** GitHub Pages muss im Repository eingeschaltet sein. Das geht nur mit Admin-Rechten in den Repository-Einstellungen – der Workflow selbst darf das nicht.
+>
+> 1. Auf GitHub im Repository **Settings → Pages** öffnen.
+> 2. Unter **Build and deployment → Source** die Option **„GitHub Actions“** wählen (nicht „Deploy from a branch“).
+> 3. Unter **Actions → „Deploy to GitHub Pages“** den letzten Lauf öffnen und **„Re-run all jobs“** klicken (oder den nächsten Push abwarten).
+>
+> Fehlt die Einstellung, bricht der Workflow gleich im Schritt **„Setup Pages“** ab mit *„Get Pages site failed. Please verify that the repository has Pages enabled and configured to build using GitHub Actions …“*.
 
-Danach baut der Workflow [`deploy.yml`](.github/workflows/deploy.yml) bei jedem Push auf den Standard-Branch die App und veröffentlicht sie unter `https://<benutzername>.github.io/Habit-Tracker/`. Öffne die Seite auf dem Handy und wähle „Zum Home-Bildschirm“ (iPhone: Teilen-Menü) bzw. „App installieren“ (Android/Chrome).
+Danach baut der Workflow [`deploy.yml`](.github/workflows/deploy.yml) bei jedem Push auf den Standard-Branch die App (nach bestandenen Tests) und veröffentlicht sie unter `https://<benutzername>.github.io/Habit-Tracker/`. Pushes auf andere Branches prüft nur die [CI](.github/workflows/ci.yml); sie brechen kein laufendes Deployment ab. Öffne die Seite auf dem Handy und wähle „Zum Home-Bildschirm“ (iPhone: Teilen-Menü) bzw. „App installieren“ (Android/Chrome).
 
-> **Hinweis:** Deine Daten liegen nur im Browser des jeweiligen Geräts. Lade in den Einstellungen regelmäßig ein Backup herunter – damit kannst du auch auf ein anderes Gerät umziehen.
+Neue Versionen kommen von selbst: Die App sucht beim Zurückkehren in den Vordergrund (und stündlich) nach einem Update und lädt dann einmal neu. Ist gerade ein Dialog (z. B. ein Quest-Formular) offen, wartet sie, bis er geschlossen ist oder die App in den Hintergrund geht.
+
+> **Hinweis:** Deine Daten liegen nur im Browser des jeweiligen Geräts. Questlog bittet den Browser, sie dauerhaft zu speichern (ob das geklappt hat, steht unter Einstellungen → „App installieren“ – als installierte App klappt es am ehesten). Lade trotzdem regelmäßig ein Backup herunter – damit kannst du auch auf ein anderes Gerät umziehen.

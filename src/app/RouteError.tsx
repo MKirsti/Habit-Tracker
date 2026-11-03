@@ -21,7 +21,7 @@ export function RouteError() {
         text={
           <>
             Ein unerwarteter Fehler ist aufgetreten. Deine Daten sind sicher auf diesem Gerät gespeichert.
-            {detail && <span className="mt-3 block font-mono text-xs break-words text-faint">{detail}</span>}
+            {detail && <span className="mt-3 block font-mono text-xs break-words text-muted">{detail}</span>}
           </>
         }
         action={

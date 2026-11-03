@@ -48,7 +48,7 @@ export function AttributesCard({ attributes }: AttributesCardProps) {
                     <span className="sr-only">Level </span>
                     <span
                       aria-hidden="true"
-                      className="mr-1 font-sans text-[0.625rem] font-semibold tracking-wider text-faint uppercase"
+                      className="mr-1 font-sans text-[0.625rem] font-semibold tracking-wider text-muted uppercase"
                     >
                       Lv
                     </span>

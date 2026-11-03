@@ -38,8 +38,8 @@ export function Confetti({ bursts, onBurstEnd }: ConfettiProps) {
 }
 
 const COUNTS: Record<ConfettiBurstSpec['intensity'], Record<ConfettiMode, number>> = {
-  light: { burst: 40, cannon: 36 },
-  full: { burst: 110, cannon: 70 },
+  light: { burst: 40, cannon: 36, spray: 36 },
+  full: { burst: 110, cannon: 70, spray: 70 },
 }
 
 function ConfettiBurst({ burst, onEnd }: { burst: ConfettiBurstSpec; onEnd: (id: number) => void }) {

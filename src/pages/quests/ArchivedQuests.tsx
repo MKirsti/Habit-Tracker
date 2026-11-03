@@ -4,16 +4,16 @@ import { useId, useState } from 'react'
 import type { Ref } from 'react'
 import { useGameContext } from '../../app/gameContext'
 import { formatDay } from '../../domain/dates'
+import { deletionImpact } from '../../domain/deletion'
+import type { DeletionImpact } from '../../domain/deletion'
 import { describeSchedule } from '../../domain/schedule'
 import type { Habit } from '../../domain/types'
 import { Button, Card, ConfirmDialog, cn, formatNumber } from '../../ui'
-import { statsFor } from './questStats'
-import type { HabitStats } from './questStats'
+import { chapterLossText, levelChangeText } from './questStats'
 
 export interface ArchivedQuestsProps {
   /** Archivierte Quests (bereits sortiert). */
   habits: readonly Habit[]
-  stats: ReadonlyMap<string, HabitStats>
   /** Ref auf den Auf-/Zuklapp-Button (Fokusziel nach Archivieren, Zurückholen, Löschen). */
   toggleRef?: Ref<HTMLButtonElement>
   /** Holt eine Quest zurück. Fehler zeigt der Aufrufer selbst an. */
@@ -24,15 +24,16 @@ export interface ArchivedQuestsProps {
 
 interface DeleteTarget {
   habit: Habit
-  /** Quest-XP aus allen Erledigungen dieser Quest. */
-  xp: number
-  /** Ein Kampagnen-Kapitel zählt auf diese Quest. */
-  usedByChapter: boolean
+  /**
+   * Exakte Folgen des Löschens (Spielstand vorher → nachher): Quest-XP, Perfekter-Tag-Boni, Kapitel- und
+   * Kampagnen-XP. Genau so viel fällt der Spielstand nach dem Bestätigen.
+   */
+  impact: DeletionImpact
 }
 
 /** Einklappbarer Bereich mit archivierten Quests: zurückholen oder endgültig löschen. */
-export function ArchivedQuests({ habits, stats, toggleRef, onRestore, onDelete }: ArchivedQuestsProps) {
-  const { data } = useGameContext()
+export function ArchivedQuests({ habits, toggleRef, onRestore, onDelete }: ArchivedQuestsProps) {
+  const { data, today } = useGameContext()
   const [expanded, setExpanded] = useState(false)
   // Ziel samt Kennzahlen wird beim Öffnen festgehalten und bleibt nach dem Schließen gesetzt,
   // damit sich der Dialogtext beim Ausblenden (Quest schon gelöscht) nicht mehr ändert.
@@ -57,13 +58,8 @@ export function ArchivedQuests({ habits, stats, toggleRef, onRestore, onDelete }
   }
 
   function askDelete(habit: Habit) {
-    setDeleteTarget({
-      habit,
-      xp: statsFor(stats, habit.id).xp,
-      usedByChapter: data.mainQuests.some((quest) =>
-        quest.chapters.some((chapter) => chapter.criterion.type === 'habit' && chapter.criterion.habitId === habit.id),
-      ),
-    })
+    // Wie beim Löschen selbst gerechnet (`applyHabitDeletion`) – der genannte Verlust stimmt also exakt.
+    setDeleteTarget({ habit, impact: deletionImpact(data, habit.id, today) })
     setConfirmOpen(true)
   }
 
@@ -173,31 +169,46 @@ export function ArchivedQuests({ habits, stats, toggleRef, onRestore, onDelete }
         danger
         icon={deleteTarget?.habit.icon}
         title="Quest endgültig löschen?"
-        message={
-          deleteTarget && (
-            <>
-              <span className="block">
-                „{deleteTarget.habit.title}“ wird mit ihrem gesamten Verlauf gelöscht.{' '}
-                {deleteTarget.xp > 0 ? (
-                  <>
-                    Die <strong className="font-semibold text-parchment">{formatNumber(deleteTarget.xp)} XP</strong>, die du
-                    mit ihr verdient hast, gehen dabei verloren.
-                  </>
-                ) : (
-                  'Mit ihr hast du bisher keine XP verdient.'
-                )}
-              </span>
-              {deleteTarget.usedByChapter && (
-                <span className="mt-2 block">
-                  Kapitel deiner Kampagne, die auf diese Quest zählen, verlieren ihren Fortschritt.
-                </span>
-              )}
-              <span className="mt-2 block">Das lässt sich nicht rückgängig machen.</span>
-            </>
-          )
-        }
+        message={deleteTarget && <DeleteMessage title={deleteTarget.habit.title} impact={deleteTarget.impact} />}
         confirmLabel="Endgültig löschen"
       />
     </section>
+  )
+}
+
+/** Text der Rückfrage: was genau verloren geht (XP samt Level, Kapitel, Kampagnen-Bonus). */
+function DeleteMessage({ title, impact }: { title: string; impact: DeletionImpact }) {
+  const levelChange = levelChangeText(impact)
+  const chapterLosses = impact.campaigns.map(chapterLossText).filter((text) => text !== undefined)
+  const losesProgress = impact.campaigns.some((campaign) => campaign.openChapters.length > 0)
+  return (
+    <>
+      <span className="block">
+        „{title}“ wird mit ihrem gesamten Verlauf gelöscht.{' '}
+        {impact.xpLost > 0 ? (
+          <>
+            Du verlierst <strong className="font-semibold text-parchment">{formatNumber(impact.xpLost)} XP</strong>
+            {levelChange !== undefined && (
+              <>
+                {' '}
+                (<strong className="font-semibold text-parchment">{levelChange}</strong>)
+              </>
+            )}
+            .
+          </>
+        ) : (
+          'Deine XP und dein Level bleiben dabei unverändert.'
+        )}
+      </span>
+      {chapterLosses.map((text) => (
+        <span key={text} className="mt-2 block">
+          {text}
+        </span>
+      ))}
+      {losesProgress && (
+        <span className="mt-2 block">Kapitel deiner Kampagne, die auf diese Quest zählen, verlieren ihren Fortschritt.</span>
+      )}
+      <span className="mt-2 block">Das lässt sich nicht rückgängig machen.</span>
+    </>
   )
 }

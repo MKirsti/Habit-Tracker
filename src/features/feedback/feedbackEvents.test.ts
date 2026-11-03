@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { BALANCING } from '../../domain/balancing'
 import { deriveGameState } from '../../domain/engine'
 import { makeChapter, makeCompletion, makeGameData, makeHabit, makeMainQuest } from '../../domain/testing'
-import type { CharacterProfile, Completion, DayKey, GameData, GameState } from '../../domain/types'
-import { BULK_CHANGE_LIMIT, diffGameStates, isBulkChange } from './feedbackEvents'
+import type { CharacterProfile, Completion, DayKey, GameData, GameState, Habit } from '../../domain/types'
+import { BULK_CHANGE_LIMIT, creditedCompletions, diffGameStates, feedbackStillHolds, isBulkChange } from './feedbackEvents'
 import type { FeedbackEvent } from './feedbackEvents'
 
 const TODAY: DayKey = '2026-11-03'
@@ -55,6 +55,22 @@ function game(overrides: Partial<GameData> = {}, today: DayKey = TODAY): GameSta
   )
 }
 
+/**
+ * Schritt wie in `GameFeedback`: Zustände plus die Zuordnung der XP über die geänderten Erledigungen.
+ */
+function step(
+  before: Partial<GameData>,
+  after: Partial<GameData>,
+  today: DayKey = TODAY,
+): { prev: GameState; next: GameState; events: FeedbackEvent[] } {
+  const prevData = makeGameData({ profile: PROFILE, habits: [reading, meditation, training], ...before })
+  const nextData = makeGameData({ profile: PROFILE, habits: [reading, meditation, training], ...after })
+  const prev = deriveGameState(prevData, today)
+  const next = deriveGameState(nextData, today)
+  const credits = creditedCompletions(prevData.completions, nextData.completions, nextData.habits, today)
+  return { prev, next, events: diffGameStates(prev, next, credits) }
+}
+
 function ofType<T extends FeedbackEvent['type']>(events: FeedbackEvent[], type: T) {
   return events.filter((event): event is Extract<FeedbackEvent, { type: T }> => event.type === type)
 }
@@ -89,10 +105,9 @@ describe('diffGameStates', () => {
     expect(xp.quests).toEqual([{ id: 'read', title: 'Lesen', icon: '📖', xp: 20 }])
   })
 
-  it('erkennt beim Nachtragen für gestern die Quest an ihrer gewachsenen Serie', () => {
-    const before = game()
-    const after = game({ completions: [makeCompletion(training, YESTERDAY)] })
-    expect(ofType(diffGameStates(before, after), 'xp-gained')).toEqual([
+  it('nennt beim Nachtragen für gestern die nachgetragene Quest', () => {
+    const { events } = step({}, { completions: [makeCompletion(training, YESTERDAY)] })
+    expect(ofType(events, 'xp-gained')).toEqual([
       {
         type: 'xp-gained',
         amount: 80,
@@ -104,8 +119,8 @@ describe('diffGameStates', () => {
     ])
   })
 
-  it('meldet nachgetragene XP auch ohne erkennbare Quest', () => {
-    // Montag: Der Sonntag gehört zur Vorwoche – Wochenfortschritt und Serie (noch < 3×) bleiben gleich.
+  it('meldet nachgetragene XP auch ohne erkennbare Quest (nur Zustände, keine Erledigungen bekannt)', () => {
+    // Montag: Der Sonntag gehört zur Vorwoche. Ohne die geänderten Erledigungen lässt sich die Quest nicht bestimmen.
     const monday = '2026-11-02'
     const habits = [running]
     const before = game({ habits }, monday)
@@ -188,42 +203,169 @@ describe('diffGameStates', () => {
         quests: [{ id: 'meditate', title: 'Meditieren', icon: '🧘', xp: 10 }],
         backfill: false,
       },
-      { type: 'perfect-day', bonusXp: bonus, today: true },
+      { type: 'perfect-day', bonusXp: bonus, addedXp: bonus, today: true },
     ])
   })
 
   it('erkennt einen nachgetragenen Perfekten Tag (gestern)', () => {
     const habits = [reading, meditation]
-    const before = game({ habits, completions: [makeCompletion(reading, YESTERDAY)] })
-    const after = game({
-      habits,
-      completions: [makeCompletion(reading, YESTERDAY), makeCompletion(meditation, YESTERDAY)],
-    })
-    expect(ofType(diffGameStates(before, after), 'perfect-day')).toEqual([
-      { type: 'perfect-day', bonusXp: Math.round(BALANCING.perfectDayBonus * 30), today: false },
-    ])
-    expect(ofType(diffGameStates(before, after), 'xp-gained')).toMatchObject([
+    const { events } = step(
+      { habits, completions: [makeCompletion(reading, YESTERDAY)] },
+      { habits, completions: [makeCompletion(reading, YESTERDAY), makeCompletion(meditation, YESTERDAY)] },
+    )
+    const bonus = Math.round(BALANCING.perfectDayBonus * 30)
+    expect(ofType(events, 'perfect-day')).toEqual([{ type: 'perfect-day', bonusXp: bonus, addedXp: bonus, today: false }])
+    expect(ofType(events, 'xp-gained')).toMatchObject([
       { amount: 10, backfill: true, quests: [{ id: 'meditate', title: 'Meditieren' }] },
     ])
   })
 
-  it('rechnet den wachsenden Bonus eines bereits perfekten Tages in den XP-Gewinn ein', () => {
+  it('meldet den wachsenden Bonus eines schon perfekten Tages als neue Tagessumme – nicht im XP-Gewinn', () => {
     const habits = [reading, running]
     const before = game({ habits, completions: [makeCompletion(reading, TODAY)] }) // perfekt, Bonus 5
     const after = game({ habits, completions: [makeCompletion(reading, TODAY), makeCompletion(running, TODAY)] })
     expect(before.todayState.perfect).toBe(true)
+    expect(after.todayState.perfectBonusXp).toBe(15)
     const events = diffGameStates(before, after)
-    expect(ofType(events, 'perfect-day')).toEqual([])
+    expect(ofType(events, 'perfect-day')).toEqual([
+      { type: 'perfect-day', bonusXp: 15, addedXp: 10, today: true, update: true },
+    ])
     expect(ofType(events, 'xp-gained')).toEqual([
       {
         type: 'xp-gained',
-        amount: 50,
+        amount: 40,
         questXp: 40,
-        bonusXp: 10,
+        bonusXp: 0,
         quests: [{ id: 'run', title: 'Laufen', icon: '🏃', xp: 40 }],
         backfill: false,
       },
     ])
+  })
+
+  it('zeigt im Ablauf jede Perfekter-Tag-Zahl als Tagessumme; die XP-Gewinne enthalten den Bonus nie', () => {
+    // Wie im Browser-Ablauf: drei Tagesquests, dann zwei Wochenquests an einem schon perfekten Tag.
+    const candle = makeHabit({ id: 'candle', title: 'Kerze', icon: '🕯️', attribute: 'wisdom', difficulty: 'medium', createdDay: '2026-10-01', order: 2 })
+    const thought = makeHabit({ id: 'thought', title: 'Gedanke', icon: '✍️', attribute: 'wisdom', difficulty: 'easy', createdDay: '2026-10-01', order: 3 })
+    const deep = makeHabit({ ...running, id: 'deep', title: 'Tiefe', order: 4 })
+    const talk = makeHabit({ ...running, id: 'talk', title: 'Gespräch', difficulty: 'medium', schedule: { type: 'weekly', times: 1 }, order: 5 })
+    const habits = [reading, candle, thought, deep, talk]
+    const completions: Completion[] = []
+    let state = game({ habits, completions })
+    let shownBonus = 0
+    let xpSum = 0
+    for (const habit of habits) {
+      completions.push(makeCompletion(habit, TODAY))
+      const next = game({ habits, completions: [...completions] })
+      const events = diffGameStates(state, next)
+      for (const event of ofType(events, 'perfect-day')) {
+        expect(event.today).toBe(true)
+        expect(event.bonusXp).toBe(next.todayState.perfectBonusXp)
+        shownBonus = event.bonusXp
+      }
+      for (const event of ofType(events, 'xp-gained')) {
+        expect(event.bonusXp).toBe(0)
+        expect(event.amount).toBe(event.questXp)
+        xpSum += event.amount
+      }
+      state = next
+    }
+    // 20 + 20 + 10 + 40 + 20 = 110 Quest-XP, Bonus round(27,5) = 28 – wie in der Tagesbilanz.
+    expect(shownBonus).toBe(28)
+    expect(state.todayState.perfectBonusXp).toBe(28)
+    expect(xpSum + shownBonus).toBe(state.todayState.questXp + state.todayState.perfectBonusXp)
+  })
+
+  it('lässt den Perfekten Tag (auch den gewachsenen Bonus) fallen, sobald eine Tagesquest wieder offen ist', () => {
+    const habits = [reading, running]
+    const almost = game({ habits })
+    const perfect = game({ habits, completions: [makeCompletion(reading, TODAY)] })
+    const grown = game({ habits, completions: [makeCompletion(reading, TODAY), makeCompletion(running, TODAY)] })
+    const undone = game({ habits, completions: [makeCompletion(running, TODAY)] })
+    const [first] = ofType(diffGameStates(almost, perfect), 'perfect-day')
+    const [update] = ofType(diffGameStates(perfect, grown), 'perfect-day')
+    const [xp] = ofType(diffGameStates(perfect, grown), 'xp-gained')
+    expect(update).toMatchObject({ update: true })
+    expect(feedbackStillHolds(first, grown)).toBe(true)
+    expect(feedbackStillHolds(update, grown)).toBe(true)
+    expect(feedbackStillHolds(first, undone)).toBe(false)
+    expect(feedbackStillHolds(update, undone)).toBe(false)
+    // Der XP-Gewinn von „Laufen“ stimmt weiter – und erwähnt keinen Bonus.
+    expect(feedbackStillHolds(xp, undone)).toBe(true)
+    expect(xp.bonusXp).toBe(0)
+  })
+
+  describe('Zuordnung über die geänderten Erledigungen', () => {
+    it('nennt eine nachgetragene Quest, die heute nicht ansteht (Mo/Mi/Fr, nachgetragen am Dienstag)', () => {
+      const monWedFri = makeHabit({ ...reading, id: 'mwf', title: 'Laufen', icon: '🏃', schedule: { type: 'weekdays', days: [1, 3, 5] } })
+      const habits = [monWedFri]
+      const { events } = step({ habits }, { habits, completions: [makeCompletion(monWedFri, YESTERDAY)] })
+      expect(ofType(events, 'xp-gained')).toEqual([
+        {
+          type: 'xp-gained',
+          amount: 20,
+          questXp: 20,
+          bonusXp: 0,
+          quests: [{ id: 'mwf', title: 'Laufen', icon: '🏃', xp: 20 }],
+          backfill: true,
+        },
+      ])
+    })
+
+    it('nennt eine Wochenquest, die am Montag für den Sonntag der Vorwoche nachgetragen wird', () => {
+      const monday = '2026-11-02'
+      const habits = [running]
+      const { events } = step({ habits }, { habits, completions: [makeCompletion(running, '2026-11-01')] }, monday)
+      expect(ofType(events, 'xp-gained')).toEqual([
+        {
+          type: 'xp-gained',
+          amount: 40,
+          questXp: 40,
+          bonusXp: 0,
+          quests: [{ id: 'run', title: 'Laufen', icon: '🏃', xp: 40 }],
+          backfill: true,
+        },
+      ])
+    })
+
+    it('nennt die Quest, wenn eine erledigte Quest heute schwerer wird (Leicht → Episch)', () => {
+      const easy = makeCompletion(meditation, TODAY)
+      const { events } = step({ completions: [easy] }, { completions: [{ ...easy, difficulty: 'epic', updatedAt: 1 }] })
+      expect(ofType(events, 'xp-gained')).toEqual([
+        {
+          type: 'xp-gained',
+          amount: 70,
+          questXp: 70,
+          bonusXp: 0,
+          quests: [{ id: 'meditate', title: 'Meditieren', icon: '🧘', xp: 80 }],
+          backfill: false,
+        },
+      ])
+    })
+
+    it('rechnet nur neu erledigte oder höher bewertete Erledigungen bis heute an', () => {
+      const habits: Habit[] = [reading, meditation, training]
+      const done = makeCompletion(reading, YESTERDAY)
+      const partial = makeCompletion(meditation, TODAY, { value: 0 })
+      const before = [done, partial, makeCompletion(training, YESTERDAY)]
+      expect(creditedCompletions(before, before, habits, TODAY)).toEqual([])
+      expect(
+        creditedCompletions(
+          before,
+          [
+            { ...done, updatedAt: 5 }, // unverändert erledigt
+            { ...partial, value: 0.5, target: 1 }, // noch Teilfortschritt
+            { ...makeCompletion(training, YESTERDAY), difficulty: 'easy' }, // leichter → keine neuen XP
+            makeCompletion(reading, '2026-11-04'), // Zukunft
+            { ...makeCompletion(reading, TODAY), habitId: 'gelöscht', id: 'gelöscht:2026-11-03' }, // Quest gibt es nicht
+          ],
+          habits,
+          TODAY,
+        ),
+      ).toEqual([])
+      expect(creditedCompletions(before, [...before, makeCompletion(training, TODAY)], habits, TODAY)).toEqual([
+        { id: 'train', title: 'Krafttraining', icon: '🏋️', xp: 80, day: TODAY },
+      ])
+    })
   })
 
   describe('Kapitel & Kampagnen', () => {

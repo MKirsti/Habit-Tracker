@@ -53,7 +53,7 @@ export function CampaignChoice({ today, installing, onInstall, onCreateCustom, h
           tabIndex={-1}
           className="font-display text-xl font-semibold tracking-wide text-parchment focus:outline-none sm:text-2xl"
         >
-          Wähle deine Hauptquest
+          Wähle deine Kampagne
         </h2>
         <Ornament className="mt-2 h-3 w-16 text-gold-dim" />
         <p className="mt-3 max-w-md text-[0.9375rem] text-muted">

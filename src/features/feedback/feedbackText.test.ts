@@ -8,6 +8,7 @@ import { XP_MERGE_WINDOW_MS, isXpSessionOpen, nextXpSession } from './xpSession'
 import type { CampaignCompletedEvent, LevelUpEvent, XpGainedEvent, XpQuest } from './feedbackEvents'
 import {
   attributeToastText,
+  bonusGrowthToastText,
   chapterToastText,
   joinTitles,
   nextRank,
@@ -39,10 +40,15 @@ describe('Texte', () => {
   })
 
   it('Perfekter Tag, Kapitel, Attribut', () => {
-    expect(perfectDayToastText({ type: 'perfect-day', bonusXp: 15, today: true }).title).toBe(
-      'Perfekter Tag! +15 Bonus-XP',
-    )
-    expect(perfectDayToastText({ type: 'perfect-day', bonusXp: 8, today: false })).toEqual({
+    expect(perfectDayToastText({ bonusXp: 15, today: true })).toEqual({
+      title: 'Perfekter Tag! +15 Bonus-XP',
+      description: 'Alle heutigen Tagesquests erfüllt.',
+    })
+    expect(bonusGrowthToastText(1250)).toEqual({
+      title: 'Tagesbonus steigt auf +1.250 Bonus-XP',
+      description: 'Perfekter Tag – jede weitere Quest erhöht ihn.',
+    })
+    expect(perfectDayToastText({ bonusXp: 8, today: false })).toEqual({
       title: 'Perfekter Tag! +8 Bonus-XP',
       description: 'Nachgetragen – ein vergangener Tag ist jetzt makellos.',
     })
@@ -66,7 +72,7 @@ describe('Texte', () => {
         xpIntoLevel: 10,
         xpForNextLevel: 158,
       }),
-    ).toEqual({ title: 'Intelligenz steigt auf Stufe 3', description: 'Noch 148 XP bis Stufe 4' })
+    ).toEqual({ title: 'Intelligenz steigt auf Level 3', description: 'Noch 148 XP bis Level 4' })
   })
 
   it('Rang-Hinweise', () => {
@@ -121,7 +127,7 @@ describe('Feier-Warteschlange', () => {
 
   it('erkennt, ob Ereignisse eine Szene auslösen', () => {
     expect(hasCelebration([level(1, 2)])).toBe(true)
-    expect(hasCelebration([{ type: 'perfect-day', bonusXp: 5, today: true }])).toBe(false)
+    expect(hasCelebration([{ type: 'perfect-day', bonusXp: 5, addedXp: 5, today: true }])).toBe(false)
   })
 })
 
@@ -138,6 +144,17 @@ describe('Konfetti-Partikel', () => {
       // fällt am Ende tiefer als am höchsten Punkt („Schwerkraft“)
       expect(particle.y[2]).toBeGreaterThan(particle.y[1])
     }
+  })
+
+  it('Fächer fliegt nach unten (Toast oben am Handy) und bleibt so im Bild', () => {
+    const particles = createConfettiParticles({ count: 50, mode: 'spray', distance: 300 }, seededRandom(5))
+    for (const particle of particles) {
+      expect(particle.y[1]).toBeGreaterThan(0)
+      expect(particle.y[2]).toBeGreaterThan(particle.y[1])
+    }
+    // Breit gefächert: nach links und nach rechts.
+    expect(particles.some((particle) => particle.x[1] < -50)).toBe(true)
+    expect(particles.some((particle) => particle.x[1] > 50)).toBe(true)
   })
 
   it('Fontäne fliegt nach oben, Lebensdauer ist begrenzt', () => {

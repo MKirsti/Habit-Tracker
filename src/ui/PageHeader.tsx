@@ -52,7 +52,16 @@ export function SectionTitle({ children, meta, action, as: Tag = 'h2', id, class
         className="min-w-0 font-display text-[0.8125rem] font-semibold tracking-[0.16em] text-gold uppercase"
       >
         {children}
-        {meta !== undefined && <span className="ml-2 font-sans tracking-normal text-muted tabular-nums">{meta}</span>}
+        {/* Unsichtbarer Gedankenstrich zwischen echten Leerzeichen: vorgelesen „Tagesquests – 0 / 3“ statt
+            „Tagesquests0 / 3“. Die Leerzeichen fallen sichtbar zu einem zusammen; es ersetzt einen Teil des
+            Abstands (ml-1 statt ml-2), optisch bleibt die Lücke gleich. */}
+        {meta !== undefined && (
+          <>
+            {' '}
+            <span className="sr-only">–</span>{' '}
+            <span className="ml-1 font-sans tracking-normal text-muted tabular-nums">{meta}</span>
+          </>
+        )}
       </Tag>
       <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-linear-to-r from-border-strong to-transparent" />
       {action}

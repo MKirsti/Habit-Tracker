@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from './cn'
 import { TOAST_DURATIONS, ToastContext } from './toastContext'
+import { useMediaQuery } from './useMediaQuery'
 import type { ToastApi, ToastOptions, ToastRecord, ToastTone } from './toastContext'
 
 export interface ToastProviderProps {
@@ -14,8 +15,8 @@ export interface ToastProviderProps {
 }
 
 /**
- * Stellt `useToast()` bereit und rendert den Toast-Stapel: auf dem Handy über der unteren
- * Navigation, auf dem Desktop unten rechts. Toasts verschwinden automatisch; Hover oder Fokus
+ * Stellt `useToast()` bereit und rendert den Toast-Stapel: auf dem Handy oben (unter der
+ * Statusleiste), auf dem Desktop unten rechts. Toasts verschwinden automatisch; Hover oder Fokus
  * pausiert den Timer.
  */
 export function ToastProvider({ children, max = 4 }: ToastProviderProps) {
@@ -46,14 +47,22 @@ export function ToastProvider({ children, max = 4 }: ToastProviderProps) {
   )
 }
 
+/** Breakpoint `md` (48rem) – ab hier Seitenleiste statt unterer Navigation. */
+const DESKTOP_QUERY = '(min-width: 48rem)'
+
 function ToastViewport({ toasts, onDismiss }: { toasts: ToastRecord[]; onDismiss: (id: string) => void }) {
+  const isDesktop = useMediaQuery(DESKTOP_QUERY)
   if (typeof document === 'undefined') return null
+  // Der neueste Toast steht immer am Bildschirmrand: auf dem Handy oben, auf dem Desktop unten.
+  // (Umgedrehte DOM-Reihenfolge statt flex-col-reverse, damit Tab- und Lesereihenfolge der Optik folgen.)
+  const ordered = isDesktop ? toasts : [...toasts].reverse()
   return createPortal(
     <div
       className={cn(
-        'pointer-events-none fixed inset-x-0 z-[60] flex justify-center px-4',
-        'bottom-[calc(var(--bottom-nav-height)+env(safe-area-inset-bottom)+0.75rem)]',
-        'md:inset-x-auto md:right-6 md:bottom-6 md:justify-end md:px-0',
+        // Handy: oben unter der Statusleiste. Unten lägen die Toasts über der Navigation, den Buttons
+        // der Bottom-Sheet-Dialoge und der nächsten Quest-Checkbox – und schnappten sich den Tipp.
+        'pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+0.5rem)] z-[60] flex justify-center px-4',
+        'md:inset-x-auto md:top-auto md:right-6 md:bottom-6 md:justify-end md:px-0',
       )}
     >
       <ol
@@ -62,8 +71,8 @@ function ToastViewport({ toasts, onDismiss }: { toasts: ToastRecord[]; onDismiss
         className="flex w-full max-w-sm flex-col items-stretch gap-2 md:w-96"
       >
         <AnimatePresence initial={false}>
-          {toasts.map((t) => (
-            <ToastItem key={t.id} toast={t} onDismiss={onDismiss} />
+          {ordered.map((t) => (
+            <ToastItem key={t.id} toast={t} onDismiss={onDismiss} enterFrom={isDesktop ? 'below' : 'above'} />
           ))}
         </AnimatePresence>
       </ol>
@@ -103,7 +112,16 @@ const DEFAULT_ICONS: Record<ToastTone, ReactNode> = {
   error: <CircleAlert />,
 }
 
-function ToastItem({ toast, onDismiss }: { toast: ToastRecord; onDismiss: (id: string) => void }) {
+function ToastItem({
+  toast,
+  onDismiss,
+  enterFrom,
+}: {
+  toast: ToastRecord
+  onDismiss: (id: string) => void
+  /** Von wo der Toast hereingleitet: vom oberen Rand (Handy) oder von unten (Desktop). */
+  enterFrom: 'above' | 'below'
+}) {
   // Hover und Fokus getrennt verfolgen: Verlässt der Zeiger den Toast, während er noch per Tastatur
   // fokussiert ist, muss der Timer weiter pausieren (WCAG 2.2.1 „Zeitbegrenzungen anpassbar“).
   const [hovered, setHovered] = useState(false)
@@ -128,7 +146,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastRecord; onDismiss: (id: s
   return (
     <motion.li
       layout
-      initial={{ opacity: 0, y: 18, scale: 0.95 }}
+      initial={{ opacity: 0, y: enterFrom === 'above' ? -18 : 18, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.16 } }}
       transition={{ type: 'spring', stiffness: 460, damping: 34 }}

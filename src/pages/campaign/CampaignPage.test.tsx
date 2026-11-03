@@ -6,7 +6,8 @@ import { MotionGlobalConfig } from 'motion/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as repository from '../../data/repository'
 import type { HabitDraft, MainQuestDraft } from '../../data/repository'
-import type { Chapter, DayKey } from '../../domain/types'
+import { deriveGameState } from '../../domain/engine'
+import type { Chapter, DayKey, MainQuest } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { CampaignPage } from '../CampaignPage'
 
@@ -101,10 +102,46 @@ async function firstQuest() {
   return data.mainQuests[0]
 }
 
+async function totalXp(): Promise<number> {
+  return deriveGameState(await loadGameData(), TODAY).level.totalXp
+}
+
+/** Drei Kampagnen mit aufsteigendem createdAt (bei angehaltener Uhr sonst gleich alt). */
+async function threeCampaigns(): Promise<MainQuest[]> {
+  const quests: MainQuest[] = []
+  const drafts = [
+    campaign([MANUAL], { title: 'Der Weg des Gelehrten', icon: '📚' }),
+    campaign([COUNTER], { title: 'Halbmarathon im Juni', icon: '🏃' }),
+    campaign([MANUAL], { title: 'Sprache lernen', icon: '🗣️' }),
+  ]
+  for (const [index, draft] of drafts.entries()) {
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, index))
+    quests.push(await createMainQuest(draft))
+  }
+  vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 0))
+  return quests
+}
+
+/** Kampagne mit Quest-Ziel „Drei Tage“ (3 Erledigungen ab Start 29.10.) – erreicht am 1. November. */
+async function readingCampaign(chapters: Chapter[] = []) {
+  const habit = await createHabit(READING, '2026-10-25')
+  for (const day of ['2026-10-30', '2026-10-31', '2026-11-01']) await setCompletionValue(habit.id, day, 10)
+  const threeDays: Chapter = {
+    id: 'three',
+    title: 'Drei Tage',
+    criterion: { type: 'habit', habitId: habit.id, metric: 'completions', target: 3 },
+  }
+  const quest = await createMainQuest(campaign([threeDays, ...chapters], { startDay: '2026-10-29' }))
+  return { habit, quest }
+}
+
 describe('CampaignPage – ohne Kampagne', () => {
   it('bietet die Vorlage an und richtet sie ein', async () => {
     const { user } = await renderPage()
-    expect(screen.getByRole('heading', { name: 'Wähle deine Hauptquest' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Wähle deine Kampagne' })).toBeInTheDocument()
+    // Einheitliche Begriffe: „Kampagne“, nicht „Hauptquest“.
+    expect(screen.queryByText(/Hauptquest/)).not.toBeInTheDocument()
+    expect(screen.getByText('Dein großes Ziel')).toBeInTheDocument()
     const template = screen.getByRole('article', { name: 'Der Weg des Gelehrten' })
     expect(within(template).getByText('5 Quests')).toBeInTheDocument()
     expect(within(template).getByText('6 Kapitel')).toBeInTheDocument()
@@ -512,11 +549,215 @@ describe('CampaignPage – Kampagne', () => {
     expect(confirm).not.toHaveTextContent('XP')
     await user.click(within(confirm).getByRole('button', { name: 'Endgültig löschen' }))
 
-    const heading = await screen.findByRole('heading', { name: 'Wähle deine Hauptquest' })
+    const heading = await screen.findByRole('heading', { name: 'Wähle deine Kampagne' })
     await waitFor(() => expect(heading).toHaveFocus())
     expect(await screen.findByText('Kampagne gelöscht')).toBeInTheDocument()
     const data = await loadGameData()
     expect(data.mainQuests).toHaveLength(0)
     expect(data.habits.find((h) => h.id === habit.id)?.mainQuestId).toBeUndefined()
+  })
+})
+
+describe('CampaignPage – Auswahl in der Adresse', () => {
+  it('zeigt die Kampagne aus ?id= und schreibt eine neue Auswahl zurück', async () => {
+    const [, second, third] = await threeCampaigns()
+    const user = userEvent.setup()
+    const { router } = renderWithGame(<CampaignPage />, { route: `/kampagne?id=${second.id}` })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Halbmarathon im Juni' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Halbmarathon im Juni/ })).toHaveAttribute('aria-checked', 'true')
+
+    await user.click(screen.getByRole('radio', { name: /Sprache lernen/ }))
+    expect(screen.getByRole('heading', { level: 2, name: 'Sprache lernen' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe(`?id=${third.id}`)
+    // Ersetzt den Eintrag – „Zurück“ führt nicht durch jede Auswahl.
+    expect(router.state.historyAction).toBe('REPLACE')
+  })
+
+  it('fällt bei einer unbekannten ID auf die laufende Kampagne zurück', async () => {
+    await threeCampaigns()
+    renderWithGame(<CampaignPage />, { route: '/kampagne?id=gibt-es-nicht' })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Der Weg des Gelehrten' })).toBeInTheDocument()
+  })
+
+  it('kehrt nach „Quest hinzufügen“ mit „Zurück“ zur gewählten Kampagne zurück', async () => {
+    const [, second] = await threeCampaigns()
+    const user = userEvent.setup()
+    const { router } = renderWithGame(<CampaignPage />, { route: '/kampagne' })
+    await screen.findByRole('heading', { level: 2, name: 'Der Weg des Gelehrten' })
+    await user.click(screen.getByRole('radio', { name: /Halbmarathon im Juni/ }))
+    await user.click(screen.getByRole('button', { name: 'Quest hinzufügen' }))
+    expect(router.state.location.pathname).toBe('/quests')
+    expect(new URLSearchParams(router.state.location.search).get('kampagne')).toBe(second.id)
+
+    await router.navigate(-1)
+    await waitFor(() => expect(router.state.location.search).toBe(`?id=${second.id}`))
+    expect(await screen.findByRole('heading', { level: 2, name: 'Halbmarathon im Juni' })).toBeInTheDocument()
+  })
+
+  it('merkt sich die Auswahl auch über einen Seitenwechsel ohne ?id= (Navigation „Kampagne“)', async () => {
+    const [, , third] = await threeCampaigns()
+    const user = userEvent.setup()
+    renderWithGame(<CampaignPage />, { route: '/kampagne' })
+    await user.click(await screen.findByRole('radio', { name: /Sprache lernen/ }))
+    cleanup()
+
+    // Später wieder über die Navigation (/kampagne ohne Parameter) geöffnet
+    const { router } = renderWithGame(<CampaignPage />, { route: '/kampagne' })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Sprache lernen' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe('')
+    expect(third.id).toBeTruthy()
+  })
+
+  it('wählt nach dem Anlegen die neue Kampagne – auch in der Adresse', async () => {
+    await createMainQuest(campaign([MANUAL]))
+    const { user, router } = await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Weitere Kampagne beginnen' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Neue Kampagne' })
+    await user.type(within(dialog).getByLabelText(/^Titel/), 'Sprache lernen')
+    await user.type(within(dialog).getByLabelText(/^Warum/), 'Reisen.')
+    await user.click(within(dialog).getByRole('button', { name: 'Kampagne erstellen' }))
+    expect(await screen.findByRole('heading', { level: 2, name: 'Sprache lernen' })).toBeInTheDocument()
+    const created = (await loadGameData()).mainQuests.find((quest) => quest.title === 'Sprache lernen')
+    expect(router.state.location.search).toBe(`?id=${created?.id}`)
+  })
+
+  it('zeigt auf schmalen Bildschirmen eine Auswahlliste mit vollen Titeln', async () => {
+    const [first, second] = await threeCampaigns()
+    const matchMedia = vi.fn((query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    vi.stubGlobal('matchMedia', matchMedia)
+    try {
+      const user = userEvent.setup()
+      const { router } = renderWithGame(<CampaignPage />, { route: `/kampagne?id=${first.id}` })
+      const select = await screen.findByRole('combobox', { name: 'Kampagne' })
+      expect(screen.queryByRole('radiogroup', { name: 'Kampagne wählen' })).not.toBeInTheDocument()
+      expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual([
+        '📚 Der Weg des Gelehrten',
+        '🏃 Halbmarathon im Juni',
+        '🗣️ Sprache lernen',
+      ])
+      await user.selectOptions(select, second.id)
+      expect(await screen.findByRole('heading', { level: 2, name: 'Halbmarathon im Juni' })).toBeInTheDocument()
+      expect(router.state.location.search).toBe(`?id=${second.id}`)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('zählt im Abschnitt „Kapitel“ die abgeschlossenen Kapitel', async () => {
+    await createMainQuest(campaign([{ ...MANUAL, manualDone: true, completedDay: '2026-11-01' }, COUNTER]))
+    await renderPage()
+    // Gleiche Bedeutung wie auf dem Dashboard: „X / Y“ = abgeschlossene Kapitel.
+    expect(screen.getByRole('heading', { level: 2, name: /^Kapitel\b.*1 \/ 2 abgeschlossen$/ })).toBeInTheDocument()
+  })
+})
+
+describe('CampaignPage – XP-Verlust beim Bearbeiten', () => {
+  it('fragt im Kampagnen-Dialog nach, wenn ein späterer Start ein Kapitel kippt', async () => {
+    await readingCampaign([MANUAL])
+    const { user } = await renderPage()
+    const xpBefore = await totalXp()
+
+    await user.click(screen.getByRole('button', { name: 'Bearbeiten' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Kampagne bearbeiten' })
+    fireEvent.change(within(dialog).getByLabelText(/^Start/), { target: { value: '2026-10-31' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
+    let confirm = await screen.findByRole('alertdialog', { name: 'Änderung kostet XP' })
+    expect(confirm).toHaveTextContent('Kapitel „Drei Tage“ verliert seinen Abschluss. Dadurch entfallen 100 XP.')
+
+    // Abbrechen: zurück ins Formular, nichts gespeichert
+    await user.click(within(confirm).getByRole('button', { name: 'Abbrechen' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('dialog', { name: 'Kampagne bearbeiten' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/^Start/)).toHaveValue('2026-10-31')
+    expect((await firstQuest()).startDay).toBe('2026-10-29')
+    expect(await totalXp()).toBe(xpBefore)
+
+    // Bestätigen: gespeichert, genau die genannten XP entfallen
+    await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
+    confirm = await screen.findByRole('alertdialog', { name: 'Änderung kostet XP' })
+    await user.click(within(confirm).getByRole('button', { name: 'Trotzdem speichern' }))
+    await waitFor(async () => expect((await firstQuest()).startDay).toBe('2026-10-31'))
+    expect(await totalXp()).toBe(xpBefore - 100)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText('Kampagne gespeichert')).toBeInTheDocument()
+  })
+
+  it('fragt im Kampagnen-Dialog auch nach einem erhöhten Ziel (über „Übernehmen“) nach', async () => {
+    await readingCampaign()
+    const { user } = await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Bearbeiten' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Kampagne bearbeiten' })
+    await user.click(within(dialog).getByRole('button', { name: 'Kapitel 1 „Drei Tage“ bearbeiten' }))
+    const chapterDialog = await screen.findByRole('dialog', { name: 'Kapitel bearbeiten' })
+    const target = within(chapterDialog).getByLabelText(/^Ziel/)
+    await user.clear(target)
+    await user.type(target, '5')
+    await user.click(within(chapterDialog).getByRole('button', { name: 'Übernehmen' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Kapitel bearbeiten' })).not.toBeInTheDocument())
+
+    await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Änderung kostet XP' })
+    expect(confirm).toHaveTextContent('Dadurch entfallen 600 XP (davon 500 XP Kampagnen-Bonus).')
+  })
+
+  it('fragt im Kapitel-Dialog der Zeitleiste nach, wenn ein höheres Ziel das Kapitel kippt', async () => {
+    await readingCampaign()
+    const { user } = await renderPage()
+    const xpBefore = await totalXp()
+
+    await user.click(screen.getByRole('button', { name: 'Kapitel „Drei Tage“ bearbeiten' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Kapitel bearbeiten' })
+    const target = within(dialog).getByLabelText(/^Ziel/)
+    await user.clear(target)
+    await user.type(target, '5')
+    await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
+    let confirm = await screen.findByRole('alertdialog', { name: 'Änderung kostet XP' })
+    expect(confirm).toHaveTextContent(
+      'Kapitel „Drei Tage“ verliert seinen Abschluss. Die Kampagne gilt dann nicht mehr als gemeistert. ' +
+        'Dadurch entfallen 600 XP (davon 500 XP Kampagnen-Bonus).',
+    )
+
+    await user.click(within(confirm).getByRole('button', { name: 'Abbrechen' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('dialog', { name: 'Kapitel bearbeiten' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/^Ziel/)).toHaveValue('5')
+    expect((await firstQuest()).chapters[0].criterion).toMatchObject({ target: 3 })
+    expect(await totalXp()).toBe(xpBefore)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
+    confirm = await screen.findByRole('alertdialog', { name: 'Änderung kostet XP' })
+    await user.click(within(confirm).getByRole('button', { name: 'Trotzdem speichern' }))
+    await waitFor(async () => expect((await firstQuest()).chapters[0].criterion).toMatchObject({ target: 5 }))
+    expect(await totalXp()).toBe(xpBefore - 600)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('warnt, wenn ein neues Kapitel die gemeisterte Kampagne wieder öffnet', async () => {
+    await readingCampaign()
+    const { user } = await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Kapitel hinzufügen' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Neues Kapitel' })
+    await user.type(within(dialog).getByLabelText(/^Titel/), 'Finale')
+    await user.click(within(dialog).getByRole('button', { name: 'Kapitel anlegen' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Änderung kostet XP' })
+    expect(confirm).toHaveTextContent(
+      'Die Kampagne gilt dann nicht mehr als gemeistert. Dadurch entfällt der Kampagnen-Bonus von 500 XP.',
+    )
+  })
+
+  it('speichert harmlose Änderungen ohne Rückfrage', async () => {
+    await readingCampaign([MANUAL])
+    const { user } = await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Bearbeiten' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Kampagne bearbeiten' })
+    fireEvent.change(within(dialog).getByLabelText(/^Start/), { target: { value: '2026-10-20' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
+    await waitFor(async () => expect((await firstQuest()).startDay).toBe('2026-10-20'))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })

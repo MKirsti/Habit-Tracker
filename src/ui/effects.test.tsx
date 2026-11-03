@@ -4,6 +4,23 @@ import { MotionGlobalConfig } from 'motion/react'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { XpBar } from './XpBar'
 
+/** Der Inhalt des ersten `@media <query> { … }`-Blocks samt seiner Verschachtelungstiefe. */
+function findMediaBlock(css: string, query: string): { body: string; depth: number } | undefined {
+  const source = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const hit = source.indexOf(`@media ${query}`)
+  if (hit === -1) return undefined
+  const before = source.slice(0, hit)
+  const depth = (before.match(/\{/g)?.length ?? 0) - (before.match(/\}/g)?.length ?? 0)
+  const open = source.indexOf('{', hit)
+  let level = 0
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') level++
+    if (source[i] === '}') level--
+    if (level === 0) return { body: source.slice(open + 1, i), depth }
+  }
+  return undefined
+}
+
 /**
  * Der Schalter „Effekte“ (settings.effects) stoppt dekorative Endlos-Animationen über
  * `<html data-effects="off">` und eine CSS-Regel in src/index.css. Diese Tests prüfen, dass die
@@ -77,5 +94,27 @@ describe('Effekte abschalten (<html data-effects="off">)', () => {
     expect(shimmer?.matches(rule.selector)).toBe(false)
     document.documentElement.dataset.effects = 'off'
     expect(shimmer?.matches(rule.selector)).toBe(true)
+  })
+})
+
+describe('Reduzierte Bewegung (prefers-reduced-motion: reduce)', () => {
+  it('stoppt Glanz und Glühen – außerhalb der Cascade-Layer, damit die Regel die Utilities schlägt', () => {
+    const block = findMediaBlock(css, '(prefers-reduced-motion: reduce)')
+    expect(block, '@media (prefers-reduced-motion: reduce) fehlt').toBeDefined()
+    expect(block?.depth).toBe(0)
+    const rules = findRules(block?.body ?? '', '[class*=')
+    expect(rules.length).toBeGreaterThan(0)
+    for (const rule of rules) expect(rule.body).toMatch(/animation:\s*none/)
+
+    const selector = rules.map((rule) => rule.selector).join(', ')
+    const { container } = render(
+      <>
+        <XpBar level={2} xpIntoLevel={40} xpForNextLevel={283} />
+        <span data-testid="glow" className="animate-glow-pulse" />
+      </>,
+    )
+    // Unabhängig von der Effekte-Einstellung: Wer weniger Bewegung wünscht, bekommt keine Endlos-Animation.
+    expect(container.querySelector('[class*="animate-shimmer"]')?.matches(selector)).toBe(true)
+    expect(container.querySelector('[data-testid="glow"]')?.matches(selector)).toBe(true)
   })
 })

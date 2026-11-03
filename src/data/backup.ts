@@ -5,7 +5,7 @@
  * geprüft, bevor irgendetwas in die Datenbank geschrieben wird. Unbekannte Felder werden
  * dabei verworfen. Fehlermeldungen sind deutsch und können direkt angezeigt werden.
  *
- * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest) erhöhen die
+ * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest, `deletedHabits`) erhöhen die
  * Schema-Version nicht: Ältere Backups ohne diese Felder bleiben gültig.
  */
 import { z } from 'zod'
@@ -111,6 +111,16 @@ const habitSchema = z.object({
   pauses: z.array(pauseSchema).optional(),
 })
 
+/** Grabstein einer gelöschten Quest: nur ihr Zeitplan (siehe `DeletedHabit`). */
+const deletedHabitSchema = z.object({
+  id: idSchema,
+  createdDay: dayKeySchema,
+  archivedDay: dayKeySchema,
+  schedule: scheduleSchema,
+  scheduleHistory: scheduleHistorySchema.optional(),
+  pauses: z.array(pauseSchema).optional(),
+})
+
 const completionSchema = z.object({
   id: idSchema,
   habitId: idSchema,
@@ -186,9 +196,11 @@ export const gameDataSchema = z
     habits: z.array(habitSchema),
     completions: z.array(completionSchema),
     mainQuests: z.array(mainQuestSchema),
+    deletedHabits: z.array(deletedHabitSchema).optional(),
   })
   .superRefine((data, ctx) => {
     checkUniqueIds(data.habits, ['habits'], ctx)
+    if (data.deletedHabits) checkUniqueIds(data.deletedHabits, ['deletedHabits'], ctx)
     checkUniqueIds(data.completions, ['completions'], ctx)
     checkUniqueIds(data.mainQuests, ['mainQuests'], ctx)
     data.mainQuests.forEach((quest, index) => checkUniqueIds(quest.chapters, ['mainQuests', index, 'chapters'], ctx))
@@ -273,6 +285,9 @@ export async function restoreBackup(backup: BackupFile, database: QuestlogDB = d
     await database.mainQuests.bulkAdd(data.mainQuests)
     await database.kv.put({ key: KV_KEYS.settings, value: data.settings })
     if (data.profile) await database.kv.put({ key: KV_KEYS.profile, value: data.profile })
+    if (data.deletedHabits && data.deletedHabits.length > 0) {
+      await database.kv.put({ key: KV_KEYS.deletedHabits, value: data.deletedHabits })
+    }
   })
 }
 

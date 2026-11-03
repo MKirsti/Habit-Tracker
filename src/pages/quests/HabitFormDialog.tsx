@@ -1,10 +1,10 @@
-import { Archive, Check, ChevronDown, Info } from 'lucide-react'
+import { Archive, Check, ChevronDown, Info, TriangleAlert } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useGameContext } from '../../app/gameContext'
 import { archiveHabit, createHabit, updateHabit } from '../../data/repository'
 import { DIFFICULTIES, DIFFICULTY_META } from '../../domain/balancing'
-import { questXp } from '../../domain/schedule'
+import { isArchivedOn, questXp } from '../../domain/schedule'
 import type { Habit } from '../../domain/types'
 import {
   Button,
@@ -38,6 +38,7 @@ import {
   hasErrors,
   initialHabitFormValues,
   sameFormValues,
+  todayEntryNote,
   toggleWeekday,
   validateHabitForm,
 } from './habitForm'
@@ -217,9 +218,13 @@ export function HabitFormDialog({
     onClose()
   }
 
-  const canArchive = habit !== undefined && habit.archivedDay === undefined
+  // Gleiche Regel wie in der Quest-Liste und im Repository: Ein archivedDay nach heute zählt noch nicht.
+  const canArchive = habit !== undefined && !isArchivedOn(habit, today)
   const xp = questXp(values.difficulty)
   const unitLabel = values.unit.trim()
+  // Die Änderung gilt auch für den heutigen Eintrag – kostet sie heutigen Fortschritt, sagt der Dialog es vorher.
+  const todayCompletion = habit && data.completions.find((c) => c.habitId === habit.id && c.day === today)
+  const todayNote = habit ? todayEntryNote(habit, todayCompletion, values) : undefined
 
   return (
     <>
@@ -266,7 +271,7 @@ export function HabitFormDialog({
             <p className="flex items-start gap-2.5 rounded-xl border border-info/30 bg-info/8 px-3.5 py-2.5 text-sm text-parchment/90"
             >
               <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-info" />
-              <span>Änderungen gelten ab heute – bereits erledigte Tage behalten ihre Werte.</span>
+              <span>Änderungen gelten ab heute – auch für den heutigen Eintrag; frühere Tage behalten ihre Werte.</span>
             </p>
           )}
           {/* Symbol + Titel */}
@@ -437,6 +442,16 @@ export function HabitFormDialog({
               </div>
             )}
           </div>
+          {isEdit && (
+            <div aria-live="polite" className="-mt-3 empty:hidden">
+              {todayNote !== undefined && (
+                <p className="flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/8 px-3.5 py-2.5 text-sm text-parchment/90">
+                  <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+                  <span>{todayNote}</span>
+                </p>
+              )}
+            </div>
+          )}
 
           <Select
             label="Kampagne"

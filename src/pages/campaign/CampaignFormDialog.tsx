@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Info, Trash2, Trophy } from 'lucide-react'
+import { Check, ChevronDown, Info, Trash2, TriangleAlert, Trophy } from 'lucide-react'
 import { useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useGameContext } from '../../app/gameContext'
@@ -6,6 +6,7 @@ import { createMainQuest, deleteMainQuest, updateMainQuest } from '../../data/re
 import { BALANCING } from '../../domain/balancing'
 import { addDays, isValidDayKey } from '../../domain/dates'
 import type { Chapter, MainQuest } from '../../domain/types'
+import type { MainQuestDraft } from '../../data/repository'
 import {
   Button,
   Chip,
@@ -36,6 +37,7 @@ import type { CampaignFormErrors, CampaignFormField, CampaignFormValues } from '
 import { countLabel, durationLabel } from './campaignText'
 import { ChapterFormDialog } from './ChapterFormDialog'
 import { ChapterListEditor } from './ChapterListEditor'
+import { campaignEditLoss, campaignEditLossText } from './campaignXp'
 import { errorMessage } from './errors'
 
 export interface CampaignFormDialogProps {
@@ -93,6 +95,9 @@ export function CampaignFormDialog({ open, onClose, quest, onCreated, onDeleted 
   const [confirmDelete, setConfirmDelete] = useState(false)
   // Beim Öffnen der Rückfrage festgehalten (nach dem Löschen ändert sich der Spielstand schon beim Ausblenden).
   const [confirmXp, setConfirmXp] = useState(0)
+  // Rückfrage vor dem Speichern, falls die Änderung XP kostet (späterer Start, höheres Ziel …):
+  // Entwurf und Text beim Öffnen festgehalten.
+  const [pendingSave, setPendingSave] = useState<{ draft: MainQuestDraft; warning: string } | null>(null)
   // Kapitel-Dialog: Position des bearbeiteten Kapitels, `null` = neues Kapitel.
   const [chapterIndex, setChapterIndex] = useState<number | null>(null)
   const [chapterOpen, setChapterOpen] = useState(false)
@@ -108,6 +113,7 @@ export function CampaignFormDialog({ open, onClose, quest, onCreated, onDeleted 
       setSaving(false)
       setPickerOpen(false)
       setConfirmDelete(false)
+      setPendingSave(null)
       setChapterOpen(false)
     }
   }
@@ -143,9 +149,30 @@ export function CampaignFormDialog({ open, onClose, quest, onCreated, onDeleted 
       focusFirstError(currentErrors)
       return
     }
+    const draft = campaignDraftFromValues(values)
+    if (quest) {
+      // Quest-Ziele werden live ab dem Start berechnet: Ein späterer Start, ein höheres Ziel oder ein neues
+      // offenes Kapitel kann Abschlüsse (und XP) kosten – dann erst nachfragen.
+      const loss = campaignEditLoss(data, today, quest.id, { ...quest, ...draft })
+      if (loss.xp > 0) {
+        setPendingSave({ draft, warning: campaignEditLossText(loss) })
+        return
+      }
+    }
     savingRef.current = true
     setSaving(true)
-    const draft = campaignDraftFromValues(values)
+    try {
+      await save(draft)
+    } catch {
+      // Fehler wurde gemeldet – der Dialog bleibt offen.
+    } finally {
+      setSaving(false)
+      savingRef.current = false
+    }
+  }
+
+  /** Speichert bzw. legt an, meldet Erfolg und schließt; wirft nach einem Fehler-Toast weiter. */
+  async function save(draft: MainQuestDraft) {
     try {
       if (quest) {
         await updateMainQuest(quest.id, draft)
@@ -159,14 +186,11 @@ export function CampaignFormDialog({ open, onClose, quest, onCreated, onDeleted 
         })
         onCreated?.(created)
       }
-      setSaving(false)
-      onClose()
     } catch (error) {
-      setSaving(false)
       toast({ tone: 'error', title: 'Kampagne konnte nicht gespeichert werden', description: errorMessage(error) })
-    } finally {
-      savingRef.current = false
+      throw error
     }
+    onClose()
   }
 
   async function handleDelete() {
@@ -432,6 +456,19 @@ export function CampaignFormDialog({ open, onClose, quest, onCreated, onDeleted 
         campaignId={quest?.id}
         onSubmit={saveChapter}
         submitLabel={editedChapter ? 'Übernehmen' : 'Hinzufügen'}
+      />
+
+      <ConfirmDialog
+        open={open && pendingSave !== null}
+        onClose={() => setPendingSave(null)}
+        onConfirm={async () => {
+          if (pendingSave) await save(pendingSave.draft)
+        }}
+        title="Änderung kostet XP"
+        message={pendingSave?.warning}
+        confirmLabel="Trotzdem speichern"
+        danger
+        icon={<TriangleAlert />}
       />
 
       {quest && (

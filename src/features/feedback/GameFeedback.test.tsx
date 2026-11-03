@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto'
-import { cleanup, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GameProvider } from '../../app/GameProvider'
 import { useGameContext } from '../../app/gameContext'
 import { createBackup, restoreBackup } from '../../data/backup'
+import { db } from '../../data/db'
 import {
+  archiveHabit,
   createHabit,
   createMainQuest,
   resetAllData,
@@ -18,6 +21,7 @@ import {
 import type { HabitDraft } from '../../data/repository'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
+import { ToastProvider } from '../../ui'
 import { GameFeedback } from './GameFeedback'
 
 /** Dienstag, 3. November 2026, 12:00 Uhr → Spieltag 2026-11-03. */
@@ -51,12 +55,60 @@ beforeEach(async () => {
   await resetAllData()
   await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: '2026-11-01' })
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 /** Zeigt das aktuelle Level – damit der Test weiß, wann ein neuer Zustand angekommen ist. */
 function LevelProbe() {
   const { state } = useGameContext()
   return <p data-testid="level">Level {state.level.level}</p>
+}
+
+/** Tagesbilanz wie im Dashboard: „+N Bonus-XP“ und „Heute verdient“. */
+function DayProbe() {
+  const { state } = useGameContext()
+  const { perfectBonusXp, questXp } = state.todayState
+  return (
+    <>
+      <p data-testid="day-bonus">{perfectBonusXp}</p>
+      <p data-testid="day-earned">{questXp + perfectBonusXp}</p>
+    </>
+  )
+}
+
+/** Mit Platz für viele Toasts (sonst fallen die ältesten heraus) und der Tagesbilanz. */
+async function renderFeedbackWithDay() {
+  render(
+    <ToastProvider max={12}>
+      <GameProvider>
+        <GameFeedback />
+        <LevelProbe />
+        <DayProbe />
+      </GameProvider>
+    </ToastProvider>,
+  )
+  await screen.findByTestId('level')
+}
+
+/** Lässt für `GameFeedback` Zeit vergehen (Zusammenfass-Fenster, Toast-Dauer), ohne zu warten. */
+function controllableClock() {
+  const realNow = performance.now.bind(performance)
+  let offset = 0
+  vi.spyOn(performance, 'now').mockImplementation(() => realNow() + offset)
+  return {
+    skip(ms: number) {
+      offset += ms
+    },
+  }
+}
+
+/** Summe aller sichtbaren XP-Toasts („+30 XP“). */
+function visibleXpSum(): number {
+  return screen
+    .queryAllByText(/^\+[\d.]+ XP$/)
+    .reduce((sum, element) => sum + Number((element.textContent ?? '').replace(/[^\d]/g, '')), 0)
 }
 
 async function renderFeedback() {
@@ -81,13 +133,14 @@ describe('GameFeedback', () => {
     await setCompletionValue(training.id, TODAY, 1)
     expect(await screen.findByText('+80 XP')).toBeInTheDocument()
     expect(screen.getByText('Krafttraining')).toBeInTheDocument()
-    expect(await screen.findByText('Stärke steigt auf Stufe 2')).toBeInTheDocument()
+    expect(await screen.findByText('Stärke steigt auf Level 2')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
     // +80 XP + Perfekter Tag (+40) → 200 XP → Level 2.
     await setCompletionValue(reading.id, TODAY, 1)
     const dialog = await screen.findByRole('dialog', { name: 'Level 2 erreicht!' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(within(dialog).getByText('Level-Aufstieg')).toBeInTheDocument()
     expect(within(dialog).getByRole('progressbar', { name: 'Erfahrung' })).toHaveAttribute(
       'aria-valuetext',
       '100 von 283 XP bis Level 3',
@@ -107,19 +160,19 @@ describe('GameFeedback', () => {
     const training = await createHabit(TRAINING, TODAY)
     await renderFeedback()
 
-    // 80 XP + Perfekter Tag (+20) → genau 100 XP → Level 2, Stärke steigt auf Stufe 2.
+    // 80 XP + Perfekter Tag (+20) → genau 100 XP → Level 2, Stärke steigt auf Level 2.
     await setCompletionValue(training.id, TODAY, 1)
     const dialog = await screen.findByRole('dialog', { name: 'Level 2 erreicht!' })
     // Hinter der Szene würden die Toasts ungesehen ablaufen.
     expect(screen.queryByText('+80 XP')).not.toBeInTheDocument()
     expect(screen.queryByText('Perfekter Tag! +20 Bonus-XP')).not.toBeInTheDocument()
-    expect(screen.queryByText('Stärke steigt auf Stufe 2')).not.toBeInTheDocument()
+    expect(screen.queryByText('Stärke steigt auf Level 2')).not.toBeInTheDocument()
 
     await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Weiter' }))
     expect(await screen.findByText('+80 XP')).toBeInTheDocument()
     expect(screen.getByText('Krafttraining')).toBeInTheDocument()
     expect(screen.getByText('Perfekter Tag! +20 Bonus-XP')).toBeInTheDocument()
-    expect(screen.getByText('Stärke steigt auf Stufe 2')).toBeInTheDocument()
+    expect(screen.getByText('Stärke steigt auf Level 2')).toBeInTheDocument()
   })
 
   it('feiert denselben Level nach Haken entfernen und wieder setzen nicht erneut', async () => {
@@ -178,6 +231,122 @@ describe('GameFeedback', () => {
     expect(screen.queryByText('Dehnen')).not.toBeInTheDocument()
     // Der Toast für „Meditieren“ bleibt – die Quest ist ja weiterhin erledigt.
     expect(screen.getByText('Meditieren')).toBeInTheDocument()
+  })
+
+  it('zeigt den Bonus des Perfekten Tages immer als Tagessumme – wie die Tagesbilanz', async () => {
+    // Vorab 160 XP (Level 2) ohne Perfekte Tage, damit heute kein Level-Up die Toasts zurückhält.
+    const filler = await createHabit(
+      { title: 'Vorrat', icon: '💪', attribute: 'strength', difficulty: 'epic', schedule: { type: 'weekly', times: 1 } },
+      '2026-10-20',
+    )
+    await setCompletionValue(filler.id, '2026-10-30', 1)
+    await setCompletionValue(filler.id, '2026-10-31', 1)
+    await archiveHabit(filler.id, TODAY)
+    const quest = (title: string, icon: string, attribute: HabitDraft['attribute'], difficulty: HabitDraft['difficulty'], schedule: HabitDraft['schedule']) =>
+      createHabit({ title, icon, attribute, difficulty, schedule }, TODAY)
+    const reading = await quest('Lesen', '📖', 'intellect', 'medium', { type: 'daily' })
+    const candle = await quest('Kerze', '🕯️', 'wisdom', 'medium', { type: 'daily' })
+    const thought = await quest('Gedanke', '✍️', 'discipline', 'easy', { type: 'daily' })
+    const deep = await quest('Tiefe', '⏳', 'charisma', 'hard', { type: 'weekly', times: 3 })
+    const talk = await quest('Gespräch', '🗣️', 'vitality', 'medium', { type: 'weekly', times: 1 })
+    await renderFeedbackWithDay()
+    expect(screen.getByTestId('level')).toHaveTextContent('Level 2')
+
+    const tick = async (id: string, earned: number) => {
+      await setCompletionValue(id, TODAY, 1)
+      await waitFor(() => expect(screen.getByTestId('day-earned')).toHaveTextContent(String(earned)))
+    }
+    await tick(reading.id, 20)
+    await tick(candle.id, 40)
+    // Perfekt: round(25 % × 50) = 13.
+    await tick(thought.id, 63)
+    expect(await screen.findByText('Perfekter Tag! +13 Bonus-XP')).toBeInTheDocument()
+    // Wochenquests an einem perfekten Tag: derselbe Toast zeigt die neue Tagessumme.
+    await tick(deep.id, 113)
+    expect(await screen.findByText('Perfekter Tag! +23 Bonus-XP')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Perfekter Tag! +13 Bonus-XP')).not.toBeInTheDocument())
+    await tick(talk.id, 138)
+    expect(await screen.findByText('Perfekter Tag! +28 Bonus-XP')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Perfekter Tag! +23 Bonus-XP')).not.toBeInTheDocument())
+
+    // Jede sichtbare Bonus-Zahl ist die der Tagesbilanz – kein „inkl. … Bonus-XP“ in XP-Toasts.
+    expect(screen.getByTestId('day-bonus')).toHaveTextContent('28')
+    await waitFor(() =>
+      expect(screen.getAllByText(/Bonus-XP/).map((element) => element.textContent)).toEqual([
+        'Perfekter Tag! +28 Bonus-XP',
+      ]),
+    )
+    expect(screen.queryByText(/inkl\./)).not.toBeInTheDocument()
+    // Die Toasts ergeben zusammen „Heute verdient“.
+    expect(visibleXpSum() + 28).toBe(138)
+
+    // Tagesquest wieder offen: Der Perfekte Tag verschwindet, kein Toast erwähnt mehr einen Bonus.
+    await setCompletionValue(thought.id, TODAY, 0)
+    await waitFor(() => expect(screen.queryByText(/Bonus/)).not.toBeInTheDocument())
+    expect(screen.getByText('Tiefe und Gespräch')).toBeInTheDocument()
+  })
+
+  it('meldet den wachsenden Tagesbonus kurz als neue Summe, wenn der Perfekter-Tag-Toast schon weg ist', async () => {
+    const clock = controllableClock()
+    const reading = await createHabit({ ...READING, difficulty: 'easy' }, TODAY)
+    const deep = await createHabit(
+      { title: 'Tiefe', icon: '⏳', attribute: 'wisdom', difficulty: 'hard', schedule: { type: 'weekly', times: 3 } },
+      TODAY,
+    )
+    await renderFeedback()
+
+    await setCompletionValue(reading.id, TODAY, 1)
+    expect(await screen.findByText('Perfekter Tag! +3 Bonus-XP')).toBeInTheDocument()
+    clock.skip(6000)
+    await setCompletionValue(deep.id, TODAY, 1)
+    expect(await screen.findByText('Tagesbonus steigt auf +13 Bonus-XP')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText(/^Perfekter Tag!/)).not.toBeInTheDocument())
+    expect(screen.getByText('+40 XP')).toBeInTheDocument()
+    expect(screen.getByText('Tiefe')).toBeInTheDocument()
+  })
+
+  it('korrigiert den sichtbaren Tagesbonus, wenn eine Wochenquest wieder offen ist', async () => {
+    const reading = await createHabit({ ...READING, difficulty: 'easy' }, TODAY)
+    const deep = await createHabit(
+      { title: 'Tiefe', icon: '⏳', attribute: 'wisdom', difficulty: 'hard', schedule: { type: 'weekly', times: 3 } },
+      TODAY,
+    )
+    await renderFeedback()
+    await setCompletionValue(reading.id, TODAY, 1)
+    await setCompletionValue(deep.id, TODAY, 1)
+    expect(await screen.findByText('Perfekter Tag! +13 Bonus-XP')).toBeInTheDocument()
+
+    await setCompletionValue(deep.id, TODAY, 0)
+    expect(await screen.findByText('Perfekter Tag! +3 Bonus-XP')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Perfekter Tag! +13 Bonus-XP')).not.toBeInTheDocument())
+  })
+
+  it('nennt nachgetragene Quests, die heute nicht anstehen', async () => {
+    const running = await createHabit(
+      { title: 'Laufen', icon: '🏃', attribute: 'strength', difficulty: 'medium', schedule: { type: 'weekdays', days: [1, 3, 5] } },
+      '2026-10-20',
+    )
+    await renderFeedback()
+    // Dienstag: Die Mo/Mi/Fr-Quest wird für Montag nachgetragen.
+    await setCompletionValue(running.id, '2026-11-02', 1)
+    expect(await screen.findByText('+20 XP')).toBeInTheDocument()
+    expect(screen.getByText('Nachgetragen: Laufen')).toBeInTheDocument()
+    expect(screen.queryByText('Nachgetragene Quest')).not.toBeInTheDocument()
+  })
+
+  it('nennt die Quest, wenn eine erledigte Quest schwerer wird (Leicht → Episch)', async () => {
+    const clock = controllableClock()
+    const meditation = await createHabit({ ...READING, title: 'Meditieren', icon: '🧘', difficulty: 'easy' }, TODAY)
+    await createHabit(TRAINING, TODAY) // noch offen → kein Perfekter Tag
+    await renderFeedback()
+    await setCompletionValue(meditation.id, TODAY, 1)
+    expect(await screen.findByText('+10 XP')).toBeInTheDocument()
+
+    clock.skip(2000) // eigener Toast statt Zusammenfassen
+    await db.completions.where('habitId').equals(meditation.id).modify({ difficulty: 'epic', updatedAt: Date.now() + 1 })
+    expect(await screen.findByText('+70 XP')).toBeInTheDocument()
+    expect(screen.getAllByText('Meditieren')).toHaveLength(2)
+    expect(screen.queryByText(/Nachgetragen/)).not.toBeInTheDocument()
   })
 
   it('zeigt Kampagne und Level-Up nacheinander, „Weiter“ schaltet zur nächsten Szene', async () => {

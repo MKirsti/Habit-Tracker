@@ -4,7 +4,9 @@
  * einen `HabitDraft` für das Repository.
  */
 import type { HabitDraft } from '../../data/repository'
-import type { AttributeId, Difficulty, Habit, IsoWeekday, Schedule } from '../../domain/types'
+import { isDone } from '../../domain/schedule'
+import type { AttributeId, Completion, Difficulty, Habit, IsoWeekday, Schedule } from '../../domain/types'
+import { formatNumber } from '../../ui'
 
 export const TITLE_MAX = 60
 export const DESCRIPTION_MAX = 200
@@ -179,4 +181,33 @@ export function habitDraftFromValues(values: HabitFormValues): HabitDraft {
       values.measurable && values.target !== null ? { target: values.target, unit: values.unit.trim() } : undefined,
     mainQuestId: values.mainQuestId === '' ? undefined : values.mainQuestId,
   }
+}
+
+/** Messwert für Hinweise: höchstens zwei Nachkommastellen, de-DE. */
+function formatAmount(value: number): string {
+  return formatNumber(value, { maximumFractionDigits: 2 })
+}
+
+/**
+ * Hinweis vor dem Speichern, wenn die Bearbeitung heutigen Fortschritt kostet. `updateHabit` überträgt die
+ * Änderung auch auf den heutigen Eintrag (`completion`); dabei kann
+ * - ein erhöhtes Ziel eine erledigte Quest wieder öffnen: "Heute: 10 / 20 Seiten – die Quest ist danach wieder offen."
+ * - der Wechsel zu einer Abhak-Quest einen Teilfortschritt verwerfen.
+ * Sonst (kein Eintrag, nichts geht verloren, ungültige Eingabe) `undefined`.
+ */
+export function todayEntryNote(
+  habit: Habit,
+  completion: Pick<Completion, 'value' | 'target'> | undefined,
+  values: HabitFormValues,
+): string | undefined {
+  if (completion === undefined || habit.measure === undefined) return undefined
+  if (values.measurable) {
+    const target = values.target
+    if (target === null || !Number.isFinite(target) || target <= 0) return undefined
+    if (!isDone(completion) || isDone({ value: completion.value, target })) return undefined
+    const unit = values.unit.trim() || habit.measure.unit
+    return `Heute: ${formatAmount(completion.value)} / ${formatAmount(target)} ${unit} – die Quest ist danach wieder offen.`
+  }
+  if (isDone(completion)) return undefined
+  return `Heute erfasst: ${formatAmount(completion.value)} / ${formatAmount(completion.target)} ${habit.measure.unit} – als Abhak-Quest entfällt dieser Teilfortschritt.`
 }

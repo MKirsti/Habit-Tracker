@@ -14,11 +14,14 @@
  * - Die Vergangenheit bleibt unangetastet: Ändert sich der Rhythmus einer Quest, wird der alte in
  *   `scheduleHistory` festgehalten; wird eine archivierte Quest zurückgeholt, wird die archivierte
  *   Zeit als Pause (`pauses`) gespeichert. So gehen verdiente XP, Perfekte Tage und Streaks nie verloren.
+ *   Wird eine Quest gelöscht, bleibt ein Grabstein (`DeletedHabit`) mit ihrem Zeitplan zurück, damit kein
+ *   vergangener Tag nachträglich perfekt wird.
  */
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
-import { compareDays, isValidDayKey } from '../domain/dates'
-import { habitTarget, isDone, mergePauses, reachesTarget, sameSchedule } from '../domain/schedule'
+import { compareDays, isValidDayKey, toDayKey } from '../domain/dates'
+import { habitTombstone, withTombstone } from '../domain/deletion'
+import { habitTarget, isArchivedOn, isDone, mergePauses, reachesTarget, sameSchedule } from '../domain/schedule'
 import type {
   AttributeId,
   Chapter,
@@ -26,6 +29,7 @@ import type {
   CharacterProfile,
   Completion,
   DayKey,
+  DeletedHabit,
   Difficulty,
   GameData,
   Habit,
@@ -74,15 +78,17 @@ const MSG = {
  * - `settings` = `DEFAULT_SETTINGS` überschrieben mit den gespeicherten (gültigen) Werten
  * - `profile` fehlt, solange das Onboarding nicht abgeschlossen ist
  * - `habits` nach `order` sortiert (bei Gleichstand nach Titel), `mainQuests` nach `createdAt`
+ * - `deletedHabits` (Grabsteine gelöschter Quests) geprüft und normalisiert; fehlt, wenn es keine gibt
  */
 export async function loadGameData(database: QuestlogDB = db): Promise<GameData> {
   return database.transaction('r', allTables(database), async () => {
-    const [habits, completions, mainQuests, profileEntry, settingsEntry] = await Promise.all([
+    const [habits, completions, mainQuests, profileEntry, settingsEntry, deletedEntry] = await Promise.all([
       database.habits.toArray(),
       database.completions.toArray(),
       database.mainQuests.toArray(),
       database.kv.get(KV_KEYS.profile),
       database.kv.get(KV_KEYS.settings),
+      database.kv.get(KV_KEYS.deletedHabits),
     ])
 
     const data: GameData = {
@@ -93,6 +99,8 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
     }
     // Das Profil wird nur über `saveProfile` (validiert) oder `restoreBackup` (zod-validiert) geschrieben.
     if (isRecord(profileEntry?.value)) data.profile = profileEntry.value as unknown as CharacterProfile
+    const deletedHabits = sanitizeTombstones(deletedEntry?.value)
+    if (deletedHabits.length > 0) data.deletedHabits = deletedHabits
     return data
   })
 }
@@ -153,8 +161,13 @@ export async function createHabit(draft: HabitDraft, today: DayKey, database: Qu
  * unverändert. Optionale Felder (`description`, `measure`, `mainQuestId`), die im Patch **explizit** mit
  * `undefined` stehen, werden entfernt.
  *
+ * Änderungen gelten ab heute – auch für den heutigen Eintrag: Gibt es eine Erledigung an `today` und ändern
+ * sich Ziel, Schwierigkeit, Attribut oder die Art (Abhaken ↔ messbar), bekommt sie die neuen Snapshots
+ * (siehe `retargetCompletion`). Sonst würde z. B. ein gesenktes Ziel erst morgen gelten, und die Anzeige
+ * (Ziel der Erledigung, XP der Quest) widerspräche der Wertung.
+ *
  * Die Vergangenheit bleibt unverändert:
- * - Bereits gespeicherte Erledigungen behalten ihre Snapshots (Ziel, Schwierigkeit, Attribut).
+ * - Erledigungen früherer Tage behalten ihre Snapshots (Ziel, Schwierigkeit, Attribut).
  * - Ändert sich der Rhythmus (inhaltlich, nach Normalisierung) und liegt `today` nach `createdDay`, wird der
  *   bisher gültige Rhythmus mit `until: today` an `scheduleHistory` angehängt – er gilt weiter für alle Tage
  *   vor `today`, der neue ab `today`. Mehrere Änderungen am selben Tag hängen nichts weiteres an: Für die
@@ -170,7 +183,7 @@ export async function updateHabit(
   database: QuestlogDB = db,
 ): Promise<void> {
   assertDayKey(today)
-  await database.transaction('rw', database.habits, async () => {
+  await database.transaction('rw', database.habits, database.completions, async () => {
     const existing = await requireHabit(database, id)
     const merged: HabitDraft = {
       title: patch.title ?? existing.title,
@@ -194,18 +207,63 @@ export async function updateHabit(
     const pauses = sanitizePauses(existing.pauses)
     if (pauses.length > 0) next.pauses = pauses
     await database.habits.put(next)
+
+    const todayId = completionId(id, today)
+    const completion = await database.completions.get(todayId)
+    if (completion === undefined) return
+    const updated = retargetCompletion(completion, existing, next)
+    if (updated === null) await database.completions.delete(todayId)
+    else if (updated !== completion) await database.completions.put(updated)
   })
 }
 
 /**
+ * Die heutige Erledigung nach einer Bearbeitung der Quest (`before` → `after`):
+ * - Ziel, Schwierigkeit und Attribut werden zu Snapshots der geänderten Quest.
+ * - Messbar bleibt messbar: der erfasste Wert bleibt (z. B. 7 Seiten: bei Ziel 5 erledigt, bei Ziel 20 offen).
+ * - Abhaken → messbar: erledigt → Wert = neues Ziel, sonst wird der Eintrag gelöscht (`null`).
+ * - Messbar → Abhaken: erledigt → Wert 1, sonst wird der Eintrag gelöscht (`null`).
+ * Ändert sich nichts davon, kommt dieselbe Erledigung zurück (kein Schreiben nötig).
+ */
+function retargetCompletion(completion: Completion, before: Habit, after: Habit): Completion | null {
+  const target = habitTarget(after)
+  const wasMeasurable = before.measure !== undefined
+  const isMeasurable = after.measure !== undefined
+  if (
+    wasMeasurable === isMeasurable &&
+    completion.target === target &&
+    completion.difficulty === after.difficulty &&
+    completion.attribute === after.attribute
+  ) {
+    return completion
+  }
+  let value = completion.value
+  if (wasMeasurable !== isMeasurable) {
+    if (!isDone(completion)) return null
+    value = isMeasurable ? target : 1
+  } else if (!isMeasurable) {
+    value = 1
+  }
+  return {
+    ...completion,
+    value,
+    target,
+    difficulty: after.difficulty,
+    attribute: after.attribute,
+    updatedAt: Date.now(),
+  }
+}
+
+/**
  * Archiviert eine Quest ab `today` (inklusive): Sie ist ab dann nicht mehr aktiv. Die Historie bleibt erhalten.
- * Ist die Quest bereits archiviert, bleibt ihr `archivedDay` unverändert – ein späterer Tag würde sie
- * rückwirkend für die Tage dazwischen wieder aktiv machen (offene Pflicht-Quest → Perfekte Tage und
- * Streaks der Vergangenheit gingen verloren).
+ * Ist die Quest bereits archiviert (`archivedDay ≤ today`), bleibt ihr `archivedDay` unverändert – ein späterer
+ * Tag würde sie rückwirkend für die Tage dazwischen wieder aktiv machen (offene Pflicht-Quest → Perfekte Tage
+ * und Streaks der Vergangenheit gingen verloren). Ein `archivedDay` nach `today` (der Tageswechsel wurde nach
+ * dem Archivieren später gelegt) gilt als noch nicht archiviert und wird auf `today` vorgezogen.
  */
 export async function archiveHabit(id: string, today: DayKey, database: QuestlogDB = db): Promise<void> {
   assertDayKey(today)
-  await mutateHabit(database, id, (habit) => (habit.archivedDay !== undefined ? habit : { ...habit, archivedDay: today }))
+  await mutateHabit(database, id, (habit) => (isArchivedOn(habit, today) ? habit : { ...habit, archivedDay: today }))
 }
 
 /**
@@ -231,25 +289,47 @@ export async function restoreHabit(id: string, today: DayKey, database: Questlog
   })
 }
 
-/** Löscht eine Quest endgültig – inklusive aller ihrer Erledigungen. */
-export async function deleteHabit(id: string, database: QuestlogDB = db): Promise<void> {
-  await database.transaction('rw', database.habits, database.completions, async () => {
+/**
+ * Löscht eine Quest am Spieltag `today` endgültig – inklusive aller ihrer Erledigungen – und hinterlässt einen
+ * Grabstein (`DeletedHabit`) mit ihrem Zeitplan: An vergangenen Tagen, an denen sie Pflicht war, bleibt sie
+ * (offene) Pflicht. So wird kein Tag nachträglich perfekt; Löschen bringt nie XP, es kann nur die XP der Quest,
+ * ihren Anteil an Perfekter-Tag-Boni und Kapitel-XP kosten. Gleiche Bedeutung wie `applyHabitDeletion`.
+ * Der Grabstein endet am Archivierungstag (falls ≤ today), sonst an `today`.
+ *
+ * `today` sollte immer übergeben werden; fehlt er, gilt der Spieltag laut Uhr und gespeichertem Tageswechsel.
+ * Eine unbekannte Quest ändert nichts.
+ */
+export async function deleteHabit(id: string, today?: DayKey, database: QuestlogDB = db): Promise<void> {
+  if (today !== undefined) assertDayKey(today)
+  await database.transaction('rw', database.habits, database.completions, database.kv, async () => {
+    const existing = await database.habits.get(id)
+    if (!existing) return
+    const day = today ?? toDayKey(new Date(), await storedDayStartHour(database))
+    const entry = await database.kv.get(KV_KEYS.deletedHabits)
+    const tombstones = withTombstone(sanitizeTombstones(entry?.value), habitTombstone(existing, day))
+    await database.kv.put({ key: KV_KEYS.deletedHabits, value: tombstones })
     await database.completions.where('habitId').equals(id).delete()
     await database.habits.delete(id)
   })
 }
 
 /**
- * Verschiebt eine aktive (nicht archivierte) Quest um eine Position nach oben/unten, indem ihr
- * `order` mit dem des Nachbarn unter den aktiven Quests getauscht wird. Archivierte Quests
- * werden übersprungen. Sind `order`-Werte doppelt vergeben, werden vorher alle Quests
- * lückenlos neu durchnummeriert (0, 1, 2, …), damit der Tausch eindeutig ist.
- * Am Anfang/Ende der Liste oder bei archivierten/unbekannten Quests passiert nichts.
+ * Verschiebt eine aktive (am Spieltag `today` nicht archivierte, `isArchivedOn`) Quest um eine Position nach
+ * oben/unten, indem ihr `order` mit dem des Nachbarn unter den aktiven Quests getauscht wird – also genau
+ * den Quests, die die Quest-Liste als aktiv zeigt. Archivierte Quests werden übersprungen. Sind `order`-Werte
+ * doppelt vergeben, werden vorher alle Quests lückenlos neu durchnummeriert (0, 1, 2, …), damit der Tausch
+ * eindeutig ist. Am Anfang/Ende der Liste oder bei archivierten/unbekannten Quests passiert nichts.
  */
-export async function moveHabit(id: string, direction: 'up' | 'down', database: QuestlogDB = db): Promise<void> {
+export async function moveHabit(
+  id: string,
+  direction: 'up' | 'down',
+  today: DayKey,
+  database: QuestlogDB = db,
+): Promise<void> {
+  assertDayKey(today)
   await database.transaction('rw', database.habits, async () => {
     const all = (await database.habits.toArray()).sort(compareHabitOrder)
-    const active = all.filter((habit) => habit.archivedDay === undefined)
+    const active = all.filter((habit) => !isArchivedOn(habit, today))
     const index = active.findIndex((habit) => habit.id === id)
     const neighborIndex = direction === 'up' ? index - 1 : index + 1
     if (index === -1 || neighborIndex < 0 || neighborIndex >= active.length) return
@@ -537,6 +617,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Gespeicherter (gültiger) Tageswechsel, sonst der Standard. */
+async function storedDayStartHour(database: QuestlogDB): Promise<number> {
+  const entry = await database.kv.get(KV_KEYS.settings)
+  return pickValidSettings(entry?.value).dayStartHour ?? DEFAULT_SETTINGS.dayStartHour
+}
+
 /** Übernimmt aus einem gespeicherten Einstellungs-Objekt nur gültige, bekannte Werte. */
 function pickValidSettings(stored: unknown): Partial<Settings> {
   const result: Partial<Settings> = {}
@@ -674,6 +760,36 @@ function sanitizePauses(value: unknown): HabitPause[] {
     pauses.push({ from, until })
   }
   return mergePauses(pauses)
+}
+
+/**
+ * Gültige gespeicherte Grabsteine: gültige ID und Tage, gültiger Rhythmus; Verlauf und Pausen wie bei Quests
+ * bereinigt (bedeutungsgleich normalisiert). Kaputte Einträge entfallen; bei doppelter ID gilt der letzte.
+ * Das Ergebnis besteht damit auch die Backup-Prüfung.
+ */
+function sanitizeTombstones(value: unknown): DeletedHabit[] {
+  if (!Array.isArray(value)) return []
+  const byId = new Map<string, DeletedHabit>()
+  for (const entry of value as unknown[]) {
+    if (!isRecord(entry)) continue
+    const id = optionalId(entry.id)
+    const { createdDay, archivedDay } = entry
+    if (id === undefined || !isDayKeyValue(createdDay) || !isDayKeyValue(archivedDay)) continue
+    const schedule = tryNormalizeSchedule(entry.schedule)
+    if (schedule === undefined) continue
+    const tombstone: DeletedHabit = { id, createdDay, archivedDay, schedule }
+    const history = normalizeHistory(sanitizeHistory(entry.scheduleHistory), schedule)
+    if (history.length > 0) tombstone.scheduleHistory = history
+    const pauses = sanitizePauses(entry.pauses)
+    if (pauses.length > 0) tombstone.pauses = pauses
+    byId.delete(tombstone.id)
+    byId.set(tombstone.id, tombstone)
+  }
+  return [...byId.values()]
+}
+
+function isDayKeyValue(value: unknown): value is DayKey {
+  return typeof value === 'string' && isValidDayKey(value)
 }
 
 function tryNormalizeSchedule(value: unknown): Schedule | undefined {

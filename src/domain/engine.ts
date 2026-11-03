@@ -7,6 +7,8 @@
  *    Completions gelöschter Quests werden ignoriert.
  * 2. Perfekter Tag: ≥ 1 Pflicht-Quest und alle erledigt → Bonus = round(perfectDayBonus × Quest-XP des Tages).
  *    Die Quest-XP des Tages umfassen alle an dem Tag erledigten Quests (auch Wochenquests). Nur Charakter-XP.
+ *    Pflicht sind auch Grabsteine gelöschter Quests (`data.deletedHabits`) – ohne Erledigungen, also offen:
+ *    Löschen macht so keinen vergangenen Tag nachträglich perfekt.
  * 3. Kapitel: `chapterXp` pro abgeschlossenem Kapitel, `mainQuestXp` pro komplett abgeschlossener Kampagne
  *    (auch archivierte). Nur Charakter-XP.
  * 4. adventureDay = diffDays(profile.createdDay, today) + 1 (ohne Profil: 1).
@@ -26,6 +28,7 @@ import type { ChapterContext } from './chapters'
 import { compareDays, diffDays, isValidDayKey, startOfWeek } from './dates'
 import { attributeLevelFromXp, levelFromXp, rankForLevel } from './leveling'
 import { doneDaysInWeek, habitTarget, isDone, isRequiredOn, isVisibleOn, questXp, scheduleOn } from './schedule'
+import type { HabitTimeline } from './schedule'
 import { bestStreakIn, computeStreak } from './streaks'
 import type {
   AttributeId,
@@ -49,6 +52,8 @@ import type {
 /** Vorab berechnete Nachschlagetabellen über die Completions. */
 interface GameIndex {
   habits: readonly Habit[]
+  /** Grabsteine gelöschter Quests: nur für die Pflicht-Quests eines Tages (immer offen). */
+  deletedHabits: readonly HabitTimeline[]
   habitsById: ReadonlyMap<string, Habit>
   /** Tag → (Quest-ID → Completion). */
   completionsByDay: ReadonlyMap<DayKey, ReadonlyMap<string, Completion>>
@@ -105,7 +110,14 @@ function buildIndex(data: GameData, upTo?: DayKey): GameIndex {
     if (!isSortedByDay(list)) list.sort((a, b) => compareDays(a.day, b.day))
   }
 
-  return { habits: data.habits, habitsById, completionsByDay, completionsByHabit, doneDaysByHabit }
+  return {
+    habits: data.habits,
+    deletedHabits: data.deletedHabits ?? [],
+    habitsById,
+    completionsByDay,
+    completionsByHabit,
+    doneDaysByHabit,
+  }
 }
 
 function isSortedByDay(list: readonly Completion[]): boolean {
@@ -124,19 +136,24 @@ type DaySummary = Pick<DayState, 'requiredCount' | 'requiredDone' | 'perfect' | 
 /**
  * Pflicht-Quests, Perfekter Tag und verdiente XP eines Tages.
  * Wird von `getDayState` und `deriveGameState` gemeinsam genutzt, damit beide garantiert gleich rechnen.
+ * Grabsteine gelöschter Quests zählen als Pflicht, wenn die Quest an dem Tag Pflicht war – erledigt sind
+ * sie nie (ihre Erledigungen wurden mit ihr gelöscht).
  */
 function summarizeDay(
-  habits: readonly Habit[],
+  index: GameIndex,
   dayCompletions: ReadonlyMap<string, Completion> | undefined,
   day: DayKey,
 ): DaySummary {
   let requiredCount = 0
   let requiredDone = 0
-  for (const habit of habits) {
+  for (const habit of index.habits) {
     if (!isRequiredOn(habit, day)) continue
     requiredCount++
     const completion = dayCompletions?.get(habit.id)
     if (completion && isDone(completion)) requiredDone++
+  }
+  for (const tombstone of index.deletedHabits) {
+    if (isRequiredOn(tombstone, day)) requiredCount++
   }
 
   // Quest-XP des Tages: alle erledigten Quests, auch Wochenquests und Quests außerhalb ihres Plans.
@@ -167,14 +184,17 @@ function buildHabitStatus(
   doneDays: ReadonlySet<DayKey>,
   streak: Streak,
 ): HabitStatus {
+  const done = completion ? isDone(completion) : false
   const status: HabitStatus = {
     habit,
     required: isRequiredOn(habit, day),
     value: completion?.value ?? 0,
     target: completion?.target ?? habitTarget(habit),
-    done: completion ? isDone(completion) : false,
+    done,
     streak,
-    xp: questXp(habit.difficulty),
+    // Erledigt: die gutgeschriebenen XP (Schnappschuss der Erledigung) – so passt die Anzeige immer zur
+    // Wertung, auch an früheren Tagen nach einer Änderung der Schwierigkeit.
+    xp: questXp(done && completion ? completion.difficulty : habit.difficulty),
   }
   if (completion) status.completion = completion
   // Rhythmus dieses Tages: Nach einer Änderung zeigt ein früherer Tag den damals gültigen Rhythmus.
@@ -200,7 +220,7 @@ function buildDayState(index: GameIndex, day: DayKey, streakOf: (habit: Habit) =
     habits.push(buildHabitStatus(habit, day, dayCompletions?.get(habit.id), doneDays, streakOf(habit)))
   }
   habits.sort((a, b) => compareHabits(a.habit, b.habit))
-  return { day, habits, ...summarizeDay(index.habits, dayCompletions, day) }
+  return { day, habits, ...summarizeDay(index, dayCompletions, day) }
 }
 
 /**
@@ -276,7 +296,7 @@ export function deriveGameState(data: GameData, today: DayKey): GameState {
     }
     if (anyDone) activeDays++
 
-    const summary = summarizeDay(index.habits, dayCompletions, day)
+    const summary = summarizeDay(index, dayCompletions, day)
     if (summary.perfect) {
       perfectDays++
       xpFromPerfectDays += summary.perfectBonusXp

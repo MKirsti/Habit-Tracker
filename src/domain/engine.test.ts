@@ -197,8 +197,22 @@ describe('deriveGameState – XP-Regeln im Detail', () => {
     expect(state.totals.xpFromQuests).toBe(80)
     expect(state.attributes.charisma.totalXp).toBe(80)
     expect(state.attributes.strength.totalXp).toBe(0)
-    // Status zeigt Snapshot-Ziel und die XP der *aktuellen* Schwierigkeit
-    expect(state.todayState.habits[0]).toMatchObject({ value: 5, target: 5, done: true, xp: 10 })
+    // Status zeigt Snapshot-Ziel und – erledigt – die tatsächlich gutgeschriebenen XP (Snapshot-Schwierigkeit)
+    expect(state.todayState.habits[0]).toMatchObject({ value: 5, target: 5, done: true, xp: 80 })
+  })
+
+  it('zeigt für offene Quests die XP der aktuellen Schwierigkeit (auch bei Teilfortschritt)', () => {
+    const habit = makeHabit({ id: 'h', difficulty: 'hard', createdDay: '2026-11-01', measure: { target: 10, unit: 'Min' } })
+    const data = makeGameData({
+      habits: [habit],
+      completions: [
+        makeCompletion(habit, '2026-11-02', { difficulty: 'easy' }),
+        makeCompletion(habit, '2026-11-03', { difficulty: 'easy', value: 4 }),
+      ],
+    })
+    // Heute offen: eine Erledigung brächte jetzt 40 XP. Gestern erledigt: gutgeschrieben wurden 10 XP.
+    expect(deriveGameState(data, '2026-11-03').todayState.habits[0]).toMatchObject({ done: false, xp: 40 })
+    expect(getDayState(data, '2026-11-02').habits[0]).toMatchObject({ done: true, xp: 10 })
   })
 
   it('ignoriert Completions gelöschter Quests überall', () => {

@@ -223,7 +223,27 @@ describe('evaluateChapter – habit', () => {
       progress: 1,
       done: true,
       doneDay: '2026-11-21',
+      // Der Wert stammt aus der Zeit als Tagesquest: 21 Tage, nicht 21 Wochen.
+      unit: 'day',
     })
+  })
+
+  it('streak: Einheit des Werts – nach der Umstellung erreicht vs. vorher erreicht vs. unverändert', () => {
+    // 25 Tage in Folge gelesen (01.–25.11.), heute (Do 26.11.) auf 3× pro Woche umgestellt.
+    const switched = makeHabit({
+      ...reading,
+      schedule: { type: 'weekly', times: 3 },
+      scheduleHistory: [{ until: '2026-11-26', schedule: { type: 'daily' } }],
+    })
+    const streakCtx = context([switched], completeRange(switched, '2026-11-01', '2026-11-25'), '2026-11-26')
+    expect(evaluateChapter(habitChapter('streak', 21), quest, streakCtx)).toMatchObject({ current: 25, done: true, unit: 'day' })
+    // Ein (noch) nicht erreichtes Ziel zählt in der aktuellen Einheit (Wochen).
+    expect(evaluateChapter(habitChapter('streak', 30), quest, streakCtx)).toMatchObject({ done: false, unit: 'week' })
+    // Ohne Umstellung: immer die Einheit des Rhythmus.
+    const daily = context([reading], completeRange(reading, '2026-11-01', '2026-11-25'), '2026-11-26')
+    expect(evaluateChapter(habitChapter('streak', 21), quest, daily)).toMatchObject({ current: 25, unit: 'day' })
+    // Andere Kapitel-Arten haben keine Einheit.
+    expect(evaluateChapter(habitChapter('completions', 21), quest, daily)).not.toHaveProperty('unit')
   })
 
   it('streak: Umstellung Wochenquest → täglich – erfüllte Wochen bleiben erreicht', () => {
@@ -240,12 +260,14 @@ describe('evaluateChapter – habit', () => {
       progress: 1,
       done: true,
       doneDay: '2026-11-18',
+      unit: 'week',
     })
     // Noch nicht erreichte Ziele zeigen den Wert in der Einheit des aktuellen Rhythmus (hier: 2 Tage).
     expect(evaluateChapter(habitChapter('streak', 5), quest, streakCtx)).toMatchObject({
       current: 2,
       target: 5,
       done: false,
+      unit: 'day',
     })
     // Ab 5 Tagen in Folge ist das Ziel in der neuen Einheit erreicht.
     const later = context(

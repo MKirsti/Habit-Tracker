@@ -32,7 +32,7 @@ export function StepIndicator({ steps, current, className }: StepIndicatorProps)
               className={cn(
                 // Enger gesperrt auf schmalen Handys – sonst wird „Willkommen“ samt Haken bei 360 px abgeschnitten.
                 'mt-2 flex items-center gap-1 truncate text-[0.6875rem] font-semibold tracking-[0.04em] uppercase min-[400px]:tracking-[0.12em]',
-                active ? 'text-gold-bright' : done ? 'text-gold/80' : 'text-faint',
+                active ? 'text-gold-bright' : done ? 'text-gold/80' : 'text-muted',
               )}
             >
               {done && <Check aria-hidden className="size-3 shrink-0" strokeWidth={3} />}
@@ -111,6 +111,9 @@ export function StepActions({
 }) {
   return (
     <div
+      // Markierung für src/index.css: Solange eine klebende Leiste da ist, hält `scroll-padding-bottom`
+      // (Höhe `--onboarding-cta`) beim Tabben den Fokus über ihr sichtbar (WCAG 2.2 SC 2.4.11).
+      data-step-actions={sticky ? 'sticky' : 'static'}
       className={cn(
         'mt-auto pt-8 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-8',
         sticky &&

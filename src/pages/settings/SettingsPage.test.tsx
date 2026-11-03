@@ -5,12 +5,19 @@ import userEvent from '@testing-library/user-event'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createBackup, parseBackup } from '../../data/backup'
-import { createHabit, loadGameData, resetAllData, saveProfile, setCompletionValue } from '../../data/repository'
+import {
+  createHabit,
+  loadGameData,
+  resetAllData,
+  saveProfile,
+  setCompletionValue,
+  updateSettings,
+} from '../../data/repository'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { SettingsPage } from '../SettingsPage'
 import { formatExportDate, summarizeBackup } from './backupFiles'
-import { dayStartLabel, matchesConfirmWord } from './settingsText'
+import { dayStartLabel, formatWeekdayDay, matchesConfirmWord } from './settingsText'
 
 // restoreBackup kann gezielt fehlschlagen, sonst gilt die echte Implementierung.
 const failures = vi.hoisted(() => ({ restoreBackup: false }))
@@ -63,6 +70,12 @@ async function setup() {
   return { user, view }
 }
 
+/** Text als RegExp, bei dem Leerzeichen auch geschützte sein dürfen (Datum/Uhrzeit bleiben zusammen). */
+function loose(text: string): RegExp {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll(' ', '[ \u00a0]')
+  return new RegExp(`^${escaped}$`)
+}
+
 /** Datei für den Backup-Import. */
 function jsonFile(content: string, name = 'backup.json') {
   return new File([content], name, { type: 'application/json' })
@@ -82,9 +95,70 @@ describe('Einstellungen', () => {
     expect(screen.getByText('Dienstag, 3. November 2026')).toBeInTheDocument()
   })
 
+  describe('Tageswechsel nach hinten verschieben (nachts)', () => {
+    /** Mittwoch, 4. November 2026, 2:30 Uhr – mit Tageswechsel um Mitternacht schon Spieltag 4. Nov. */
+    const NIGHT = new Date(2026, 10, 4, 2, 30)
+    afterEach(() => {
+      vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 0))
+    })
+
+    async function setupNight({ tickToday }: { tickToday: boolean }) {
+      vi.setSystemTime(NIGHT)
+      await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: '2026-10-01' })
+      await updateSettings({ dayStartHour: 0 })
+      const habit = await createHabit({ ...READING }, '2026-10-01')
+      await setCompletionValue(habit.id, '2026-11-03', 1)
+      if (tickToday) await setCompletionValue(habit.id, '2026-11-04', 1)
+      const user = userEvent.setup()
+      renderWithGame(<SettingsPage />, { route: '/einstellungen' })
+      await screen.findByRole('heading', { level: 1, name: 'Einstellungen' })
+      expect(screen.getByText('Mittwoch, 4. November 2026')).toBeInTheDocument()
+      return { user, select: screen.getByRole('combobox', { name: 'Ein neuer Tag beginnt um' }) }
+    }
+
+    it('fragt nach, wenn schon Abgehaktes erst später wieder zählt – Abbrechen lässt alles, wie es war', async () => {
+      const { user, select } = await setupNight({ tickToday: true })
+      await user.selectOptions(select, '4')
+
+      const dialog = await screen.findByRole('alertdialog', { name: loose('Tageswechsel auf 4:00 Uhr legen?') })
+      expect(dialog).toHaveAccessibleDescription(
+        loose(
+          'Der Spieltag springt zurück auf Di., 3. Nov. – was du für Mi., 4. Nov. schon abgehakt hast, zählt erst ab 4:00 Uhr wieder.',
+        ),
+      )
+      expect(select).toHaveDisplayValue('0:00 Uhr (Mitternacht)')
+      await user.click(within(dialog).getByRole('button', { name: 'Abbrechen' }))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+      expect(select).toHaveDisplayValue('0:00 Uhr (Mitternacht)')
+      expect((await loadGameData()).settings.dayStartHour).toBe(0)
+      expect(screen.getByText('Mittwoch, 4. November 2026')).toBeInTheDocument()
+
+      // Bestätigt: Jetzt wird umgestellt.
+      await user.selectOptions(select, '4')
+      const again = await screen.findByRole('alertdialog', { name: loose('Tageswechsel auf 4:00 Uhr legen?') })
+      await user.click(within(again).getByRole('button', { name: 'Trotzdem umstellen' }))
+      await waitFor(async () => expect((await loadGameData()).settings.dayStartHour).toBe(4))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+      expect(select).toHaveDisplayValue('4:00 Uhr (Standard)')
+      expect(await screen.findByText('Dienstag, 3. November 2026')).toBeInTheDocument()
+    })
+
+    it('stellt ohne Rückfrage um, wenn am späteren Tag noch nichts erfasst ist', async () => {
+      const { user, select } = await setupNight({ tickToday: false })
+      await user.selectOptions(select, '4')
+      await waitFor(async () => expect((await loadGameData()).settings.dayStartHour).toBe(4))
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+      expect(await screen.findByText('Dienstag, 3. November 2026')).toBeInTheDocument()
+    })
+  })
+
   it('schaltet Effekte & Animationen aus und wieder an', async () => {
     const { user } = await setup()
     const toggle = screen.getByRole('switch', { name: 'Effekte anzeigen' })
+    // Die Beschreibung passt zum Verhalten: Szenen erscheinen auch ohne Effekte, nur schlicht.
+    expect(toggle).toHaveAccessibleDescription(
+      'Konfetti, Lichtstrahlen und schimmernde Balken. Ausgeschaltet erscheinen Level-Ups und Kampagnen-Siege weiterhin – schlicht, ohne Bewegung.',
+    )
     expect(toggle).toHaveAttribute('aria-checked', 'true')
     await user.click(toggle)
     expect(toggle).toHaveAttribute('aria-checked', 'false')
@@ -298,6 +372,11 @@ describe('Hilfsfunktionen der Einstellungen', () => {
     expect(dayStartLabel(4)).toBe('4:00 Uhr (Standard)')
     expect(dayStartLabel(7)).toBe('7:00 Uhr')
     expect(dayStartLabel(12)).toBe('12:00 Uhr (Mittag)')
+  })
+
+  it('schreibt Spieltage kurz mit Wochentag', () => {
+    expect(formatWeekdayDay('2026-11-03')).toBe('Di., 3. Nov.')
+    expect(formatWeekdayDay('2026-11-04')).toBe('Mi., 4. Nov.')
   })
 
   it('akzeptiert das Bestätigungswort unabhängig von Groß-/Kleinschreibung', () => {

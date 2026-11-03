@@ -111,6 +111,9 @@ describe('DashboardPage', () => {
     expect(within(hero).getByRole('link', { name: 'Heldenprofil von Aria öffnen' })).toHaveAttribute('href', '/held')
 
     const daily = section('Tagesquests')
+    // Tagesumschalter, Fortschritt und Hinweis sitzen direkt im Abschnitt „Tagesquests“.
+    expect(within(daily).getByRole('radiogroup', { name: 'Tag wählen' })).toBeInTheDocument()
+    expect(within(daily).getByRole('progressbar', { name: 'Tagesfortschritt' })).toBeInTheDocument()
     expect(within(daily).getByRole('checkbox', { name: 'Lesen erledigt' })).not.toBeChecked()
     expect(within(daily).getByRole('checkbox', { name: 'Meditieren erledigt' })).not.toBeChecked()
     expect(within(daily).getByText('+20 XP')).toBeInTheDocument()
@@ -125,7 +128,9 @@ describe('DashboardPage', () => {
       '0 von 2 Tagesquests erledigt',
     )
     expect(screen.getByText('2 Quests')).toBeInTheDocument()
-    expect(screen.getByText(/bis zum Perfekten Tag/)).toHaveTextContent('(+25 % Bonus-XP)')
+    expect(screen.getByText(/bis zum Perfekten Tag/)).toHaveTextContent('Noch 2 Quests bis zum Perfekten Tag (+25 %)')
+    // Der Tagesstand steht nur einmal da (früher doppelt: Tagesbilanz und Abschnittstitel).
+    expect(document.body.textContent?.match(/0 \/ 2/g)).toHaveLength(1)
 
     // Alle sechs Attribute, Kampagnen-Einladung
     const attributes = screen.getByRole('region', { name: /^Attribute/ })
@@ -227,21 +232,34 @@ describe('DashboardPage', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Tag wählen' })).not.toBeInTheDocument()
   })
 
-  it('feiert den Perfekten Tag mit Bonus-XP', async () => {
+  it('feiert den Perfekten Tag mit Bonus-XP und erklärt, dass der Bonus wächst', async () => {
     const { habits } = await setup()
     await setCompletionValue(habits[0].id, TODAY, 10)
     await setCompletionValue(habits[1].id, TODAY, 1)
     expect(await screen.findByText('Perfekter Tag!')).toBeInTheDocument()
     // 20 + 10 Quest-XP → round(0,25 × 30) = 8 Bonus-XP
     expect(screen.getByText('+8 Bonus-XP')).toBeInTheDocument()
+    expect(
+      screen.getByText('25 % deiner heutigen Quest-XP – wächst mit jeder weiteren Quest (auch Wochenquests)'),
+    ).toBeInTheDocument()
     expect(screen.queryByText(/bis zum Perfekten Tag/)).not.toBeInTheDocument()
+    // 30 Quest-XP + 8 Bonus
+    expect(screen.getByText(/Heute verdient/)).toHaveTextContent('Heute verdient: 38 XP')
+
+    // Eine Wochenquest dazu: Der Bonus wächst mit (+40 → round(0,25 × 70) = 18).
+    await setCompletionValue(habits[2].id, TODAY, 1)
+    expect(await screen.findByText('+18 Bonus-XP')).toBeInTheDocument()
   })
 
   it('erklärt Tage ohne Tagesquests und lässt erfüllte Wochenquests weiter abhaken', async () => {
     const { user, habits } = await setup({ habits: [{ ...RUNNING, schedule: { type: 'weekly', times: 2 } }] })
     const running = habits[0]
     expect(await screen.findByText(/Heute stehen keine Tagesquests an/)).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: /^Tagesquests/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Keine Tagesquests')).toBeInTheDocument()
+    // Keine Tagesquest-Zeilen – der Tagesumschalter bleibt aber erreichbar.
+    const daily = section('Tagesquests')
+    expect(within(daily).queryAllByRole('checkbox')).toHaveLength(0)
+    expect(within(daily).getByRole('radio', { name: 'Gestern' })).toBeInTheDocument()
 
     await setCompletionValue(running.id, '2026-11-01', 1) // Sonntag der Vorwoche zählt nicht mit
     await setCompletionValue(running.id, YESTERDAY, 1)
@@ -261,6 +279,8 @@ describe('DashboardPage', () => {
       habits: [{ ...MEDITATION, schedule: { type: 'weekdays', days: [1] } }],
     })
     expect(await screen.findByText(/Heute stehen keine Quests an/)).toBeInTheDocument()
+    expect(screen.getByText('Freier Tag')).toBeInTheDocument()
+    expect(within(section('Tagesquests')).getByRole('radio', { name: 'Gestern' })).toBeInTheDocument()
   })
 
   it('zeigt ohne aktive Quests einen leeren Zustand mit Einstieg', async () => {
@@ -274,7 +294,7 @@ describe('DashboardPage', () => {
 
   it('zeigt Kapitel, Fortschritt und Restlaufzeit der Kampagne', async () => {
     await setup()
-    await createMainQuest({
+    const quest = await createMainQuest({
       title: 'Der Weg des Gelehrten',
       icon: '📚',
       why: 'Mehr lesen',
@@ -288,13 +308,76 @@ describe('DashboardPage', () => {
     })
     const campaign = await screen.findByRole('article')
     expect(within(campaign).getByRole('heading', { name: 'Der Weg des Gelehrten' })).toBeInTheDocument()
-    expect(within(campaign).getByText('Kapitel 2 / 2: Das erste Buch')).toBeInTheDocument()
+    // „X / Y“ zählt wie auf der Kampagnen-Seite die abgeschlossenen Kapitel.
+    expect(within(campaign).getByText('Aktuelles Kapitel: Das erste Buch · 1 / 2 abgeschlossen')).toBeInTheDocument()
     expect(within(campaign).getByText('50 %')).toBeInTheDocument()
     expect(within(campaign).getByText('noch 30 Tage')).toBeInTheDocument()
     expect(within(campaign).getByRole('link', { name: 'Kampagne „Der Weg des Gelehrten“ öffnen' })).toHaveAttribute(
       'href',
-      '/kampagne',
+      `/kampagne?id=${quest.id}`,
     )
+  })
+
+  it('verlinkt jede Kampagnen-Karte auf ihre eigene Kampagne', async () => {
+    await setup()
+    const first = await createMainQuest({
+      title: 'Der Weg des Gelehrten',
+      icon: '📚',
+      why: 'Mehr lesen',
+      reward: '',
+      startDay: '2026-10-29',
+      chapters: [{ id: 'c1', title: 'Der erste Funke', criterion: { type: 'manual' } }],
+    })
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 1))
+    const second = await createMainQuest({
+      title: 'Halbmarathon',
+      icon: '🏃',
+      why: 'Durchhalten',
+      reward: '',
+      startDay: '2026-10-29',
+      chapters: [{ id: 'c2', title: 'Erste 5 km', criterion: { type: 'manual' } }],
+    })
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 0))
+    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2))
+    expect(screen.getByRole('link', { name: 'Kampagne „Der Weg des Gelehrten“ öffnen' })).toHaveAttribute(
+      'href',
+      `/kampagne?id=${first.id}`,
+    )
+    expect(screen.getByRole('link', { name: 'Kampagne „Halbmarathon“ öffnen' })).toHaveAttribute(
+      'href',
+      `/kampagne?id=${second.id}`,
+    )
+    expect(screen.getByText('Aktuelles Kapitel: Erste 5 km · 0 / 1 abgeschlossen')).toBeInTheDocument()
+  })
+
+  it('zeigt bei Wochenquests auch für „Gestern“ (gleiche Woche) den Wochen-Streak von heute', async () => {
+    // 2× pro Woche, erfüllt in den beiden Vorwochen; diese Woche gestern und heute erledigt.
+    const { user, habits } = await setup({
+      createdDay: '2026-10-12',
+      habitsSince: '2026-10-12',
+      habits: [{ ...RUNNING, schedule: { type: 'weekly', times: 2 } }, MEDITATION],
+    })
+    const [running, meditation] = habits
+    for (const day of ['2026-10-20', '2026-10-21', '2026-10-27', '2026-10-28', YESTERDAY, TODAY]) {
+      await setCompletionValue(running.id, day, 1)
+    }
+    // Tagesquest gestern erledigt, heute (noch) nicht: Ihr Streak bleibt der zum gewählten Tag.
+    for (const day of ['2026-10-31', '2026-11-01', YESTERDAY]) await setCompletionValue(meditation.id, day, 1)
+
+    const runningRow = () =>
+      within(section('Wochenquests')).getByRole('checkbox', { name: 'Laufen erledigt' }).closest('li') as HTMLElement
+    await waitFor(() => expect(runningRow()).toHaveTextContent('3 Wo.'))
+    expect(runningRow()).toHaveTextContent('2 / 2 diese Woche – Wochenziel erreicht')
+
+    await user.click(screen.getByRole('radio', { name: 'Gestern' }))
+    await screen.findByText('Du trägst für gestern nach')
+    expect(runningRow()).toHaveTextContent('2 / 2 diese Woche – Wochenziel erreicht')
+    expect(runningRow()).toHaveTextContent('3 Wo.')
+    expect(within(runningRow()).getByText('3 Wochen in Folge')).toBeInTheDocument()
+    const meditationRow = within(section('Tagesquests'))
+      .getByRole('checkbox', { name: 'Meditieren erledigt' })
+      .closest('li') as HTMLElement
+    expect(within(meditationRow).getByText('3 Tage in Folge')).toBeInTheDocument()
   })
 
   it('zeigt im Modus „Gestern“ den damals gültigen Rhythmus', async () => {
@@ -362,9 +445,12 @@ describe('DashboardPage', () => {
   it('zeigt kein „+0“-Auffüllen, wenn das Ziel nachträglich unter den erfassten Wert gesenkt wurde', async () => {
     const { user, habits } = await setup()
     const reading = habits[0]
-    await setCompletionValue(reading.id, TODAY, 6)
+    // Gestern 6 von 10 erfasst, heute das Ziel auf 5 gesenkt: Der gestrige Eintrag behält seinen
+    // Ziel-Schnappschuss (10) und gilt als offen (der heutige würde mit umgestellt).
+    await setCompletionValue(reading.id, YESTERDAY, 6)
     await updateHabit(reading.id, { measure: { target: 5, unit: 'Seiten' } }, TODAY)
-    // Der Eintrag gilt mit seinem Ziel-Schnappschuss (10) als offen; auffüllen gibt es nichts mehr.
+    await user.click(screen.getByRole('radio', { name: 'Gestern' }))
+    // Auffüllen auf das aktuelle Ziel gibt es nichts mehr.
     await screen.findByRole('button', { name: /^Lesen: 6 von 10 Seiten/ })
     await waitFor(() => expect(screen.queryByRole('button', { name: /^Lesen: auf Ziel auffüllen/ })).not.toBeInTheDocument())
     expect(screen.queryByText('+0')).not.toBeInTheDocument()

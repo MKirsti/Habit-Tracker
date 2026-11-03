@@ -17,6 +17,7 @@ import {
   archiveHabit,
   createHabit,
   createMainQuest,
+  deleteHabit,
   loadGameData,
   saveProfile,
   setChapterCounter,
@@ -123,6 +124,19 @@ async function fillWithRichData(database: QuestlogDB): Promise<void> {
   await setChapterManual(quest.id, 'c1', true, '2026-10-15', database)
   await setChapterCounter(quest.id, 'c2', 3, '2026-10-16', database)
 
+  // Gelöschte Quest mit Rhythmus-Verlauf und Pause → Grabstein in `deletedHabits`
+  const gone = await createHabit(
+    { title: 'Weg', icon: '🗑️', attribute: 'vitality', difficulty: 'easy', schedule: { type: 'daily' } },
+    '2026-10-01',
+    database,
+  )
+  await updateHabit(gone.id, { schedule: { type: 'weekdays', days: [2, 4] } }, '2026-10-05', database)
+  await archiveHabit(gone.id, '2026-10-07', database)
+  await restoreHabit(gone.id, '2026-10-09', database)
+  await archiveHabit(gone.id, '2026-10-18', database)
+  await toggleCompletion(gone.id, '2026-10-02', database)
+  await deleteHabit(gone.id, '2026-10-20', database)
+
   await createMainQuest(
     {
       title: 'Alte Kampagne',
@@ -204,6 +218,7 @@ describe('Backup-Roundtrip', () => {
     expect(original.mainQuests.some((q) => q.archived)).toBe(true)
     expect(original.habits.some((h) => h.scheduleHistory?.length && h.pauses?.length)).toBe(true)
     expect(original.mainQuests.flatMap((q) => q.chapters).some((c) => c.completedDay && c.manualDone)).toBe(true)
+    expect(original.deletedHabits?.some((t) => t.scheduleHistory?.length && t.pauses?.length)).toBe(true)
 
     const json = JSON.stringify(await createBackup(EXPORT_TIME, source))
     const parsed = parseBackup(JSON.parse(json))
@@ -313,6 +328,44 @@ describe('parseBackup', () => {
     if (!legacy.ok) throw new Error(legacy.error)
     expect('scheduleHistory' in legacy.backup.data.habits[0]).toBe(false)
     expect('pauses' in legacy.backup.data.habits[0]).toBe(false)
+  })
+
+  it('übernimmt Grabsteine gelöschter Quests; ältere Backups ohne sie bleiben gültig', () => {
+    const tombstone = {
+      id: 'weg',
+      createdDay: '2026-10-01',
+      archivedDay: DAY,
+      schedule: { type: 'weekdays', days: [1, 3] },
+      scheduleHistory: [{ until: '2026-10-10', schedule: { type: 'daily' } }],
+      pauses: [{ from: '2026-10-12', until: '2026-10-14' }],
+    }
+    const input = validBackup()
+    input.data.deletedHabits = [tombstone, { id: 'schlicht', createdDay: DAY, archivedDay: DAY, schedule: { type: 'daily' } }]
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.backup.data.deletedHabits).toStrictEqual(input.data.deletedHabits)
+
+    const legacy = parseBackup(validBackup())
+    if (!legacy.ok) throw new Error(legacy.error)
+    expect('deletedHabits' in legacy.backup.data).toBe(false)
+  })
+
+  it.each([
+    ['doppelte ID', [{ id: 'x' }, { id: 'x' }], /^Ungültige Daten: data\.deletedHabits\.1\.id – Doppelte ID/],
+    ['ungültiger Rhythmus', [{ schedule: { type: 'weekly', times: 9 } }], /^Ungültige Daten: data\.deletedHabits\.0\.schedule/],
+    ['Pause ohne Dauer', [{ pauses: [{ from: DAY, until: DAY }] }], /deletedHabits\.0\.pauses\.0\.until – Eine Pause muss enden/],
+    ['unsortierter Verlauf', [{ scheduleHistory: [{ until: '2026-10-10', schedule: { type: 'daily' } }, { until: '2026-10-01', schedule: { type: 'daily' } }] }], /deletedHabits\.0\.scheduleHistory\.1\.until/],
+    ['fehlender Endtag', [{ archivedDay: undefined }], /deletedHabits\.0\.archivedDay/],
+  ])('lehnt ungültige Grabsteine ab: %s', (_label, overrides, message) => {
+    const input = validBackup()
+    input.data.deletedHabits = (overrides as Record<string, unknown>[]).map((override) => ({
+      id: 'weg',
+      createdDay: '2026-10-01',
+      archivedDay: DAY,
+      schedule: { type: 'daily' },
+      ...override,
+    }))
+    expect(expectError(input)).toMatch(message)
   })
 
   it('meldet kaputtes JSON', () => {

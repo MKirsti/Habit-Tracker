@@ -40,7 +40,7 @@ function game(completions: Completion[], mainQuests: MainQuest[] = [campaign]): 
 const level1 = game([])
 /** 80 XP, gestern nicht perfekt (Lesen fehlte). */
 const yesterdayOnly = game([makeCompletion(training, YESTERDAY)])
-/** 160 XP → Level 2, Stärke Stufe 3. Heute nicht perfekt (Lesen fehlt). */
+/** 160 XP → Level 2, Stärke Level 3. Heute nicht perfekt (Lesen fehlt). */
 const level2 = game([makeCompletion(training, YESTERDAY), makeCompletion(training, TODAY)])
 // Kampagne (+600 XP) → Level 3.
 const withCampaign = game([], [doneCampaign])

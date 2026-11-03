@@ -140,7 +140,7 @@ function LevelUpContent({ event, fancy, titleId, descriptionId, medallionRef }: 
   const digits = String(event.to).length
   return (
     <>
-      <Eyebrow>Stufenaufstieg</Eyebrow>
+      <Eyebrow>Level-Aufstieg</Eyebrow>
       <Medallion fancy={fancy} medallionRef={medallionRef}>
         <motion.span
           className={cn(

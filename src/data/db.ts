@@ -13,6 +13,8 @@ export const KV_KEYS = {
   profile: 'profile',
   /** Wert: (Teil-)`Settings`; wird beim Laden mit `DEFAULT_SETTINGS` gemergt. */
   settings: 'settings',
+  /** Wert: `DeletedHabit[]` – Grabsteine gelöschter Quests (fehlt, solange keine gelöscht wurde). */
+  deletedHabits: 'deletedHabits',
 } as const
 
 /** Standardname der IndexedDB-Datenbank. */

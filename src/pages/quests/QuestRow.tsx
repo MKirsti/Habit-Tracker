@@ -67,7 +67,7 @@ export function QuestRow({ habit, campaign, streak, isFirst, isLast, onMove, onE
             </span>
           </p>
           {habit.description !== undefined && (
-            <p className="mt-1 line-clamp-2 text-sm text-faint">{habit.description}</p>
+            <p className="mt-1 line-clamp-2 text-sm text-muted">{habit.description}</p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <AttributeChip attribute={habit.attribute} />

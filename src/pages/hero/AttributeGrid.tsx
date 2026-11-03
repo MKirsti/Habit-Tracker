@@ -36,7 +36,7 @@ export function AttributeGrid({ attributes }: AttributeGridProps) {
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-display text-base font-semibold tracking-wide text-parchment">{meta.name}</h3>
                     <p className="shrink-0 font-display text-lg leading-none font-bold tabular-nums" style={{ color: meta.color }}>
-                      <span className="mr-1 font-sans text-[0.625rem] font-semibold tracking-wider text-faint uppercase">
+                      <span className="mr-1 font-sans text-[0.625rem] font-semibold tracking-wider text-muted uppercase">
                         Level
                       </span>
                       {formatNumber(attribute.level)}

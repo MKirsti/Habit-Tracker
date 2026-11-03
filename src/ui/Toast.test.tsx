@@ -13,6 +13,7 @@ beforeAll(() => {
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 /** Rendert einen Provider und liefert die (stabile) Toast-API zum direkten Aufruf. */
@@ -25,6 +26,20 @@ function setup(): ToastApi {
 
 function region() {
   return screen.getByRole('list', { name: 'Benachrichtigungen' })
+}
+
+/** Simuliert die Breite: `desktop` erfüllt die md-Media-Query (≥ 48rem), sonst Handy. */
+function stubViewport(desktop: boolean) {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: desktop && query.includes('48rem'),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }))
 }
 
 describe('Toasts', () => {
@@ -138,6 +153,46 @@ describe('Toasts', () => {
     expect(id).not.toBe('')
     act(() => api.dismiss(id))
     await waitFor(() => expect(screen.queryByText('Wird geschlossen')).not.toBeInTheDocument())
+  })
+
+  it('steht auf dem Handy oben – nie über Dialog-Buttons, Checkboxen oder der unteren Navigation', () => {
+    const api = setup()
+    act(() => {
+      api.toast({ title: 'Oben', duration: Number.POSITIVE_INFINITY })
+    })
+    const viewport = region().parentElement
+    expect(viewport).not.toBeNull()
+    const classes = (viewport?.className ?? '').split(/\s+/)
+    // Handy: unter der Statusleiste (Safe Area) statt über Navigation und Bottom-Sheet-Buttons.
+    expect(classes).toContain('top-[calc(env(safe-area-inset-top)+0.5rem)]')
+    expect(viewport?.className).not.toContain('--bottom-nav-height')
+    // Desktop: unverändert unten rechts.
+    expect(classes).toEqual(expect.arrayContaining(['md:top-auto', 'md:bottom-6', 'md:right-6']))
+  })
+
+  it('zeigt den neuesten Toast am Bildschirmrand: auf dem Handy oben, auf dem Desktop unten', () => {
+    stubViewport(false)
+    const mobile = setup()
+    act(() => {
+      mobile.toast({ title: 'Erster', duration: Number.POSITIVE_INFINITY })
+      mobile.toast({ title: 'Zweiter', duration: Number.POSITIVE_INFINITY })
+    })
+    expect(within(region()).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      expect.stringContaining('Zweiter'),
+      expect.stringContaining('Erster'),
+    ])
+    cleanup()
+
+    stubViewport(true)
+    const desktop = setup()
+    act(() => {
+      desktop.toast({ title: 'Erster', duration: Number.POSITIVE_INFINITY })
+      desktop.toast({ title: 'Zweiter', duration: Number.POSITIVE_INFINITY })
+    })
+    expect(within(region()).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      expect.stringContaining('Erster'),
+      expect.stringContaining('Zweiter'),
+    ])
   })
 
   it('ist ohne Provider wirkungslos statt abzustürzen', () => {

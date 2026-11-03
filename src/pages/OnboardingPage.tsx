@@ -1,9 +1,8 @@
 import { ArrowLeft } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useGameContext } from '../app/gameContext'
-import { saveProfile } from '../data/repository'
-import { installScholarCampaign } from '../data/seed'
+import { startAdventure } from '../data/seed'
 import { Button, useToast } from '../ui'
 import { DEFAULT_HERO_AVATAR, validateHeroName } from './hero/heroProfile'
 import { CampaignStep } from './onboarding/CampaignStep'
@@ -39,9 +38,6 @@ export function OnboardingPage() {
   const [avatar, setAvatar] = useState(DEFAULT_HERO_AVATAR)
   const [campaign, setCampaign] = useState<CampaignChoice>('scholar')
   const [saving, setSaving] = useState(false)
-  // Schlägt nach dem Anlegen der Kampagne das Speichern des Profils fehl, darf ein zweiter Versuch
-  // die Kampagne nicht doppelt anlegen.
-  const installedOn = useRef<string | null>(null)
 
   function goTo(next: Step) {
     setDirection(next > step ? 1 : -1)
@@ -57,12 +53,10 @@ export function OnboardingPage() {
     }
     setSaving(true)
     try {
-      if (campaign === 'scholar' && installedOn.current !== today) {
-        await installScholarCampaign(today)
-        installedOn.current = today
-      }
-      // Erst ganz zum Schluss: Das gespeicherte Profil schaltet die App vom Onboarding in den Spielmodus.
-      await saveProfile({ name: name.trim(), avatar, createdDay: today })
+      // Eine Transaktion: Vorlage und Profil werden gemeinsam gespeichert oder gar nicht. Schlägt etwas fehl,
+      // bleibt nichts zurück – ein neuer Versuch (auch nach einem Neuladen oder mit anderer Wahl) ist sauber.
+      // Das gespeicherte Profil schaltet die App danach vom Onboarding in den Spielmodus.
+      await startAdventure({ name: name.trim(), avatar, createdDay: today }, campaign, today)
     } catch (error) {
       toast({ tone: 'error', title: 'Dein Abenteuer konnte nicht beginnen', description: errorMessage(error) })
     } finally {

@@ -174,7 +174,7 @@ export function QuestsPage() {
       lastMoved.current = { habitId: habit.id, index: active.findIndex((h) => h.id === habit.id) }
     }
     try {
-      await moveHabit(habit.id, direction)
+      await moveHabit(habit.id, direction, today)
     } catch (error) {
       toast({ tone: 'error', title: 'Verschieben fehlgeschlagen', description: errorMessage(error) })
     }
@@ -195,7 +195,7 @@ export function QuestsPage() {
 
   async function handleDelete(habit: Habit) {
     try {
-      await deleteHabit(habit.id)
+      await deleteHabit(habit.id, today)
     } catch (error) {
       toast({ tone: 'error', title: 'Löschen fehlgeschlagen', description: errorMessage(error) })
       throw error
@@ -278,7 +278,6 @@ export function QuestsPage() {
           {archived.length > 0 && (
             <ArchivedQuests
               habits={archived}
-              stats={stats}
               toggleRef={archiveToggleRef}
               onRestore={handleRestore}
               onDelete={handleDelete}

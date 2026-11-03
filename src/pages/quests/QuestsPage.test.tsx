@@ -4,8 +4,10 @@ import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { db } from '../../data/db'
 import * as repository from '../../data/repository'
 import type { HabitDraft } from '../../data/repository'
+import { deriveGameState } from '../../domain/engine'
 import type { DayKey, Habit } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { QuestsPage } from '../QuestsPage'
@@ -498,7 +500,7 @@ describe('QuestsPage – Quest bearbeiten', () => {
 
     await user.click(await screen.findByRole('button', { name: '„Lesen“ bearbeiten' }))
     const form = await screen.findByRole('dialog', { name: 'Quest bearbeiten' })
-    expect(form).toHaveTextContent('Änderungen gelten ab heute – bereits erledigte Tage behalten ihre Werte.')
+    expect(form).toHaveTextContent('Änderungen gelten ab heute – auch für den heutigen Eintrag; frühere Tage behalten ihre Werte.')
     expect(within(form).getByRole('textbox', { name: /Titel/ })).toHaveValue('Lesen')
     expect(within(form).getByRole('textbox', { name: /Beschreibung/ })).toHaveValue('Im aktuellen Buch.')
     expect(within(form).getByRole('radio', { name: 'Intelligenz' })).toBeChecked()
@@ -680,7 +682,8 @@ describe('QuestsPage – Archiv', () => {
     await user.click(screen.getByRole('button', { name: '„Lesen“ endgültig löschen' }))
     const confirm = await screen.findByRole('alertdialog', { name: 'Quest endgültig löschen?' })
     expect(confirm).toHaveTextContent('„Lesen“ wird mit ihrem gesamten Verlauf gelöscht.')
-    expect(confirm).toHaveTextContent('Die 40 XP, die du mit ihr verdient hast, gehen dabei verloren.')
+    // 40 Quest-XP plus die Boni der beiden Perfekten Tage (30.10.: 8, 31.10.: 5), die ohne Lesen keine mehr sind.
+    expect(confirm).toHaveTextContent('Du verlierst 53 XP.')
     expect(confirm).toHaveTextContent('Das lässt sich nicht rückgängig machen.')
     // Bei destruktiven Aktionen startet der Fokus auf „Abbrechen“.
     expect(within(confirm).getByRole('button', { name: 'Abbrechen' })).toHaveFocus()
@@ -705,8 +708,8 @@ describe('QuestsPage – Archiv', () => {
     await user.click(screen.getByRole('button', { name: '„Lesen“ endgültig löschen' }))
     const confirm = await screen.findByRole('alertdialog')
     // Ohne Erledigungen gibt es keine XP zu verlieren – das sagt der Dialog dann auch klar.
-    expect(confirm).toHaveTextContent('Mit ihr hast du bisher keine XP verdient.')
-    expect(confirm).not.toHaveTextContent('gehen dabei verloren')
+    expect(confirm).toHaveTextContent('Deine XP und dein Level bleiben dabei unverändert.')
+    expect(confirm).not.toHaveTextContent('Du verlierst')
     await user.click(within(confirm).getByRole('button', { name: 'Endgültig löschen' }))
 
     expect(await screen.findByRole('heading', { name: 'Dein Questbuch ist noch leer' })).toBeInTheDocument()
@@ -728,8 +731,123 @@ describe('QuestsPage – Archiv', () => {
     await user.click(screen.getByRole('button', { name: '„Lesen“ endgültig löschen' }))
     const confirm = await screen.findByRole('alertdialog')
     expect(confirm).toHaveTextContent('Kapitel deiner Kampagne, die auf diese Quest zählen, verlieren ihren Fortschritt.')
+    expect(confirm).not.toHaveTextContent('Abschluss')
     await user.click(within(confirm).getByRole('button', { name: 'Abbrechen' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(await habitByTitle('Lesen')).toBeDefined()
+  })
+})
+
+describe('QuestsPage – Löschen kostet genau, was der Dialog sagt', () => {
+  async function totalXp(): Promise<number> {
+    return deriveGameState(await loadGameData(), TODAY).level.totalXp
+  }
+
+  it('nennt Quest-XP, Perfekte Tage, Kapitel- und Kampagnen-XP samt Level – und genau so viel fällt der Spielstand', async () => {
+    const user = userEvent.setup()
+    const running = await createHabit({ ...RUNNING, schedule: { type: 'daily' }, difficulty: 'medium' }, '2026-10-31')
+    const vocabulary = await createHabit(
+      { title: 'Vokabeln', icon: '🈯', attribute: 'intellect', difficulty: 'easy', schedule: { type: 'daily' } },
+      '2026-10-31',
+    )
+    await createCampaign('Sprachreise', {
+      startDay: '2026-10-31',
+      chapters: [
+        { id: 'k1', title: 'Erste Vokabeln', criterion: { type: 'habit', habitId: vocabulary.id, metric: 'completions', target: 1 } },
+      ],
+    })
+    for (const day of ['2026-10-31', '2026-11-01', '2026-11-02']) await setCompletionValue(running.id, day, 1)
+    await setCompletionValue(vocabulary.id, '2026-10-31', 1)
+    await archiveHabit(vocabulary.id, TODAY)
+    const before = await totalXp()
+    renderWithGame(<QuestsPage />, { route: '/quests' })
+
+    await user.click(await screen.findByRole('button', { name: /Archiv/ }))
+    await user.click(screen.getByRole('button', { name: '„Vokabeln“ endgültig löschen' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Quest endgültig löschen?' })
+    // 10 Quest-XP + 8 Bonus (31.10. war perfekt) + 100 Kapitel + 500 Kampagne
+    expect(confirm).toHaveTextContent('Du verlierst 618 XP (Level 3 → 1).')
+    expect(confirm).toHaveTextContent(
+      'Kapitel „Erste Vokabeln“ verliert seinen Abschluss (−100 XP); die Kampagne „Sprachreise“ ist dann nicht mehr gemeistert (−500 XP).',
+    )
+    expect(confirm).not.toHaveTextContent('verlieren ihren Fortschritt')
+
+    await user.click(within(confirm).getByRole('button', { name: 'Endgültig löschen' }))
+    await waitFor(async () => expect(await habitByTitle('Vokabeln')).toBeUndefined())
+    expect(before - (await totalXp())).toBe(618)
+  })
+
+  it('sagt es, wenn das Löschen nichts kostet – und der Spielstand bleibt gleich', async () => {
+    const user = userEvent.setup()
+    const running = await createHabit(RUNNING, '2026-10-31')
+    await createHabit(READING, '2026-10-31')
+    const unused = await createHabit(MEDITATION, '2026-10-31')
+    await setCompletionValue(running.id, '2026-11-02', 1)
+    await archiveHabit(unused.id, '2026-11-01')
+    const before = await totalXp()
+    renderWithGame(<QuestsPage />, { route: '/quests' })
+
+    await user.click(await screen.findByRole('button', { name: /Archiv/ }))
+    await user.click(screen.getByRole('button', { name: '„Meditieren“ endgültig löschen' }))
+    const confirm = await screen.findByRole('alertdialog')
+    expect(confirm).toHaveTextContent('Deine XP und dein Level bleiben dabei unverändert.')
+    await user.click(within(confirm).getByRole('button', { name: 'Endgültig löschen' }))
+    await waitFor(async () => expect(await habitByTitle('Meditieren')).toBeUndefined())
+    expect(await totalXp()).toBe(before)
+  })
+})
+
+describe('QuestsPage – Bearbeiten gilt auch für den heutigen Eintrag', () => {
+  it('warnt vor dem Speichern, wenn ein höheres Ziel die heute erledigte Quest wieder öffnet', async () => {
+    const user = userEvent.setup()
+    const reading = await createHabit(READING, '2026-10-20')
+    await setCompletionValue(reading.id, TODAY, 10)
+    renderWithGame(<QuestsPage />, { route: '/quests' })
+
+    await user.click(await screen.findByRole('button', { name: '„Lesen“ bearbeiten' }))
+    const form = await screen.findByRole('dialog', { name: 'Quest bearbeiten' })
+    const target = within(form).getByRole('spinbutton', { name: /Ziel pro Tag/ })
+    expect(within(form).queryByText(/die Quest ist danach wieder offen/)).not.toBeInTheDocument()
+    await user.clear(target)
+    await user.type(target, '20')
+    expect(within(form).getByText('Heute: 10 / 20 Seiten – die Quest ist danach wieder offen.')).toBeInTheDocument()
+    // Ein Ziel, das heute noch erreicht ist, braucht keinen Hinweis.
+    await user.clear(target)
+    await user.type(target, '8')
+    expect(within(form).queryByText(/die Quest ist danach wieder offen/)).not.toBeInTheDocument()
+    await user.clear(target)
+    await user.type(target, '20')
+    await user.click(within(form).getByRole('button', { name: 'Speichern' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // Die Tagesansicht zeigt sofort das neue Ziel.
+    const status = deriveGameState(await loadGameData(), TODAY).todayState.habits.find((h) => h.habit.id === reading.id)
+    expect(status).toMatchObject({ value: 10, target: 20, done: false })
+  })
+})
+
+describe('QuestsPage – künftig archivierte Quest (Tageswechsel nach dem Archivieren verlegt)', () => {
+  it('ist heute aktiv: lässt sich verschieben und archivieren', async () => {
+    const user = userEvent.setup()
+    await createHabit(READING, '2026-10-20')
+    const meditation = await createHabit(MEDITATION, '2026-10-20')
+    await createHabit(RUNNING, '2026-10-20')
+    await db.habits.update(meditation.id, { archivedDay: '2026-11-04' })
+    renderWithGame(<QuestsPage />, { route: '/quests' })
+
+    expect(await screen.findByRole('listitem', { name: 'Meditieren' })).toBeInTheDocument()
+    // Laufen nach oben → tauscht mit Meditieren (dem sichtbaren Nachbarn), nicht mit Lesen.
+    await user.click(screen.getByRole('button', { name: '„Laufen“ nach oben verschieben' }))
+    await waitFor(async () =>
+      expect((await loadGameData()).habits.map((h) => h.title)).toEqual(['Lesen', 'Laufen', 'Meditieren']),
+    )
+
+    await user.click(screen.getByRole('button', { name: '„Meditieren“ bearbeiten' }))
+    const form = await screen.findByRole('dialog', { name: 'Quest bearbeiten' })
+    await user.click(within(form).getByRole('button', { name: 'Archivieren' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Quest archivieren?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Archivieren' }))
+    await waitFor(async () => expect((await habitByTitle('Meditieren'))?.archivedDay).toBe(TODAY))
+    await waitFor(() => expect(screen.queryByRole('listitem', { name: 'Meditieren' })).not.toBeInTheDocument())
   })
 })

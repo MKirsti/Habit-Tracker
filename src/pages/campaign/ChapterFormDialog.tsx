@@ -52,6 +52,11 @@ export interface ChapterFormDialogProps {
   deleteXp?: number
   /** Beschriftung des Speichern-Buttons. Standard: "Speichern" bzw. "Kapitel anlegen". */
   submitLabel?: string
+  /**
+   * Warnung vor dem Speichern, z. B. wenn das Kapitel dadurch seinen Abschluss (und XP) verliert. Liefert sie
+   * einen Text, fragt der Dialog erst nach; Abbrechen führt zurück ins Formular. `undefined` = direkt speichern.
+   */
+  submitWarning?: (chapter: Chapter) => string | undefined
 }
 
 const TYPE_OPTIONS: SegmentedOption<ChapterType>[] = [
@@ -95,6 +100,7 @@ export function ChapterFormDialog({
   onDelete,
   deleteXp = 0,
   submitLabel,
+  submitWarning,
 }: ChapterFormDialogProps) {
   const { data, today } = useGameContext()
   const baseId = useId()
@@ -121,6 +127,8 @@ export function ChapterFormDialog({
   // Beim Öffnen der Rückfrage festgehalten – nach dem Löschen ändert sich der Spielstand schon während
   // der Ausblend-Animation.
   const [confirmXp, setConfirmXp] = useState(0)
+  // Rückfrage vor dem Speichern: das fertige Kapitel und der Warntext, beide beim Öffnen festgehalten.
+  const [pendingSave, setPendingSave] = useState<{ chapter: Chapter; warning: string } | null>(null)
 
   // Bei jedem Öffnen frisch starten (Muster „State während des Renderns anpassen“).
   const [wasOpen, setWasOpen] = useState(open)
@@ -132,6 +140,7 @@ export function ChapterFormDialog({
       setSubmitted(false)
       setSaving(false)
       setConfirmDelete(false)
+      setPendingSave(null)
     }
   }
 
@@ -179,10 +188,16 @@ export function ChapterFormDialog({
       focusFirstError(currentErrors)
       return
     }
+    const result = chapterFromValues(values, chapter, today)
+    const warning = submitWarning?.(result)
+    if (warning !== undefined) {
+      setPendingSave({ chapter: result, warning })
+      return
+    }
     savingRef.current = true
     setSaving(true)
     try {
-      await onSubmit(chapterFromValues(values, chapter, today))
+      await onSubmit(result)
       setSaving(false)
       onClose()
     } catch {
@@ -368,6 +383,22 @@ export function ChapterFormDialog({
           </div>
         </form>
       </Dialog>
+
+      <ConfirmDialog
+        open={open && pendingSave !== null}
+        onClose={() => setPendingSave(null)}
+        onConfirm={async () => {
+          if (!pendingSave) return
+          // Wirft onSubmit, bleibt die Rückfrage offen (der Fehler wird dort per Toast gemeldet).
+          await onSubmit(pendingSave.chapter)
+          onClose()
+        }}
+        title="Änderung kostet XP"
+        message={pendingSave?.warning}
+        confirmLabel="Trotzdem speichern"
+        danger
+        icon={<TriangleAlert />}
+      />
 
       {onDelete && isEdit && (
         <ConfirmDialog

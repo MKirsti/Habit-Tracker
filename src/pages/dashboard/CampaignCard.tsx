@@ -3,7 +3,7 @@ import { useId } from 'react'
 import { Link } from 'react-router'
 import type { MainQuestState } from '../../domain/types'
 import { Card, ProgressBar, SectionTitle, buttonClassName, cn, formatNumber } from '../../ui'
-import { deadlineText } from './dashboardText'
+import { campaignChapterLine, deadlineText } from './dashboardText'
 
 export interface CampaignSectionProps {
   /** Nicht archivierte Kampagnen (`state.mainQuests`). */
@@ -57,13 +57,7 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
   const percent = Math.round(progress * 100)
   const doneCount = chapters.filter((chapter) => chapter.done).length
   const deadline = complete ? undefined : deadlineText(daysLeft)
-  const current = currentChapterIndex >= 0 ? chapters[currentChapterIndex] : undefined
-
-  let chapterLine: string
-  if (chapters.length === 0) chapterLine = 'Noch keine Kapitel'
-  else if (complete || !current) chapterLine = 'Alle Kapitel gemeistert'
-  else
-    chapterLine = `Kapitel ${formatNumber(currentChapterIndex + 1)} / ${formatNumber(chapters.length)}: ${current.chapter.title}`
+  const chapterLine = campaignChapterLine(campaign)
 
   return (
     <Card
@@ -73,7 +67,8 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
       className="transition-[border-color] duration-200 hover:border-gold/60 has-[a:active]:scale-[0.995]"
     >
       <Link
-        to="/kampagne"
+        // Genau diese Kampagne öffnen – auch wenn mehrere laufen (die Seite liest `?id=`).
+        to={`/kampagne?${new URLSearchParams({ id: quest.id }).toString()}`}
         aria-label={`Kampagne „${quest.title}“ öffnen`}
         className="absolute inset-0 z-10 scroll-mb-[calc(var(--bottom-nav-height)+env(safe-area-inset-bottom)+1rem)] rounded-2xl focus-visible:outline-offset-3 md:scroll-mb-6"
       />

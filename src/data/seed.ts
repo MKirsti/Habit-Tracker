@@ -7,9 +7,11 @@
  * bis zum zwölften beendeten Buch.
  */
 import { addDays } from '../domain/dates'
-import type { Chapter, DayKey, Habit, MainQuest } from '../domain/types'
+import { isArchivedOn } from '../domain/schedule'
+import type { Chapter, CharacterProfile, DayKey, Habit, MainQuest } from '../domain/types'
 import { db, type QuestlogDB } from './db'
 import { newId } from './ids'
+import { saveProfile } from './repository'
 
 /** Laufzeit der Kampagne in Tagen (Deadline = Start + 365 Tage). */
 const CAMPAIGN_DAYS = 365
@@ -143,14 +145,75 @@ export function createScholarCampaign(
 
 /**
  * Speichert die Vorlage-Kampagne samt Quests in einer Transaktion.
- * Die neuen Quests werden hinter bereits vorhandenen einsortiert.
+ *
+ * Wiederholbar: Gibt es schon eine Quest mit dem (getrimmten) Titel einer Vorlage-Quest, die am Tag `today`
+ * nicht archiviert und mit keiner Kampagne verknüpft ist (z. B. nachdem die Kampagne gelöscht wurde), wird
+ * sie mit der neuen Kampagne verknüpft und von deren Kapiteln verwendet – statt sie zu verdoppeln. Nur
+ * fehlende Vorlage-Quests werden neu angelegt, hinter allen vorhandenen.
  */
 export async function installScholarCampaign(today: DayKey, database: QuestlogDB = db): Promise<void> {
-  const { mainQuest, habits } = createScholarCampaign(today)
-  await database.transaction('rw', database.habits, database.mainQuests, async () => {
-    const last = await database.habits.orderBy('order').last()
-    const offset = last ? last.order + 1 : 0
-    await database.mainQuests.add(mainQuest)
-    await database.habits.bulkAdd(habits.map((habit) => ({ ...habit, order: habit.order + offset })))
+  await database.transaction('rw', database.habits, database.mainQuests, () => writeScholarCampaign(today, database))
+}
+
+/** Womit das Abenteuer beginnt: mit der Vorlage-Kampagne oder ohne. */
+export type AdventureTemplate = 'scholar' | 'none'
+
+/**
+ * Beginnt das Abenteuer (Abschluss des Onboardings) in **einer** Transaktion: legt bei `'scholar'` die
+ * Vorlage-Kampagne an (wie `installScholarCampaign`) und speichert das Profil (wie `saveProfile`, gleiche
+ * Prüfung und Normalisierung). Beides gelingt oder nichts davon – schlägt z. B. das Speichern des Profils
+ * fehl, bleibt auch keine Kampagne zurück, und ein neuer Versuch (auch nach einem Neuladen oder mit anderer
+ * Wahl) beginnt sauber.
+ */
+export async function startAdventure(
+  profile: CharacterProfile,
+  template: AdventureTemplate,
+  today: DayKey,
+  database: QuestlogDB = db,
+): Promise<void> {
+  await database.transaction('rw', database.habits, database.mainQuests, database.kv, async () => {
+    if (template === 'scholar') await writeScholarCampaign(today, database)
+    // Erst zum Schluss: Das gespeicherte Profil schaltet die App vom Onboarding in den Spielmodus.
+    await saveProfile(profile, database)
   })
+}
+
+/**
+ * Schreibt die Vorlage-Kampagne (siehe `installScholarCampaign`). Muss innerhalb einer rw-Transaktion über
+ * `habits` und `mainQuests` laufen.
+ */
+async function writeScholarCampaign(today: DayKey, database: QuestlogDB): Promise<void> {
+  const { mainQuest, habits: templates } = createScholarCampaign(today)
+  const existing = (await database.habits.toArray()).sort((a, b) => a.order - b.order)
+
+  // Wiederverwendbar: nicht archiviert, nicht verknüpft. Pro Titel die erste in der Listen-Reihenfolge.
+  const reusable = new Map<string, Habit>()
+  for (const habit of existing) {
+    const key = habit.title.trim()
+    if (habit.mainQuestId !== undefined || isArchivedOn(habit, today) || reusable.has(key)) continue
+    reusable.set(key, habit)
+  }
+
+  let nextOrder = existing.reduce((max, habit) => (Number.isFinite(habit.order) ? Math.max(max, habit.order) : max), -1) + 1
+  const idFor = new Map<string, string>() // Vorlage-ID → tatsächliche ID
+  const writes: Habit[] = []
+  for (const template of templates) {
+    const key = template.title.trim()
+    const match = reusable.get(key)
+    if (match) {
+      reusable.delete(key)
+      idFor.set(template.id, match.id)
+      writes.push({ ...match, mainQuestId: mainQuest.id })
+    } else {
+      writes.push({ ...template, order: nextOrder++ })
+    }
+  }
+
+  const chapters = mainQuest.chapters.map((chapter): Chapter => {
+    const { criterion } = chapter
+    if (criterion.type !== 'habit') return chapter
+    return { ...chapter, criterion: { ...criterion, habitId: idFor.get(criterion.habitId) ?? criterion.habitId } }
+  })
+  await database.mainQuests.add({ ...mainQuest, chapters })
+  await database.habits.bulkPut(writes)
 }

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { dayRange } from '../../domain/dates'
+import { deriveGameState } from '../../domain/engine'
+import { makeCompletion, makeGameData, makeMainQuest } from '../../domain/testing'
 import type { Chapter, ChapterState, Habit } from '../../domain/types'
 import {
   campaignDayText,
@@ -7,6 +10,7 @@ import {
   deadlineText,
   durationLabel,
   formatDate,
+  isArchived,
   metricUnit,
   xpHint,
 } from './campaignText'
@@ -92,6 +96,41 @@ describe('chapterProgressText', () => {
     expect(chapterProgressText(state(chapter, 2, 21), TALK)?.suffix).toBe('Wochen')
   })
 
+  it('Streak nach einer Umstellung: Einheit des erreichten Werts (state.unit), nicht des aktuellen Rhythmus', () => {
+    const chapter: Chapter = { id: 'c', title: 'Serie', criterion: { type: 'habit', habitId: 'talk', metric: 'streak', target: 21 } }
+    // 25 Tage in Folge als Tagesquest, inzwischen Wochenquest → "21 / 21 Tage", nicht "21 / 21 Wochen".
+    expect(chapterProgressText({ ...state(chapter, 25, 21), unit: 'day' }, TALK)).toMatchObject({
+      value: '21 / 21',
+      suffix: 'Tage',
+      spoken: 'Bester Streak: 21 von 21 Tagen',
+    })
+    // Umgekehrt: als Wochenquest erreicht, inzwischen täglich.
+    const weeks: Chapter = { ...chapter, criterion: { ...chapter.criterion, target: 3 } as Chapter['criterion'] }
+    expect(chapterProgressText({ ...state(weeks, 3, 3), unit: 'week' }, READING)).toMatchObject({
+      suffix: 'Wochen',
+      spoken: 'Bester Streak: 3 von 3 Wochen',
+    })
+    // Die Kurzbeschreibung des Ziels folgt weiter dem aktuellen Rhythmus (sie beschreibt die Regel).
+    expect(criterionSummary(chapter.criterion, new Map([[TALK.id, TALK]]))).toBe('🗣️ Bücher-Gespräch · Streak 21 Wochen')
+  })
+
+  it('Streak nach Umstellung täglich → Wochenquest, durchgerechnet über die Engine', () => {
+    const habit: Habit = {
+      ...READING,
+      schedule: { type: 'weekly', times: 3 },
+      scheduleHistory: [{ until: '2026-11-26', schedule: { type: 'daily' } }],
+    }
+    const chapter: Chapter = { id: 'c', title: '21 Tage', criterion: { type: 'habit', habitId: habit.id, metric: 'streak', target: 21 } }
+    const data = makeGameData({
+      habits: [habit],
+      completions: dayRange('2026-11-01', '2026-11-25').map((day) => makeCompletion(habit, day)),
+      mainQuests: [makeMainQuest({ id: 'k', startDay: '2026-11-01', chapters: [chapter] })],
+    })
+    const chapterState = deriveGameState(data, '2026-11-26').mainQuests[0].chapters[0]
+    expect(chapterState).toMatchObject({ done: true, unit: 'day' })
+    expect(chapterProgressText(chapterState, habit)).toMatchObject({ value: '21 / 21', suffix: 'Tage' })
+  })
+
   it('zeigt bei abgeschlossenen Quest-Zielen das erreichte Ziel, bei Zählern den echten Stand', () => {
     const habitChapter: Chapter = { id: 'c', title: 'Funke', criterion: { type: 'habit', habitId: 'read', metric: 'completions', target: 7 } }
     expect(chapterProgressText(state(habitChapter, 19, 7), READING)?.value).toBe('7 / 7')
@@ -113,6 +152,14 @@ describe('metricUnit & criterionSummary', () => {
   it('passt Einheiten an die Zahl an', () => {
     expect(metricUnit('completions', READING, 1)).toBe('Tag')
     expect(metricUnit('streak', TALK, 1)).toBe('Woche')
+    expect(metricUnit('streak', TALK, 2, 'day')).toBe('Tage')
+    expect(metricUnit('streak', READING, 2, 'week')).toBe('Wochen')
+  })
+
+  it('isArchived: archiviert ab archivedDay (ein künftiger zählt noch nicht)', () => {
+    expect(isArchived(READING, '2026-11-03')).toBe(false)
+    expect(isArchived({ ...READING, archivedDay: '2026-11-03' }, '2026-11-03')).toBe(true)
+    expect(isArchived({ ...READING, archivedDay: '2026-11-04' }, '2026-11-03')).toBe(false)
   })
 
   it('fasst Kapitelziele für Listen zusammen', () => {

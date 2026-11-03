@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { makeCompletion, makeHabit } from '../../domain/testing'
-import { buildHabitStats, formatStreakUnit, habitStreak, isArchivedOn, statsFor } from './questStats'
+import { makeChapter, makeCompletion, makeHabit, makeMainQuest } from '../../domain/testing'
+import {
+  buildHabitStats,
+  chapterLossText,
+  formatStreakUnit,
+  habitStreak,
+  isArchivedOn,
+  levelChangeText,
+  statsFor,
+} from './questStats'
 
 describe('buildHabitStats', () => {
   it('sammelt erledigte Tage bis heute und deren Quest-XP je Quest', () => {
@@ -42,5 +50,27 @@ describe('isArchivedOn / formatStreakUnit', () => {
   it('beugt Tage und Wochen', () => {
     expect([0, 1, 2].map((n) => formatStreakUnit(n, 'day'))).toEqual(['Tage', 'Tag', 'Tage'])
     expect([0, 1, 2].map((n) => formatStreakUnit(n, 'week'))).toEqual(['Wochen', 'Woche', 'Wochen'])
+  })
+})
+
+describe('Texte zum Löschen', () => {
+  const quest = makeMainQuest({ id: 'k', title: 'Der Weg des Gelehrten' })
+  const chapter = (title: string) => makeChapter({ id: title, title, criterion: { type: 'manual' } })
+
+  it('nennt den Level-Wechsel nur, wenn sich das Level ändert', () => {
+    expect(levelChangeText({ levelBefore: 3, levelAfter: 1 })).toBe('Level 3 → 1')
+    expect(levelChangeText({ levelBefore: 2, levelAfter: 2 })).toBeUndefined()
+  })
+
+  it('beschreibt verlorene Kapitel-Abschlüsse samt Kampagnen-Bonus', () => {
+    expect(
+      chapterLossText({ quest, lostChapters: [chapter('Der erste Funke')], openChapters: [], losesCompletion: true }),
+    ).toBe(
+      'Kapitel „Der erste Funke“ verliert seinen Abschluss (−100 XP); die Kampagne „Der Weg des Gelehrten“ ist dann nicht mehr gemeistert (−500 XP).',
+    )
+    expect(
+      chapterLossText({ quest, lostChapters: ['A', 'B', 'C'].map(chapter), openChapters: [], losesCompletion: false }),
+    ).toBe('Die Kapitel „A“, „B“ und „C“ verlieren ihren Abschluss (−300 XP).')
+    expect(chapterLossText({ quest, lostChapters: [], openChapters: [chapter('Offen')], losesCompletion: false })).toBeUndefined()
   })
 })

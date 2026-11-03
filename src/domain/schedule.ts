@@ -17,15 +17,30 @@ import type { Completion, DayKey, Difficulty, Habit, HabitPause, IsoWeekday, Sch
 /** Kurznamen der Wochentage, Index = ISO-Wochentag (Index 0 ungenutzt). */
 const WEEKDAY_SHORT = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] as const
 
+/**
+ * Was die Zeitplan-Funktionen von einer Quest brauchen. Auch ein Grabstein einer gelöschten Quest
+ * (`DeletedHabit`) erfüllt das – so zählt er an vergangenen Tagen weiter als (offene) Pflicht-Quest.
+ */
+export type HabitTimeline = Pick<Habit, 'createdDay' | 'archivedDay' | 'schedule' | 'scheduleHistory' | 'pauses'>
+
+/**
+ * Ist die Quest am Tag `day` archiviert (`archivedDay ≤ day`)? Ein `archivedDay` nach `day` (möglich, wenn
+ * der Tageswechsel nach dem Archivieren später gelegt wurde) zählt noch nicht: Die Quest ist dann noch
+ * aktiv. Einheitliche Regel für alle Listen, das Verschieben und das Archivieren.
+ */
+export function isArchivedOn(habit: Pick<Habit, 'archivedDay'>, day: DayKey): boolean {
+  return habit.archivedDay !== undefined && compareDays(habit.archivedDay, day) <= 0
+}
+
 /** createdDay ≤ day, (kein archivedDay oder day < archivedDay) und `day` liegt in keiner Pause. */
-export function isActiveOn(habit: Habit, day: DayKey): boolean {
+export function isActiveOn(habit: HabitTimeline, day: DayKey): boolean {
   if (compareDays(habit.createdDay, day) > 0) return false
   if (habit.archivedDay !== undefined && compareDays(day, habit.archivedDay) >= 0) return false
   return !isPausedOn(habit, day)
 }
 
 /** Liegt `day` in einer Pause der Quest (`from ≤ day < until`)? */
-export function isPausedOn(habit: Habit, day: DayKey): boolean {
+export function isPausedOn(habit: Pick<Habit, 'pauses'>, day: DayKey): boolean {
   const pauses = habit.pauses
   if (pauses === undefined) return false
   return pauses.some((pause) => compareDays(pause.from, day) <= 0 && compareDays(day, pause.until) < 0)
@@ -39,7 +54,7 @@ export function isPausedOn(habit: Habit, day: DayKey): boolean {
  * dem kleinsten `until > day` – das Ergebnis hängt damit nicht von der gespeicherten Reihenfolge ab
  * (bei gleichem `until` gewinnt der erste Eintrag). Ohne Verlauf ist es immer `habit.schedule`.
  */
-export function scheduleOn(habit: Habit, day: DayKey): Schedule {
+export function scheduleOn(habit: Pick<Habit, 'schedule' | 'scheduleHistory'>, day: DayKey): Schedule {
   const history = habit.scheduleHistory
   if (history === undefined) return habit.schedule
   let schedule = habit.schedule
@@ -114,14 +129,14 @@ export function isScheduledWeekday(schedule: Schedule, weekday: IsoWeekday): boo
  * Aktiv UND laut Rhythmus dieses Tages (`scheduleOn`) planmäßig fällig (daily, oder weekdays mit passendem
  * Wochentag). War die Quest an dem Tag eine Wochenquest: false.
  */
-export function isRequiredOn(habit: Habit, day: DayKey): boolean {
+export function isRequiredOn(habit: HabitTimeline, day: DayKey): boolean {
   const schedule = scheduleOn(habit, day)
   if (schedule.type === 'weekly') return false
   return isActiveOn(habit, day) && isScheduledWeekday(schedule, isoWeekday(day))
 }
 
 /** Aktiv UND (Pflicht an diesem Tag ODER an diesem Tag eine Wochenquest). */
-export function isVisibleOn(habit: Habit, day: DayKey): boolean {
+export function isVisibleOn(habit: HabitTimeline, day: DayKey): boolean {
   if (!isActiveOn(habit, day)) return false
   const schedule = scheduleOn(habit, day)
   return schedule.type === 'weekly' || isScheduledWeekday(schedule, isoWeekday(day))

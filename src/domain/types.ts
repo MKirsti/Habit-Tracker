@@ -163,6 +163,29 @@ export interface Settings {
   effects: boolean
 }
 
+/**
+ * Rest einer endgültig gelöschten Quest („Grabstein“): nur der Zeitplan, damit vergangene Tage ihre
+ * Pflicht-Quests behalten. Ohne ihn würde eine gelöschte, an einem Tag offene Pflicht-Quest aus der Wertung
+ * verschwinden – der Tag würde nachträglich perfekt und brächte Bonus-XP.
+ *
+ * Grabsteine haben keine Erledigungen: An Tagen, an denen die Quest Pflicht war, ist sie (für immer) offen.
+ * Sie erscheinen nirgends in Listen und zählen nicht für Streaks, Kapitel, Gesamtwerte oder Quest-XP.
+ * Werden vom Repository gepflegt (`deleteHabit`); `applyHabitDeletion` (domain/deletion.ts) rechnet gleich.
+ */
+export interface DeletedHabit {
+  /** ID der gelöschten Quest. */
+  id: string
+  createdDay: DayKey
+  /**
+   * Ab diesem Spieltag (inklusive) zählte die Quest nicht mehr: ihr Archivierungstag, falls sie schon
+   * archiviert war (≤ Löschtag), sonst der Löschtag.
+   */
+  archivedDay: DayKey
+  schedule: Schedule
+  scheduleHistory?: ScheduleHistoryEntry[]
+  pauses?: HabitPause[]
+}
+
 /** Alle gespeicherten Daten – Eingabe für die Spiel-Engine und Inhalt eines Backups. */
 export interface GameData {
   /** Fehlt, solange das Onboarding nicht abgeschlossen ist. */
@@ -171,6 +194,8 @@ export interface GameData {
   habits: Habit[]
   completions: Completion[]
   mainQuests: MainQuest[]
+  /** Grabsteine gelöschter Quests (siehe `DeletedHabit`). Fehlt, solange keine Quest gelöscht wurde. */
+  deletedHabits?: DeletedHabit[]
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +248,10 @@ export interface HabitStatus {
    * war die Quest am Montag keine Wochenquest, das des Tages.
    */
   week?: { done: number; target: number }
-  /** XP, die die Quest (mit aktueller Schwierigkeit) bei Erledigung gibt. */
+  /**
+   * XP der Quest an diesem Tag: erledigt die tatsächlich gutgeschriebenen (Schwierigkeit der Erledigung),
+   * sonst die, die eine Erledigung jetzt bringen würde (aktuelle Schwierigkeit).
+   */
   xp: number
 }
 
@@ -257,6 +285,11 @@ export interface ChapterState {
   doneDay?: DayKey
   /** Nur für 'habit': die referenzierte Quest existiert nicht mehr. */
   brokenReference?: boolean
+  /**
+   * Nur für Streak-Kapitel: Einheit von `current`. Meist die des aktuellen Rhythmus; wurde das Ziel nur vor
+   * einer Umstellung zwischen Tages- und Wochenquest erreicht, die frühere Einheit.
+   */
+  unit?: 'day' | 'week'
 }
 
 export interface MainQuestState {

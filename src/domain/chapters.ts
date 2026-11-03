@@ -7,7 +7,8 @@
  * - habit:   automatisch aus einer Quest; es zählen nur Erledigungen mit `quest.startDay ≤ day ≤ today`.
  *            Metriken: completions (erledigte Tage), total (Summe aller Werte inkl. Teilfortschritt),
  *            streak (bester Streak seit Kampagnenstart; nach einer Umstellung zwischen Tages- und
- *            Wochenquest bleibt ein in der früheren Einheit erreichtes Ziel erreicht).
+ *            Wochenquest bleibt ein in der früheren Einheit erreichtes Ziel erreicht). `ChapterState.unit`
+ *            nennt die Einheit des Werts.
  */
 import { compareDays } from './dates'
 import { isDone, reachesTarget } from './schedule'
@@ -110,8 +111,12 @@ function evaluateHabitChapter(
           ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, earlierUnit)
           : undefined,
       )
-      const current = best < target && earlierBest >= target ? earlierBest : best
-      return buildState(chapter, current, target, reachedOn)
+      // Nur in der früheren Einheit erreicht: Wert und Einheit von dort, damit die Anzeige stimmt
+      // ("21 / 21 Tage" statt "21 / 21 Wochen" nach einer Umstellung auf eine Wochenquest).
+      const fromEarlier = best < target && earlierBest >= target
+      const state = buildState(chapter, fromEarlier ? earlierBest : best, target, reachedOn)
+      state.unit = fromEarlier ? earlierUnit : unit
+      return state
     }
   }
 }

@@ -1,23 +1,25 @@
 import { MotionConfig } from 'motion/react'
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Navigate, createHashRouter } from 'react-router'
 import type { RouteObject } from 'react-router'
 import { RouterProvider } from 'react-router/dom'
 import { GameFeedback } from '../features/feedback/GameFeedback'
-import { CampaignPage } from '../pages/CampaignPage'
 import { DashboardPage } from '../pages/DashboardPage'
-import { HeroPage } from '../pages/HeroPage'
-import { OnboardingPage } from '../pages/OnboardingPage'
-import { QuestsPage } from '../pages/QuestsPage'
-import { SettingsPage } from '../pages/SettingsPage'
 import { LoadingState } from '../ui/Spinner'
 import { ToastProvider } from '../ui/Toast'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { useGameContext } from './gameContext'
-import { GameProvider } from './GameProvider'
+import { AppLoading, GameProvider } from './GameProvider'
 import { Layout } from './Layout'
+import { requestPersistentStorage } from './persistentStorage'
 import { RouteError } from './RouteError'
+
+/*
+ * Code-Splitting: „Heute“ (Startseite) ist im Hauptpaket, alle anderen Seiten und das Onboarding
+ * werden erst bei Bedarf geladen. Der Service Worker hält alle Teile vorab im Cache (offline).
+ */
+const OnboardingPage = lazy(async () => ({ default: (await import('../pages/OnboardingPage')).OnboardingPage }))
 
 /**
  * Routen (Hash-Router, damit GitHub Pages ohne Server-Rewrites funktioniert):
@@ -28,12 +30,17 @@ const routes: RouteObject[] = [
     path: '/',
     element: <Layout />,
     errorElement: <RouteError />,
+    // Wird die App direkt auf einer nachgeladenen Seite geöffnet (z. B. #/quests), bis diese da ist.
+    hydrateFallbackElement: <AppLoading />,
     children: [
       { index: true, element: <DashboardPage /> },
-      { path: 'quests', element: <QuestsPage /> },
-      { path: 'kampagne', element: <CampaignPage /> },
-      { path: 'held', element: <HeroPage /> },
-      { path: 'einstellungen', element: <SettingsPage /> },
+      { path: 'quests', lazy: async () => ({ Component: (await import('../pages/QuestsPage')).QuestsPage }) },
+      { path: 'kampagne', lazy: async () => ({ Component: (await import('../pages/CampaignPage')).CampaignPage }) },
+      { path: 'held', lazy: async () => ({ Component: (await import('../pages/HeroPage')).HeroPage }) },
+      {
+        path: 'einstellungen',
+        lazy: async () => ({ Component: (await import('../pages/SettingsPage')).SettingsPage }),
+      },
       // Nur in der Entwicklung: lebende Übersicht aller Design-System-Bausteine unter #/designsystem.
       ...(import.meta.env.DEV
         ? [
@@ -78,13 +85,24 @@ function EffectsConfig({ children }: { children: ReactNode }) {
 /** Ohne Charakter-Profil startet das Onboarding, sonst die eigentliche App. */
 function ProfileGate() {
   const { data } = useGameContext()
-  if (!data.profile) return <OnboardingPage />
+  if (!data.profile) {
+    return (
+      <Suspense fallback={<AppLoading />}>
+        <OnboardingPage />
+      </Suspense>
+    )
+  }
   return <AppRouter />
 }
 
 function AppRouter() {
   // Router erst beim ersten Rendern erzeugen (nicht beim Modul-Import) – so bleibt das Modul testbar.
   const [router] = useState(() => createHashRouter(routes))
+  // Sobald ein Held existiert (nach dem Onboarding und bei jedem Start): den Browser bitten, den
+  // Spielstand – die einzige Kopie – nicht bei Speicherknappheit zu löschen.
+  useEffect(() => {
+    void requestPersistentStorage()
+  }, [])
   return (
     <>
       <RouterProvider router={router} />

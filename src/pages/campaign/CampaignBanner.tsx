@@ -46,14 +46,13 @@ export function CampaignBanner({ campaign, today, headingRef }: CampaignBannerPr
           {quest.icon}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold tracking-[0.2em] text-gold uppercase">
-            {complete ? 'Gemeistert' : 'Hauptquest'}
-          </p>
+          {/* Kein „Hauptquest“-Eyebrow: Der Seitenkopf sagt schon „Dein großes Ziel“. */}
+          {complete && <p className="mb-1 text-xs font-semibold tracking-[0.2em] text-gold uppercase">Gemeistert</p>}
           <h2
             id={titleId}
             ref={headingRef}
             tabIndex={-1}
-            className="mt-1 font-display text-[1.375rem] leading-tight font-bold tracking-wide text-parchment focus:outline-none sm:text-[1.75rem]"
+            className="font-display text-[1.375rem] leading-tight font-bold tracking-wide text-parchment focus:outline-none sm:text-[1.75rem]"
           >
             {quest.title}
           </h2>

@@ -21,9 +21,10 @@ export type ConfettiShape = 'rect' | 'sliver' | 'circle' | 'spark'
 
 /**
  * - burst: Explosion in alle Richtungen (Feier-Szenen)
- * - cannon: Fontäne nach oben (z. B. aus dem Toast-Bereich)
+ * - cannon: Fontäne nach oben (aus dem Toast-Stapel unten, Desktop)
+ * - spray: Fächer nach unten (aus dem Toast-Stapel oben, Handy – nach oben flöge alles aus dem Bild)
  */
-export type ConfettiMode = 'burst' | 'cannon'
+export type ConfettiMode = 'burst' | 'cannon' | 'spray'
 
 export interface ConfettiParticle {
   id: number
@@ -32,7 +33,7 @@ export interface ConfettiParticle {
   /** Breite/Höhe in px. */
   width: number
   height: number
-  /** Keyframes relativ zum Ursprung in px: Start → höchster Punkt → Ende. */
+  /** Keyframes relativ zum Ursprung in px: Start → Ende des Wurfs (meist höchster Punkt) → Ende. */
   x: [number, number, number]
   y: [number, number, number]
   rotate: [number, number, number]
@@ -73,8 +74,12 @@ export function createConfettiParticles(
     const angle =
       mode === 'burst'
         ? random() * Math.PI * 2
-        : -Math.PI / 2 + (random() - 0.5) * Math.PI * 0.75 // ±67° um die Senkrechte
-    const reach = distance * (mode === 'burst' ? between(0.3, 1, random) : between(0.55, 1.1, random))
+        : mode === 'cannon'
+          ? -Math.PI / 2 + (random() - 0.5) * Math.PI * 0.75 // ±67° um die Senkrechte, nach oben
+          : Math.PI / 2 + (random() - 0.5) * Math.PI * 0.85 // ±76° um die Senkrechte, nach unten
+    const reach =
+      distance *
+      (mode === 'burst' ? between(0.3, 1, random) : mode === 'cannon' ? between(0.55, 1.1, random) : between(0.3, 0.75, random))
     const dx = Math.cos(angle) * reach
     // Explosion leicht nach oben verschoben, damit das Konfetti „aufsteigt“, bevor es fällt.
     const dy = Math.sin(angle) * reach * (mode === 'burst' ? 0.8 : 1) - (mode === 'burst' ? distance * 0.18 : 0)
