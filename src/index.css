@@ -1,1 +1,250 @@
+/*
+ * Questlog – Theme „Dark Fantasy“
+ *
+ * Alle Farben, Schriften und Effekte als Tailwind-v4-Theme-Tokens. Daraus entstehen Utilities wie
+ * `bg-surface`, `text-parchment`, `border-border`, `text-gold-bright`, `font-display`, `shadow-card`,
+ * `animate-shimmer` usw. Seiten verwenden ausschließlich diese Tokens (keine freien Hex-Werte).
+ *
+ * Kontrast: `parchment` und `muted` erfüllen auf allen Flächen WCAG AA für Fließtext.
+ * `faint` ist nur für Platzhalter, deaktivierte Elemente und dekorative Hinweise gedacht.
+ */
 @import "tailwindcss";
+
+@theme {
+  /* --- Flächen (dunkles Braun-Schwarz, von tief nach erhaben) ----------------------------- */
+  --color-bg-deep: #080604;
+  --color-bg: #0e0b08;
+  --color-surface: #17120d;
+  --color-surface-raised: #211a13;
+  --color-surface-hover: #2a2119;
+
+  /* --- Linien ------------------------------------------------------------------------------ */
+  --color-border: #3a2f22;
+  --color-border-strong: #574631;
+
+  /* --- Gold (Akzent) ----------------------------------------------------------------------- */
+  --color-gold-bright: #f0c96a;
+  --color-gold: #d4a548;
+  --color-gold-dim: #9c7834;
+  --color-gold-deep: #4a3614;
+  /* Text auf goldenen Flächen (z. B. Primär-Button). */
+  --color-on-gold: #1c1408;
+
+  /* --- Text (Pergament) -------------------------------------------------------------------- */
+  --color-parchment: #ece0c8;
+  --color-muted: #a8977a;
+  --color-faint: #7d6d55;
+
+  /* --- Status ------------------------------------------------------------------------------ */
+  --color-success: #7cc48a;
+  --color-danger: #e5735e;
+  /* Gefüllte Gefahr-Flächen (Text in `parchment` darauf ≥ 4.5:1). */
+  --color-danger-strong: #a33626;
+  --color-warning: #e8a948;
+  --color-info: #7fb2e0;
+
+  /*
+   * --- Attribute ---------------------------------------------------------------------------
+   * Spiegel von `src/domain/attributes.ts` (Quelle der Wahrheit). Ein Test (src/ui/theme.test.ts)
+   * stellt sicher, dass beide Stellen übereinstimmen.
+   */
+  --color-attr-strength: #e0654a;
+  --color-attr-intellect: #5b9bd5;
+  --color-attr-wisdom: #9b7fd1;
+  --color-attr-charisma: #e3a33b;
+  --color-attr-vitality: #5dbb7a;
+  --color-attr-discipline: #8fa3b8;
+
+  /* --- Schriften --------------------------------------------------------------------------- */
+  --font-display: "Cinzel", Georgia, "Times New Roman", serif;
+  --font-sans:
+    "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+
+  /* --- Schatten ---------------------------------------------------------------------------- */
+  --shadow-card: inset 0 1px 0 0 rgb(255 236 200 / 0.045), 0 12px 32px -16px rgb(0 0 0 / 0.85);
+  --shadow-raised: inset 0 1px 0 0 rgb(255 236 200 / 0.06), 0 18px 48px -18px rgb(0 0 0 / 0.9);
+  --shadow-glow: 0 0 0 1px rgb(212 165 72 / 0.35), 0 0 22px -4px rgb(212 165 72 / 0.5);
+  --shadow-glow-sm: 0 0 10px -1px rgb(240 201 106 / 0.6);
+
+  /* --- Animationen ------------------------------------------------------------------------- */
+  --animate-shimmer: shimmer 2.8s ease-in-out infinite;
+  --animate-glow-pulse: glow-pulse 3.2s ease-in-out infinite;
+
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-120%);
+    }
+    55%,
+    100% {
+      transform: translateX(320%);
+    }
+  }
+
+  @keyframes glow-pulse {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    /* Layout-Maße, die mehrere Komponenten kennen müssen (Navigation, Toasts, Dialoge). */
+    --bottom-nav-height: 4rem;
+    --sidebar-width: 15.5rem;
+  }
+
+  html {
+    background-color: var(--color-bg);
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    min-height: 100dvh;
+    color: var(--color-parchment);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    /* Lange deutsche Komposita („Halbmarathonvorbereitung“) umbrechen statt seitlich überzulaufen. */
+    overflow-wrap: break-word;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /*
+   * Atmosphäre: warmer Lichtschein von oben, Glut unten rechts, Vignette an den Rändern.
+   * Liegt fixiert hinter allem (z-index −1 im Wurzel-Stapelkontext; body hat bewusst keinen
+   * eigenen Hintergrund, damit die Ebene sichtbar bleibt).
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(110% 55% at 50% -12%, rgb(212 165 72 / 0.11), transparent 62%),
+      radial-gradient(55% 45% at 100% 100%, rgb(176 82 34 / 0.09), transparent 72%),
+      radial-gradient(45% 40% at 0% 65%, rgb(120 90 160 / 0.045), transparent 72%),
+      radial-gradient(150% 110% at 50% 35%, transparent 52%, rgb(0 0 0 / 0.6) 100%);
+  }
+
+  ::selection {
+    background-color: rgb(212 165 72 / 0.35);
+    color: var(--color-parchment);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-gold-bright);
+    outline-offset: 2px;
+  }
+
+  /* Tailwind setzt bei Buttons `cursor: default` – für eine App mit vielen Tap-Zielen fühlt sich Pointer besser an. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  label[for],
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-faint);
+    opacity: 1;
+  }
+
+  /* Schmale, dunkle Scrollbalken. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-color: var(--color-border-strong);
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-gold-dim);
+  }
+}
+
+/*
+ * Dekorative Endlos-Animationen abschaltbar (Einstellung „Effekte“: <html data-effects="off">).
+ * Bewusst AUSSERHALB jedes @layer: Die Animations-Utilities liegen in `@layer utilities` und würden
+ * eine Regel aus `@layer base` unabhängig von deren Spezifität überstimmen. Der Teilstring-Selektor
+ * trifft auch Varianten wie `motion-safe:animate-shimmer`. (Geprüft in src/ui/effects.test.tsx.)
+ */
+:root[data-effects="off"] [class*="animate-shimmer"],
+:root[data-effects="off"] [class*="animate-glow-pulse"] {
+  animation: none;
+}
+
+/* --- Eigene Utilities ---------------------------------------------------------------------- */
+
+/* Safe-Area-Abstände (iPhone-Notch, Home-Indikator) – wirksam dank viewport-fit=cover. */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+@utility px-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Goldener Verlauf für Schriftzüge (Logo, große Zahlen). */
+@utility text-gold-gradient {
+  background-image: linear-gradient(
+    180deg,
+    var(--color-gold-bright) 0%,
+    var(--color-gold) 58%,
+    #b48a35 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Zahlen in Statistiken: gleich breite Ziffern, damit nichts springt. */
+@utility numeric {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* Scrollbereich ohne sichtbare Leiste (z. B. horizontale Chip-Reihen). */
+@utility scrollbar-none {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

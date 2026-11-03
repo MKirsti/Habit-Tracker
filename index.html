@@ -2,11 +2,30 @@
 <html lang="de">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Questlog</title>
+    <meta
+      name="description"
+      content="Questlog – dein Habit-Tracker im Rollenspiel-Stil: Gewohnheiten als Quests erfüllen, Erfahrung sammeln, im Level aufsteigen und große Ziele als Kampagnen meistern."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0e0b08" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Questlog" />
+    <!-- Dunkler Hintergrund schon vor dem Laden des Stylesheets (kein weißes Aufblitzen). -->
+    <style>
+      html {
+        background-color: #0e0b08;
+        color-scheme: dark;
+      }
+    </style>
   </head>
   <body>
+    <noscript>Questlog benötigt JavaScript, um zu funktionieren.</noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

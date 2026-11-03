@@ -1,0 +1,49 @@
+import { Dexie, type Table } from 'dexie'
+import type { Completion, Habit, MainQuest } from '../domain/types'
+
+/** Ein Eintrag im Schlüssel-Wert-Speicher (`kv`). */
+export interface KeyValueEntry {
+  key: string
+  value: unknown
+}
+
+/** Schlüssel im `kv`-Speicher. */
+export const KV_KEYS = {
+  /** Wert: `CharacterProfile` (fehlt bis zum Abschluss des Onboardings). */
+  profile: 'profile',
+  /** Wert: (Teil-)`Settings`; wird beim Laden mit `DEFAULT_SETTINGS` gemergt. */
+  settings: 'settings',
+} as const
+
+/** Standardname der IndexedDB-Datenbank. */
+export const DEFAULT_DB_NAME = 'questlog'
+
+/**
+ * Die IndexedDB-Datenbank von Questlog.
+ *
+ * Indizes:
+ * - `habits`: `order` (Sortierung), `mainQuestId` (Verknüpfung mit Kampagnen)
+ * - `completions`: `habitId` (Kaskaden-Löschen), `day`
+ *
+ * Schemaänderungen immer über eine neue `version(n)` mit Upgrade-Funktion – niemals `version(1)` ändern.
+ */
+export class QuestlogDB extends Dexie {
+  habits!: Table<Habit, string>
+  completions!: Table<Completion, string>
+  mainQuests!: Table<MainQuest, string>
+  kv!: Table<KeyValueEntry, string>
+
+  /** @param name Datenbankname – Tests verwenden pro Test einen eigenen Namen. */
+  constructor(name: string = DEFAULT_DB_NAME) {
+    super(name)
+    this.version(1).stores({
+      habits: '&id, order, mainQuestId',
+      completions: '&id, habitId, day',
+      mainQuests: '&id',
+      kv: '&key',
+    })
+  }
+}
+
+/** Die Datenbank-Instanz der App. */
+export const db = new QuestlogDB()
