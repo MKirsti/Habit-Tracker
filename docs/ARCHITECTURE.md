@@ -827,3 +827,50 @@ export const GRAMMATICAL_FORMS                    // 'female' | 'male' | 'neutra
 - `phase3a.story.test.ts`: von Hand gerechnete Drei-Wochen-Geschichte (Abenteurerin → Magierin → Erzmagierin zu Wochenbeginn; Boss-HP und Schaden je Tag inkl. Schwäche; ein mitten in der Woche eingeplanter Ruhetag senkt die Boss-HP; Sieg am Donnerstag, danach zurückgenommen – der gespeicherte Sieg bleibt; Nachtragen des Sonntags am Montag besiegt den Vorwochen-Boss; Truhen je Tag mit Tageslimit; Öffnen, Gold und Vorrat; Neuladen in anderer Reihenfolge) mit nachgebautem Recorder, der bei jedem Speichern prüft, dass sich nichts rückwirkend ändert.
 - `phase3a.review.test.ts` (Domain): Abrechnung mit Truhen-Streak-Schutz = Vorschau, Boss-Beute je Held verschieden, Umbenennen, Laufzeit (drei Jahre mit je Tag einer Truhe und wöchentlichen Siegen: `deriveGameState` und eine Abrechnung über alles je ≈ 50–60 ms). `data/phase3a.review.test.ts`: jede Inhaltsart über die echte Datenbank (inkl. Ersatz-Gold bei vollem Vorrat), Upgrade von Version 4 mit echtem Verlauf, Backup hin und zurück (auch ein altes Backup aus Phase 2b).
 - Bekannte Grenzen: Ruhetage für die restliche Woche senken die Boss-HP sofort (ein so errungener, gespeicherter Sieg bleibt, auch wenn die Rast wieder gelöscht wird); derselbe Boss kann zwei Wochen in Folge kommen (3 je Thema); Titel/Rahmen an Level oder gemeisterten Kampagnen können wieder gesperrt werden (siehe oben).
+
+## Nachbesserungen 3a (vom Spieler abgesegnet)
+1. **Klassen-Trägheit (gegen Flackern):** Die Klasse der Vorwoche bleibt, solange sie noch annähernd passt – Hybrid (a, b) bleibt, wenn beide ≥ `classMinLevel`, |a − b| ≤ `hybridMaxLevelGap + 1` und kein anderes Attribut über dem niedrigeren der beiden liegt; Grundklasse (a) bleibt, solange a noch höchstes Attribut ist oder höchstens 1 Level hinter dem höchsten liegt (dann aber ein Hybrid mit genau diesem Paar nicht neu entstünde). Sonst gilt die normale Ermittlung. Rein und deterministisch über die Wochenfolge ab Abenteuerbeginn (effizient).
+2. **Boss-Vielfalt:** nie derselbe Boss in zwei aufeinanderfolgenden Wochen; jede 4. Woche (deterministisch per Hash, ca. 25 %) kommt der Boss aus dem Thema des zweitstärksten geplanten Attributs (falls vorhanden). Die Schwäche-Regel bleibt.
+3. **Kein unschaffbarer Boss:** `maxHp = max(min(bossMinHp, geplanter Schaden), round(bossHpShare × geplanter Schaden))` – nie mehr als der geplante Schaden.
+4. **Truhen-Gold halbiert:** `chests.gold` = common 10–25, uncommon 30–50; Ersatz-Gold ebenfalls halbiert (Freeze-Fallback 50, rare-Fallback 50, legendary-Fallback 75). Schon gespeicherte Truhen bleiben unverändert.
+5. **Keine weiteren Sprachformen** (Ränge, „Held bearbeiten“ usw. bleiben wie sie sind) – ausdrücklicher Wunsch des Spielers.
+
+## Phase 3b – Gefährten, Endgegner, Tagebuch, Wochenrückblick, Klang & Glanz (Vertrag)
+Typen: `src/domain/types.ts` (Abschnitt „Phase 3b“), Zahlen: `BALANCING.companion`.
+
+### Gefährte (`src/domain/companion.ts`, Inhalte `src/domain/companionDefinitions.ts`)
+- Arten: 🐉 Drache, 🦝 Waschbär, 🐍 Schlange, 🦉 Eule, 🦊 Fuchs (`COMPANIONS: Record<CompanionSpecies, CompanionDefinition>`, je 4 Stufen-Namen + Texte, Persönlichkeit). Wahl + Name im Profil (`CharacterProfile.companion`), jederzeit umbenennbar/wechselbar (Wachstum hängt nicht an der Art).
+- Stufe nach `totals.activeDays` (gesamt): ab 0 / 14 / 60 / 180 → 0–3. Schläft (nur Darstellung) in einer Durchhänger-Pause (laufende Pause laut Ledger/Vorschau) oder nach ≥ 3 Tagen ohne erledigte Quest. Geht nie verloren.
+- **Kampf:** An jedem **Perfekten Tag** der Boss-Woche ein Bonus-Treffer `round(perfectDayHitShare × Quest-Schaden dieses Tages)` (`AttackEvent.source 'companion'`, sourceId = Art). Zählt nicht in die geplanten Boss-HP.
+
+### Kampagnen-Endgegner (`src/domain/combat/endBoss.ts`, Inhalte `src/domain/combat/endBosses.ts`)
+- Das **letzte Kapitel** (Reihenfolge) jeder Kampagne ist ihr Endgegner (`MainQuestState.endBoss`). `awakened`, sobald alle anderen Kapitel erledigt sind; `maxHp = target`, `hp = max(0, target − current)` (manuell 1/0); `defeated` = Kapitel erledigt.
+- Endgegner je Vorlage und Pfad (`END_BOSSES: Record<string, EndBossDefinition>` mit Schlüsseln `scholar`, `body:strength`, `body:endurance`, `body:sports`, `alchemist`, `monk`, `earlyRiser`, `fortress`, `fellowship`, `polyglot`) plus ein allgemeiner für eigene Kampagnen (`custom`).
+- **Endgegner-Truhe:** je gemeisterter Kampagne `campaign:<questId>` (source `'campaign'`, foundDay = Abschlusstag, Seltenheit mindestens `rare`; Truhenfenster wie bei Kapiteln).
+
+### Tagebuch (`src/domain/chronicle/journal.ts`, rein)
+- `journalEvents(data, state, today): JournalEvent[]` – abgeleitete Ereignisse (neueste zuerst): Abenteuerbeginn, Level-Ups (Tag aus der XP-Zeitleiste), Klassenwechsel (Wochenbeginn), Kapitel (doneDay), Kampagne begonnen/gemeistert, Boss-Siege (gespeichert), Endgegner besiegt, Erfolge (Freischalttag), Niederlagen (Ledger), eingelöste Belohnungen, geöffnete Truhen, Gefährte gewählt/neue Stufe, Wochenrückblicke. Effizient (ein Durchlauf).
+- **Notizen:** `JournalNote` (eine pro Tag, Text ≤ 280, optionales Stimmungs-Emoji) – Tabelle `journalNotes '&day'`.
+
+### Wochenrückblick (`src/domain/chronicle/weeklyReview.ts`, Sätze `reviewLines.ts`)
+- `weeklyReview(data, state, weekStart)` für eine abgeschlossene Woche: XP, Vergleich zur Vorwoche (%), erledigte Quests, Perfekte Tage, bester Streak, stärkstes Attribut, Boss (Name, besiegt?), Ruhetage, ein ermutigender Satz (Auswahl nach Lage der Woche, deterministisch; nie beschämend – auch nach einer leeren Woche aufbauend).
+- `GameState.weeklyReview` = Rückblick der Vorwoche, solange `settings.weeklyReviewSeen` < dieser Woche und das Abenteuer vor der Vorwoche begann.
+
+### Daten
+- Dexie `version(6)`: `journalNotes '&day'`. Backup/Reset. Settings: `sound`, `haptics`, `companionIntroSeen`, `weeklyReviewSeen`.
+```ts
+setCompanion(choice | undefined)               // Art + Name (validiert), chosenDay bleibt beim Umbenennen
+saveJournalNote(day, { text, mood? }, today)   // leer → löschen; nur heute und vergangene Tage
+markWeeklyReviewSeen(weekStart) · markCompanionIntroSeen()
+```
+
+### Klang & Vibration (`src/features/sound/`)
+- `useGameSounds()` → `{ play(name: SoundName) }` mit `SoundName = 'check' | 'uncheck' | 'levelUp' | 'chest' | 'bossHit' | 'victory' | 'achievement' | 'evolve'`; Klänge per **Web Audio API synthetisiert** (keine Audiodateien), leise und angenehm. Nur wenn `settings.sound`. `vibrate(pattern)` über `navigator.vibrate`, nur wenn `settings.haptics` (iOS unterstützt das nicht – Hinweis in den Einstellungen). Beides standardmäßig aus.
+
+### UI
+- **Dashboard:** Gefährte klein im Helden-Kopf bzw. an der Boss-Karte (Emoji + Stufen-Glanz; schlafend mit 💤); Gefährten-Treffer in der Treffer-Anzeige („🦊 Flink springt mit an −8“); einmalige Karte „Neu: Gefährten“ → Auswahl; Wochenrückblick-Karte („Bericht des Gildenmeisters“) montags bis zum Wegklicken; kleiner Eintrag „Notiz zu heute“ (zugeklappt).
+- **Kampagne:** letztes Kapitel als Endgegner dargestellt (Boss-Name, Icon, eigener Lebensbalken, „erwacht“ erst wenn alle anderen Kapitel erledigt sind); Endgegner-Siegesszene statt bzw. vor der Kampagnen-Szene.
+- **Held:** Gefährten-Karte auf der Übersicht (Stufe, Fortschritt zur nächsten Stufe, Name ändern, Art wechseln); neuer Reiter **Tagebuch** (`?tab=tagebuch`): Zeitleiste nach Tagen gruppiert mit Ereignissen + Notizen, Notiz schreiben/bearbeiten, Filter (alle / nur Notizen), vergangene Wochenrückblicke. Reiterleiste auf dem Handy horizontal scrollbar.
+- **Feedback:** Entwicklungs-Szene (neue Stufe), Endgegner-Siegesszene; Klänge/Vibration an den passenden Stellen (Abhaken, Level-Up, Truhe, Boss-Treffer/Sieg, Erfolg, Entwicklung).
+- **Glanz:** Partikel beim Boss-Treffer, schönere Level-Up-Szene; alles respektiert „Effekte“ und reduzierte Bewegung.
+- **Einstellungen:** Schalter „Klänge“ und „Vibration“ (Standard aus).

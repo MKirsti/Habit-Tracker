@@ -73,9 +73,19 @@ export const BALANCING = {
     maxQuestChestsPerDay: 1,
     /** Gewichte der Seltenheiten (Summe 100). */
     rarityWeights: { common: 70, uncommon: 22, rare: 7, legendary: 1 },
-    gold: { common: [20, 50], uncommon: [60, 100] },
+    /** Halbiert (vom Spieler gewünscht): Truhen sollen das Gold-Gefüge nicht sprengen. */
+    gold: { common: [10, 25], uncommon: [30, 50] },
     /** Ersatz-Gold, wenn ein Streak-Schutz den vollen Vorrat überschreiten würde. */
     freezeFallbackGold: 100,
+  },
+  /** Gefährte (Phase 3b). */
+  companion: {
+    /** Stufe ab so vielen aktiven Tagen insgesamt: Jungtier, Gefährte, Erwachsen, Legendär. */
+    stageDays: [0, 14, 60, 180],
+    /** Bonus-Treffer an einem Perfekten Tag: Anteil des Quest-Schadens dieses Tages. */
+    perfectDayHitShare: 0.1,
+    /** Schläft nach so vielen Tagen ohne erledigte Quest (oder in einer Durchhänger-Pause). */
+    sleepAfterInactiveDays: 3,
   },
   /** Höchstens so viele aktive Kampagnen gleichzeitig (aktiv = nicht archiviert und nicht abgeschlossen). */
   maxActiveCampaigns: 3,

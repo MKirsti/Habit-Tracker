@@ -197,6 +197,8 @@ export interface CharacterProfile {
    * Umbenennen weder den Boss der Woche noch offene Truhen-Funde neu auswürfelt. Für Seiten nur lesend.
    */
   heroSeed?: string
+  /** Phase 3b: gewählter Gefährte. */
+  companion?: CompanionChoice
 }
 
 /** Sprachform für Klassen- und Titelnamen: Magierin / Magier / neutral (z. B. „Arkane Seele“). */
@@ -217,6 +219,14 @@ export interface Settings {
   hpIntroSeen?: boolean
   /** Die Einführung „Neu: Klassen, Bosse & Beute“ (Phase 3a) wurde gesehen. */
   combatIntroSeen?: boolean
+  /** Phase 3b: Klänge (Standard aus). */
+  sound?: boolean
+  /** Phase 3b: Vibration auf dem Handy (Standard aus). */
+  haptics?: boolean
+  /** Phase 3b: Einführung „Neu: Gefährten“ gesehen. */
+  companionIntroSeen?: boolean
+  /** Phase 3b: Montag der Woche, deren Wochenrückblick zuletzt gesehen/weggeklickt wurde. */
+  weeklyReviewSeen?: DayKey
 }
 
 /**
@@ -260,6 +270,8 @@ export interface GameData {
   sideQuests?: SideQuest[]
   /** Dauerhaft freigeschaltete Erfolge (einmal erreicht = für immer). Fehlt = keine. */
   achievementUnlocks?: AchievementUnlock[]
+  /** Tagebuch-Notizen (Phase 3b). Fehlt = keine. */
+  journalNotes?: JournalNote[]
   /** Besiegte Wochen-Bosse (Phase 3a, dauerhaft). Fehlt = keine. */
   bossVictories?: BossVictory[]
   /** Gefundene Truhen (Phase 3a, dauerhaft; Inhalt beim Fund festgelegt). Fehlt = keine. */
@@ -646,6 +658,8 @@ export interface MainQuestState {
    * `undefined`, wenn gar keine Quest dazugehört (die UI nutzt dann das Haupt-Attribut der Vorlage bzw. Gold).
    */
   dominantAttribute?: AttributeId
+  /** Phase 3b: Endgegner (letztes Kapitel); fehlt bei Kampagnen ohne Kapitel. */
+  endBoss?: EndBossState
 }
 
 export interface GameTotals {
@@ -713,6 +727,10 @@ export interface GameState {
   chests: Chest[]
   /** Freigeschaltete Titel und Rahmen. */
   cosmetics: { titles: string[]; frames: string[] }
+  /** Phase 3b: Gefährte (fehlt, solange keiner gewählt ist). */
+  companion?: CompanionState
+  /** Phase 3b: Wochenrückblick der Vorwoche – nur montags bis sonntags der neuen Woche, solange nicht gesehen. */
+  weeklyReview?: WeeklyReview
 }
 
 
@@ -770,7 +788,8 @@ export interface BossDefinition {
 
 export interface AttackEvent {
   day: DayKey
-  source: 'quest' | 'sideQuest'
+  /** 'companion' (Phase 3b): Bonus-Treffer des Gefährten an einem Perfekten Tag. */
+  source: 'quest' | 'sideQuest' | 'companion'
   /** habitId bzw. sideQuestId. */
   sourceId: string
   attribute: AttributeId
@@ -811,7 +830,7 @@ export interface BossVictory {
 }
 
 export type ChestRarity = 'common' | 'uncommon' | 'rare' | 'legendary'
-export type ChestSource = 'boss' | 'quest' | 'chapter'
+export type ChestSource = 'boss' | 'quest' | 'chapter' | 'campaign'
 export type ChestContent =
   | { kind: 'gold'; amount: number }
   | { kind: 'item'; itemId: 'streakFreeze' }
@@ -864,4 +883,109 @@ export interface FrameDefinition {
   rarity: ChestRarity
   /** Darstellung: Farben/Verlauf für den Ring (CSS-Farben). */
   colors: string[]
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 3b: Gefährten, Kampagnen-Endgegner, Tagebuch, Wochenrückblick
+// ---------------------------------------------------------------------------
+
+export type CompanionSpecies = 'dragon' | 'raccoon' | 'snake' | 'owl' | 'fox'
+
+export interface CompanionChoice {
+  species: CompanionSpecies
+  /** Vom Spieler vergeben, max. 20 Zeichen. */
+  name: string
+  /** Spieltag der Wahl. */
+  chosenDay: DayKey
+}
+
+export interface CompanionDefinition {
+  species: CompanionSpecies
+  /** z. B. "Drache". */
+  label: string
+  /** Emoji der Art. */
+  icon: string
+  /** 4 Stufen (0–3): Name (z. B. "Jungdrache", "Drache", "Großer Drache", "Uralter Drache") und kurzer Text. */
+  stages: { name: string; description: string }[]
+  /** Kurzbeschreibung der Persönlichkeit (für die Auswahl). */
+  personality: string
+}
+
+export interface CompanionState {
+  choice: CompanionChoice
+  definition: CompanionDefinition
+  /** 0 Jungtier · 1 Gefährte · 2 Erwachsen · 3 Legendär (nach `totals.activeDays`, `BALANCING.companion.stageDays`). */
+  stage: number
+  /** Aktive Tage bis zur nächsten Stufe (undefined auf der höchsten Stufe). */
+  daysToNextStage?: number
+  /** Schläft (nur Darstellung): in einer Durchhänger-Pause oder nach ≥ `sleepAfterInactiveDays` Tagen ohne Quest. */
+  sleeping: boolean
+}
+
+/** Endgegner einer Kampagne (letztes Kapitel). */
+export interface EndBossDefinition {
+  id: string
+  name: string
+  icon: string
+  description: string
+  defeatLine: string
+}
+
+export interface EndBossState {
+  definition: EndBossDefinition
+  /** Das letzte Kapitel (nach Reihenfolge) ist der Endgegner. */
+  chapterId: string
+  /** Erst „erwacht“, wenn alle anderen Kapitel abgeschlossen sind (davor nur angekündigt). */
+  awakened: boolean
+  /** HP = Ziel − Fortschritt des Kapitels (Manuell: 1/0). */
+  maxHp: number
+  hp: number
+  defeated: boolean
+}
+
+export type JournalEventKind =
+  | 'adventureStart' | 'levelUp' | 'classChange' | 'chapter' | 'campaignStart' | 'campaignComplete'
+  | 'bossVictory' | 'endBossVictory' | 'achievement' | 'defeat' | 'reward' | 'chestOpened'
+  | 'companionChosen' | 'companionStage' | 'weeklyReview'
+
+/** Automatischer Tagebuch-Eintrag (abgeleitet, nie gespeichert). */
+export interface JournalEvent {
+  day: DayKey
+  kind: JournalEventKind
+  /** Emoji. */
+  icon: string
+  /** Kurzer deutscher Satz, z. B. "Level 7 erreicht – Rang Wanderer". */
+  text: string
+  /** Optionale Zusatzzeile. */
+  detail?: string
+}
+
+/** Notiz des Spielers zu einem Tag (eine pro Tag). */
+export interface JournalNote {
+  day: DayKey
+  /** Max. 280 Zeichen. */
+  text: string
+  /** Optionales Stimmungs-Emoji. */
+  mood?: string
+  updatedAt: number
+}
+
+export interface WeeklyReview {
+  /** Montag der zurückblickten Woche. */
+  weekStart: DayKey
+  weekEnd: DayKey
+  xp: number
+  /** Veränderung gegenüber der Woche davor in Prozent (gerundet), undefined ohne Vergleichswoche. */
+  xpChangePercent?: number
+  questsCompleted: number
+  perfectDays: number
+  /** Bester Tages-Streak, der in dieser Woche erreicht/gehalten wurde. */
+  bestStreak: number
+  /** Attribut mit den meisten XP der Woche. */
+  topAttribute?: AttributeId
+  boss?: { name: string; icon: string; defeated: boolean }
+  restDays: number
+  /** Ein ermutigender Satz, passend zur Woche. */
+  line: string
 }
