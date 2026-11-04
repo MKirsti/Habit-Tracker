@@ -48,7 +48,8 @@ export const ATTRIBUTES: Record<AttributeId, AttributeMeta> = {
     short: 'CHA',
     icon: '🗣️',
     description: 'Freunde, Familie, Gespräche, Kreativität teilen',
-    color: '#e3a33b',
+    // Rosé: klar unterscheidbar vom App-Gold (XP, Belohnungen) und vom Stärke-Rot.
+    color: '#ec8fb0',
   },
   vitality: {
     id: 'vitality',

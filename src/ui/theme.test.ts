@@ -172,6 +172,12 @@ describe('Attribut- bzw. Kampagnenfarben', () => {
     }
   })
 
+  it('sind klar vom App-Gold verschieden – Gold bleibt für XP, Belohnungen und Siege reserviert', () => {
+    for (const id of ATTRIBUTE_IDS) {
+      expect(distance(ATTRIBUTES[id].color, token('gold')), id).toBeGreaterThanOrEqual(0.09)
+    }
+  })
+
   it('Weisheit (Silber/Eisblau) ist klar heller und viel weniger bunt als Intelligenz (Blau)', () => {
     const wisdom = ATTRIBUTES.wisdom.color
     const intellect = ATTRIBUTES.intellect.color
@@ -179,7 +185,7 @@ describe('Attribut- bzw. Kampagnenfarben', () => {
     expect(chroma(wisdom)).toBeLessThanOrEqual(chroma(intellect) / 2)
   })
 
-  it('folgen der Zuordnung Stärke Rot, Charisma Bernstein, Vitalität Grün, Intelligenz Blau, Weisheit Silber, Disziplin Violett', () => {
+  it('folgen der Zuordnung Stärke Rot, Charisma Rosé, Vitalität Grün, Intelligenz Blau, Weisheit Silber, Disziplin Violett', () => {
     // OKLCH-Farbton in Grad.
     const hue = (hex: string) => {
       const [, a, b] = oklab(hex)
@@ -187,7 +193,7 @@ describe('Attribut- bzw. Kampagnenfarben', () => {
     }
     const ranges: Record<AttributeId, [number, number]> = {
       strength: [15, 45],
-      charisma: [60, 90],
+      charisma: [335, 360],
       vitality: [130, 170],
       intellect: [230, 265],
       wisdom: [210, 265],

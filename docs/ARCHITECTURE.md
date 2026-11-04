@@ -409,13 +409,13 @@ Jede Kampagne hat eine **Hauptfarbe**: die Farbe des Attributs, das sie am stär
 | 💪 Stärke | Rot | `#e0654a` |
 | 🧠 Intelligenz | Blau | `#5b9bd5` |
 | 🧘 Weisheit | Silber/Eisblau | `#a9c6db` |
-| 🗣️ Charisma | Bernstein | `#e3a33b` |
+| 🗣️ Charisma | Rosé | `#ec8fb0` |
 | ❤️ Vitalität | Grün | `#5dbb7a` |
 | 🛡️ Disziplin | Violett | `#a28bd8` |
 
-`src/ui/theme.test.ts` sichert ab: beide Stellen stimmen überein; jede Farbe erreicht als Text auf allen Flächen (`bg-deep` … `surface-hover`) ≥ 4.5:1 (ermittelt 4.6–11.4:1); die Farben sind paarweise deutlich verschieden (OKLab ΔE ≥ 0.09, kleinster Abstand Intelligenz/Disziplin); Weisheit ist klar heller und höchstens halb so bunt wie Intelligenz; jede Farbe liegt in ihrem Farbton (Rot, Bernstein, Grün, Blau, Silber, Violett).
+`src/ui/theme.test.ts` sichert ab: beide Stellen stimmen überein; jede Farbe erreicht als Text auf allen Flächen (`bg-deep` … `surface-hover`) ≥ 4.5:1 (ermittelt 4.6–11.4:1); die Farben sind paarweise deutlich verschieden (OKLab ΔE ≥ 0.09, kleinster Abstand Intelligenz/Disziplin); Weisheit ist klar heller und höchstens halb so bunt wie Intelligenz; jede Farbe liegt in ihrem Farbton (Rot, Rosé, Grün, Blau, Silber, Violett).
 
-**Schrift auf getönten Flächen:** Pures Stärke-Rot läge auf seinem 12-%-Chip über `surface-raised` bei 4.3:1 (über `surface-hover` 3.9:1), Intelligenz-Blau knapp darüber. Deshalb ist getönte Schrift überall leicht mit Pergament aufgehellt (80 : 20, `TINT_TEXT_PERCENT`): `tintStyle` (Attribut-Chips, `Badge color`) im Design-System und `--accent-text` der Kampagnenfarben – dieselbe Mischung. Geprüft: Chips (12–13 %) auf allen Flächen und auf einer hervorgehobenen Karte (`theme.test.ts`), Kampagnen-Flächen und -Abzeichen (`campaignTheme.test.ts`), jeweils ≥ 4.5:1. Hinweis: Charisma-Bernstein liegt sehr nah am App-Gold (ΔE ≈ 0.02) – eine Charisma-Kampagne wirkt golden; Gold-Elemente (XP, Belohnung) bleiben über Form und Text unterscheidbar.
+**Schrift auf getönten Flächen:** Pures Stärke-Rot läge auf seinem 12-%-Chip über `surface-raised` bei 4.3:1 (über `surface-hover` 3.9:1), Intelligenz-Blau knapp darüber. Deshalb ist getönte Schrift überall leicht mit Pergament aufgehellt (80 : 20, `TINT_TEXT_PERCENT`): `tintStyle` (Attribut-Chips, `Badge color`) im Design-System und `--accent-text` der Kampagnenfarben – dieselbe Mischung. Geprüft: Chips (12–13 %) auf allen Flächen und auf einer hervorgehobenen Karte (`theme.test.ts`), Kampagnen-Flächen und -Abzeichen (`campaignTheme.test.ts`), jeweils ≥ 4.5:1. Charisma ist bewusst Rosé statt Bernstein: Bernstein lag fast auf dem App-Gold (ΔE ≈ 0.02), sodass eine Charisma-Kampagne golden gewirkt hätte; Gold bleibt so eindeutig für XP, Belohnungen und Siege.
 
 ### Welche Farbe eine Kampagne bekommt
 1. `MainQuestState.dominantAttribute` aus der Engine (Regel 6: Attribut mit den meisten planmäßigen XP pro Woche unter den heute aktiven Quests in `linkedHabitIds` – ist keine aktiv, unter allen angelegten; Gleichstand → zuerst sortierte Quest),

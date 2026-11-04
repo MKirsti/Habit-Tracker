@@ -68,13 +68,13 @@
    * stellt sicher, dass beide Stellen übereinstimmen, die Farben als Text auf allen Flächen ≥ 4.5:1
    * erreichen und sich deutlich voneinander unterscheiden. Sie sind zugleich die Kampagnenfarben
    * (Hauptfarbe = am stärksten trainiertes Attribut, siehe docs/ARCHITECTURE.md „Kampagnenfarben“).
-   * Stärke Rot · Intelligenz Blau · Weisheit Silber/Eisblau · Charisma Bernstein · Vitalität Grün ·
+   * Stärke Rot · Intelligenz Blau · Weisheit Silber/Eisblau · Charisma Rosé · Vitalität Grün ·
    * Disziplin Violett.
    */
   --color-attr-strength: #e0654a;
   --color-attr-intellect: #5b9bd5;
   --color-attr-wisdom: #a9c6db;
-  --color-attr-charisma: #e3a33b;
+  --color-attr-charisma: #ec8fb0;
   --color-attr-vitality: #5dbb7a;
   --color-attr-discipline: #a28bd8;
 
