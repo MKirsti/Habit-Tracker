@@ -579,3 +579,62 @@ recordAchievementUnlocks(unlocks: AchievementUnlock[]): Promise<void>
 - **Stufenfarben:** eine Quelle, `ACHIEVEMENT_TIER_COLORS` in `features/feedback/achievementTier.ts` (Meldung, Konfetti); die Erfolge-Seite übernimmt sie als `TIER_COLORS` (`pages/hero/achievementView.ts`).
 - **Fokus & Hinweise:** Verschwindet nach einer Aktion der fokussierte Button (Einlösen, Ausblenden, Rückgängig, abgehakte Nebenquest in der gekürzten Liste), springt der Fokus auf ein sinnvolles Nachbarziel (`pages/treasury/focus.ts`: `usePendingFocus`, `focusIsLost`; `ArchivedRewards` bleibt dafür immer eingehängt). Verschieben von Belohnungen wird per Live-Region angesagt. Reiter setzen `aria-controls` nur am gewählten Reiter. Ist auf dem Dashboard „Gestern“ gewählt, zeigt der Nebenquest-Bereich „Nebenquests zählen immer für heute.“ (`otherDaySelected`).
 - Offen: Der Lösch-Dialog von Quests nennt bisher nur XP; `deletionImpact.goldLost`/`goldAfter` stehen bereit.
+
+## Phase 2b – Lebenspunkte, Rast & Urlaub, Gegenstände, Statistik, Ruhmeshalle (Vertrag)
+
+Vom Spieler entschieden: Lebenspunkte als **Tageswertung** (nicht pro Quest!), mild und abschaltbar (Sanfter Modus); Niederlage kostet **15 %** Gold; Streak-Schutz wird **automatisch** eingesetzt; **kein** XP-Trank. Ziel: motivieren, nie stressen – auch mit 3 Kampagnen gleichzeitig.
+Typen: `src/domain/types.ts` (Abschnitte „Phase 2b“), Zahlen: `BALANCING.hpBase/hpPerLevel/hpByScore/absentAfterDays/defeatGoldLoss/items`.
+
+### Tageswertung & Abrechnung (`src/domain/hp.ts`, rein)
+- Pro Spieltag **eine** Wertung (`DayScore`), egal wie viele Quests/Kampagnen: Ruhetag/Urlaub → `rest`; keine Tagesquest fällig → `none`; mehr als `absentAfterDays` Tage in Folge (ohne Ruhetage) ohne jede erledigte Quest → `absent`; sonst nach Anteil erledigter **Tagesquests** (`requiredDone / requiredCount`): alle → `perfect`, ≥ 50 % → `good`, > 0 → `weak`, 0 → `missed`. **Wochenquests wirken nie** auf HP.
+- HP-Wirkung `BALANCING.hpByScore` (+10 / +2 / −3 / −6 / 0). Höchstens −6 pro Tag. Max-HP = `hpBase + hpPerLevel × Level` (Level 1 → 50).
+- **Abrechnung** (`settleDays(data, today): HpLedgerEntry[]` – liefert die NEU abzurechnenden Einträge): Tage von `max(settings.penalties.since, letzter Ledger-Tag + 1)` bis `heute − backfillDays − 1` (**Gnadenfrist**: gestern kann noch nachgetragen werden), chronologisch:
+  1. Wertung wie oben.
+  2. **Streak-Schutz:** bei `weak`/`missed` und Vorrat > 0 (gekaufte `streakFreeze` mit Kauftag ≤ Tag minus bereits verbrauchte) → `frozen: true`, keine HP-Wirkung, der Tag gilt für alle Streaks als Pause.
+  3. HP: Start = `hpAfter` des Vortags-Eintrags (bzw. Max-HP, wenn es keinen gibt oder der Vortag `penalties: false` hatte). `hpDelta` = Wertung (0 wenn frozen) + Heiltränke mit Kauftag = Tag (`items.healingPotion.heal` je Trank). **Level-Up** an diesem Tag (Level am Tagesende > Level am Vortagesende) → volle HP. `hpAfter = clamp(…, 0, maxHp)`.
+  4. **Niederlage:** `hpAfter ≤ 0` (nur mit Lebenspunkten) → `defeat.goldLost = floor(defeatGoldLoss × max(0, Gold-Guthaben zu diesem Zeitpunkt))`, danach `hpAfter = maxHp`. Level, XP, Streaks bleiben immer.
+  5. Sanfter Modus (`penalties.enabled === false`): `penalties: false`, `hpDelta 0`, nie Niederlage – Streak-Schutz wird trotzdem verbraucht (schützt Streaks).
+- Einmal gespeicherte Einträge ändern sich nie (spätere Bearbeitungen wirken nicht rückwirkend). Durch `absent` kann reine Abwesenheit nie zur Niederlage führen (max. 7 × −6 = −42 < 50).
+- **Abgeleiteter Zustand** (`GameState.hp`): `current` = letzter `hpAfter` (bzw. Max) + Heiltränke mit Kauftag nach dem letzten abgerechneten Tag; ist das Level jetzt höher als am letzten abgerechneten Tag → voll. `yesterday` = Vorschau für den noch nachtragbaren Vortag (Wertung, drohende Wirkung, `savedByFreeze`).
+- **Streaks/Streak-Bonus** behandeln abgerechnete `frozen`-Tage **und** einen von einem Streak-Schutz geretteten Vortag (Vorschau) wie Pausen; Ruhetage ebenso.
+
+### Rast & Urlaub
+- `RestPeriod {from, until}` (inklusive) global für alle Quests: An diesen Tagen ist keine Quest Pflicht (`isRequiredOn` false), Streaks überstehen sie (wie Pausen), keine HP-Wirkung. Quests können trotzdem erledigt werden (XP zählt). Wochen-Streaks: eine Woche mit Ruhetag bricht nie (zählt nur, wenn erfüllt). `GameState.restToday`.
+- Anlegen: frühestens ab `heute − backfillDays` (nicht weiter rückwirkend), auch in der Zukunft (Urlaub planen); höchstens 60 Tage am Stück; keine Überschneidungen (zusammenführen oder Fehler).
+
+### Gegenstände (Schatzkammer)
+- `Purchase.kind 'item'` mit `itemId`: ❄️ `streakFreeze` (150 Gold, Vorrat max. 5), 🧪 `healingPotion` (80 Gold, +20 HP, wird **sofort** getrunken; nur mit Lebenspunkten und wenn HP < Max). `GameState.inventory.streakFreezes` = gekauft − verbraucht.
+- Rückgängig: Gegenstände nur am selben Tag und nur, wenn noch nicht verbraucht/abgerechnet.
+
+### Erfolge / Gold
+- `GoldState.lostToDefeats` (Summe aus dem Ledger), `balance = earned − spent − lostToDefeats`.
+- Neue Stats: `defeats`, `perfectDaysAfterDefeat`, `freezesUsed`. Neuer (geheimer) Erfolg „Unbeugsam“: nach einer Niederlage einen Perfekten Tag schaffen.
+
+### Kapitel-Metrik „Bestwert“
+- `ChapterMetric 'best'`: höchster Tageswert einer messbaren Quest im Kampagnen-Zeitraum (z. B. „30 Minuten am Stück“); `doneDay` = erster Tag mit Wert ≥ Ziel. Nur für messbare Quests (Editor, Vorlagen-Test).
+
+### Statistik (`src/domain/statistics.ts`, rein) & Ruhmeshalle (`src/domain/hallOfFame.ts`)
+- Effiziente Tages-Historie (ein Durchlauf): pro Tag Pflicht/erledigt/XP/Ruhetag/Wertung; Wochen-XP; Erfüllungsquote pro Quest (letzte 30 Tage); Attributwerte für das Radar; XP-/Level-Verlauf; Heatmap-Daten gesamt und pro Quest.
+- Ruhmeshalle: für jede gemeisterte Kampagne (auch archivierte) Bilanz – Start, Abschlusstag (letzter Kapitel-`doneDay`), Dauer, Kapitel, erledigte Quest-Tage der zugehörigen Quests im Zeitraum, XP daraus, Belohnung.
+
+### Daten (`src/data`)
+- Dexie `version(4)`: `hpLedger '&day'`, `restPeriods '&id, from'`. Backup enthält beides (optional im Schema), `resetAllData` leert es.
+```ts
+settleHpDays(today): Promise<HpLedgerEntry[]>   // setzt penalties.since = today, falls noch nicht gesetzt (nie rückwirkend);
+                                                 // hängt settleDays(...) in EINER Transaktion an; idempotent
+setPenaltiesEnabled(enabled, today)              // Aus = Sanfter Modus; Wieder-Ein: since bleibt, HP starten beim nächsten
+                                                 // abgerechneten Tag wieder voll (Regel 3)
+addRestPeriod({ from, until, note? }, today) · updateRestPeriod(id, patch, today) · deleteRestPeriod(id, today)
+  // Löschen/Ändern nur für Tage, die noch nicht abgerechnet sind
+purchaseItem(itemId, today): Promise<Purchase>   // Guthaben, Vorrats-Grenze, Heiltrank-Bedingungen (deutsche Fehler)
+markHpIntroSeen()
+```
+
+### UI
+- **App:** `HpSettler` (in `src/app`, wie `AchievementRecorder`) ruft beim Start, beim Tageswechsel und bei Rückkehr in die App `settleHpDays(today)` auf.
+- **Dashboard:** HP-Balken unter dem XP-Balken im Helden-Kopf (nur mit Lebenspunkten; ruhiges Rot, keine Alarmfarben bei vollen HP); Vorschau für gestern im Tagespanel, freundlich formuliert („Gestern ist noch offen – trag nach, was du geschafft hast“ + drohende Wirkung bzw. „❄️ Ein Streak-Schutz fängt den Tag auf“); „Heute Ruhetag“-Aktion (mit Bestätigung) und Banner an Ruhetagen; einmalige Einführungskarte „Neu: Lebenspunkte“ (erklärt die milde Tageswertung, Link zu den Einstellungen).
+- **Feedback:** Niederlage-Szene (würdevoll, nicht beschämend: „Du bist gefallen – und stehst wieder auf“, verlorenes Gold, volle HP); kleine Meldungen für Heiltrank/Streak-Schutz-Einsatz.
+- **Schatzkammer:** Abschnitt „Gegenstände“ mit Streak-Schutz und Heiltrank (Preis, Vorrat, Kaufen, Hinweise).
+- **Einstellungen:** „Lebenspunkte“ (an/aus = Sanfter Modus, Erklärung der Tageswertung) und „Rast & Urlaub“ (Ruhetage/Urlaube planen, Liste, löschen).
+- **Held:** Reiter **Statistik** (`?tab=statistik`): Heatmap (Handy 26, Desktop 52 Wochen), XP pro Woche, Erfüllungsquote pro Quest, Attribut-Radar, XP-/Level-Verlauf, Kennzahlen (inkl. Niederlagen, Gold verdient/ausgegeben). Eigene SVG-Diagramme im Design der App (kein neues Paket).
+- **Kampagne:** Bereich **Ruhmeshalle** für gemeisterte Kampagnen mit Bilanz; Kapitel-Editor bietet „Bestwert“ (nur messbare Quests).

@@ -27,6 +27,20 @@ export const BALANCING = {
   streakBonusMax: 0.5,
   /** Gold-Belohnung für Erfolge je Stufe (Richtwerte für die Definitionen). */
   achievementGold: { bronze: 25, silver: 75, gold: 200 },
+  /** Lebenspunkte (Phase 2b): Max-HP = hpBase + hpPerLevel × Level (Level 1 → 50). */
+  hpBase: 45,
+  hpPerLevel: 5,
+  /** HP-Wirkung je Tageswertung (eine Wertung pro Tag; Wochenquests wirken nie). */
+  hpByScore: { perfect: 10, good: 2, weak: -3, missed: -6, rest: 0, none: 0, absent: 0 },
+  /** Ab so vielen Tagen in Folge ohne jede erledigte Quest gilt der Held als abwesend (kein weiterer Schaden). */
+  absentAfterDays: 7,
+  /** Anteil des Gold-Guthabens, der bei einer Niederlage verloren geht. */
+  defeatGoldLoss: 0.15,
+  /** Gegenstände der Schatzkammer. */
+  items: {
+    streakFreeze: { price: 150, max: 5 },
+    healingPotion: { price: 80, heal: 20 },
+  },
   /** Höchstens so viele aktive Kampagnen gleichzeitig (aktiv = nicht archiviert und nicht abgeschlossen). */
   maxActiveCampaigns: 3,
   /** Sicherheitsgrenze für Level-Berechnungen. */

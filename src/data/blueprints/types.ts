@@ -9,7 +9,7 @@
  * Pfade ("Klassenwahl"): Eine Vorlage kann mehrere Pfade anbieten, von denen der Held genau einen wählen muss
  * (z. B. Kraftsport / Ausdauer / Spielsport). Jeder Pfad liefert eigene Quests und Kapitel.
  */
-import type { AttributeId, BlueprintLevel, Difficulty, Measure, Schedule } from '../../domain/types'
+import type { AttributeId, BlueprintLevel, ChapterMetric, Difficulty, Measure, Schedule } from '../../domain/types'
 
 export type { BlueprintLevel } from '../../domain/types'
 
@@ -45,7 +45,7 @@ export type BlueprintCriterion =
   | { type: 'manual' }
   | { type: 'counter'; target: number; label: string }
   /** Verweist per `questKey` auf eine Quest derselben Vorlage (bzw. desselben Pfads). */
-  | { type: 'habit'; questKey: string; metric: 'completions' | 'total' | 'streak'; target: number }
+  | { type: 'habit'; questKey: string; metric: ChapterMetric; target: number }
 
 export interface BlueprintChapter {
   /** Max. 60 Zeichen. */

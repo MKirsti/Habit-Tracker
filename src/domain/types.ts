@@ -102,6 +102,12 @@ export interface Completion {
   updatedAt: number
 }
 
+/**
+ * - completions: Anzahl erledigter Tage · total: Summe aller Werte · streak: bester Streak
+ * - best (Phase 2b): höchster Tageswert einer messbaren Quest, z. B. "30 Minuten am Stück" (nur messbare Quests)
+ */
+export type ChapterMetric = 'completions' | 'total' | 'streak' | 'best'
+
 export type ChapterCriterion =
   /** Wird von Hand abgehakt. */
   | { type: 'manual' }
@@ -113,7 +119,7 @@ export type ChapterCriterion =
    * - total: Summe aller erfassten Werte (auch Teilfortschritte), z. B. Seiten gesamt
    * - streak: bester Streak (gleiche Logik wie Quest-Streaks)
    */
-  | { type: 'habit'; habitId: string; metric: 'completions' | 'total' | 'streak'; target: number }
+  | { type: 'habit'; habitId: string; metric: ChapterMetric; target: number }
 
 export interface Chapter {
   id: string
@@ -186,6 +192,14 @@ export interface Settings {
   dayStartHour: number
   /** Animationen & Effekte (Konfetti, Level-Up-Szene). */
   effects: boolean
+  /**
+   * Lebenspunkte (Phase 2b). `enabled: false` = Sanfter Modus (keine HP, kein Schaden, keine Niederlage).
+   * `since`: erster Spieltag, ab dem Tage abgerechnet werden (gesetzt beim ersten Abrechnen bzw. beim
+   * (Wieder-)Einschalten; davor wird nie rückwirkend abgerechnet).
+   */
+  penalties?: { enabled: boolean; since?: DayKey }
+  /** Die Einführung „Neu: Lebenspunkte“ wurde gesehen. */
+  hpIntroSeen?: boolean
 }
 
 /**
@@ -229,6 +243,57 @@ export interface GameData {
   sideQuests?: SideQuest[]
   /** Dauerhaft freigeschaltete Erfolge (einmal erreicht = für immer). Fehlt = keine. */
   achievementUnlocks?: AchievementUnlock[]
+  /** Endgültig abgerechnete Tage (Lebenspunkte, Streak-Schutz, Niederlagen) – Phase 2b. Fehlt = keine. */
+  hpLedger?: HpLedgerEntry[]
+  /** Urlaub und Ruhetage – Phase 2b. Fehlt = keine. */
+  restPeriods?: RestPeriod[]
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2b: Lebenspunkte, Rast & Urlaub, Gegenstände (gespeicherte Fakten)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wertung eines Spieltags (eine Wertung pro Tag, egal wie viele Quests/Kampagnen):
+ * - perfect: Perfekter Tag · good: ≥ 50 % der Tagesquests · weak: > 0 und < 50 % · missed: keine erledigt
+ * - rest: Ruhetag/Urlaub · none: keine Tagesquest fällig (nur Wochenquests o. Ä.) · absent: Abwesenheit
+ *   (ab dem 8. Tag in Folge ohne jede erledigte Quest – kein weiterer Schaden)
+ */
+export type DayScore = 'perfect' | 'good' | 'weak' | 'missed' | 'rest' | 'none' | 'absent'
+
+/**
+ * Ein endgültig abgerechneter Tag. Abgerechnet wird ein Tag erst, wenn er nicht mehr nachgetragen werden kann
+ * (Tag ≤ heute − backfillDays − 1). Einmal gespeichert, ändert er sich nie mehr – spätere Bearbeitungen wirken
+ * nicht rückwirkend auf Lebenspunkte oder Niederlagen.
+ */
+export interface HpLedgerEntry {
+  /** Abgerechneter Spieltag (eindeutig). */
+  day: DayKey
+  score: DayScore
+  /** Ein Streak-Schutz wurde an diesem Tag verbraucht (nur bei weak/missed): kein Schaden, Streaks überstehen den Tag. */
+  frozen: boolean
+  /** HP-Änderung des Tages (inkl. Heiltränke dieses Tages und Level-Up-Heilung); 0 im Sanften Modus. */
+  hpDelta: number
+  /** HP nach dem Tag (nach einer Niederlage: wieder voll). */
+  hpAfter: number
+  /** Max-HP an diesem Tag. */
+  maxHp: number
+  /** Gesetzt, wenn die HP an diesem Tag auf 0 fielen. */
+  defeat?: { goldLost: number }
+  /** Lebenspunkte waren an diesem Tag aktiv (sonst nur Streak-Schutz/Wertung). */
+  penalties: boolean
+}
+
+/** Urlaub bzw. Ruhetag: alle Quests pausieren (keine Pflicht, Streaks überstehen es, keine HP-Wirkung). */
+export interface RestPeriod {
+  id: string
+  /** Erster Tag (inklusive). */
+  from: DayKey
+  /** Letzter Tag (inklusive). */
+  until: DayKey
+  /** Optional, z. B. "Urlaub in Italien" oder "Krank". */
+  note?: string
+  createdAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +321,15 @@ export interface Reward {
  * Eine Gold-Ausgabe. Titel, Icon und Preis sind Momentaufnahmen – spätere Änderungen an der Belohnung ändern
  * die Chronik nicht. `kind` ist für Phase 2b erweiterbar (z. B. Gegenstände wie der Streak-Schutz).
  */
+export type ItemId = 'streakFreeze' | 'healingPotion'
+
 export interface Purchase {
   id: string
-  kind: 'reward'
+  /** 'reward' = eigene Belohnung; 'item' = Gegenstand (Phase 2b). */
+  kind: 'reward' | 'item'
   rewardId?: string
+  /** Nur bei kind 'item'. */
+  itemId?: ItemId
   title: string
   icon: string
   price: number
@@ -323,6 +393,12 @@ export interface AchievementStats {
    * aktiven Tag – die Zeit vor der allerersten Erledigung ist keine Pause (`achievements/evaluate.ts`).
    */
   comebacks: number
+  /** Anzahl Niederlagen (Phase 2b). */
+  defeats: number
+  /** Perfekte Tage NACH der ersten Niederlage (für "Unbeugsam"). */
+  perfectDaysAfterDefeat: number
+  /** Anzahl verbrauchter Streak-Schutz-Gegenstände. */
+  freezesUsed: number
 }
 
 export interface AchievementDefinition {
@@ -355,8 +431,35 @@ export interface GoldState {
   earned: number
   /** Summe aller Purchases. */
   spent: number
-  /** earned − spent. Kann nach nachträglichen Änderungen (z. B. gelöschte Quest) negativ werden. */
+  /** Durch Niederlagen verlorenes Gold (Summe `hpLedger[].defeat.goldLost`). */
+  lostToDefeats: number
+  /** earned − spent − lostToDefeats. Kann nach nachträglichen Änderungen (z. B. gelöschte Quest) negativ werden. */
   balance: number
+}
+
+export interface HpState {
+  /** Lebenspunkte aktiv (sonst Sanfter Modus – UI blendet HP aus). */
+  enabled: boolean
+  current: number
+  max: number
+  /** current / max, 0..1. */
+  ratio: number
+  /** Letzter endgültig abgerechneter Tag (falls vorhanden). */
+  settledThrough?: DayKey
+  /**
+   * Vorschau für gestern (noch nachtragbar): Wertung und drohende HP-Änderung, falls es so bleibt; ob ein
+   * Streak-Schutz ihn retten würde. undefined, wenn gestern nicht relevant ist (vor `since`, schon abgerechnet …).
+   */
+  yesterday?: { day: DayKey; score: DayScore; threatenedDelta: number; savedByFreeze: boolean }
+  /** Anzahl Niederlagen insgesamt. */
+  defeats: number
+  /** Letzte Niederlage (für die Szene). */
+  lastDefeat?: { day: DayKey; goldLost: number }
+}
+
+export interface InventoryState {
+  /** Vorrätige Streak-Schutz-Gegenstände (gekauft − verbraucht). */
+  streakFreezes: number
 }
 
 export interface AchievementState {
@@ -560,4 +663,9 @@ export interface GameState {
    * nach `order` und Titel –, danach die heute erledigten (nach `order`). Früher erledigte fehlen.
    */
   sideQuests: SideQuestState[]
+  /** Lebenspunkte (Phase 2b). */
+  hp: HpState
+  inventory: InventoryState
+  /** Heute ist Ruhetag/Urlaub. */
+  restToday: boolean
 }
