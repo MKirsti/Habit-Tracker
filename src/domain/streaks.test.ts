@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { addDays, compareDays, dayRange, isoWeekday, startOfWeek } from './dates'
 import { isPausedOn, scheduleOn } from './schedule'
-import { bestStreakIn, computeStreak, streakReachedDay, streakUnit } from './streaks'
+import { bestStreakIn, computeStreak, streakReachedDay, streakRunsBefore, streakUnit } from './streaks'
 import { daySet, daySetRange, makeHabit, seededRandom } from './testing'
 import type { DayKey, Habit, HabitPause, IsoWeekday, Schedule, ScheduleHistoryEntry, Streak } from './types'
 
@@ -645,5 +645,146 @@ describe('streakReachedDay', () => {
         expect(reached, `${habit.id} / ${target}`).toBe(expected)
       }
     }
+  })
+})
+
+describe('streakRunsBefore – Grundlage des Streak-Bonus', () => {
+  /** Serie vor genau einem Tag. */
+  const runBefore = (habit: Habit, done: ReadonlySet<DayKey>, day: DayKey) => streakRunsBefore(habit, done, [day])[0]
+
+  it('Tages-Einheit: Tag 1 einer Serie 0, Tag 2 1, … – der Tag selbst zählt nicht', () => {
+    const done = daySetRange('2026-10-01', '2026-10-20')
+    const days = dayRange('2026-10-01', '2026-10-21')
+    expect(streakRunsBefore(daily, done, days)).toEqual(days.map((_, i) => i))
+    // Ein offener Tag zeigt, was eine Erledigung jetzt brächte: die Serie davor.
+    expect(runBefore(daily, daySetRange('2026-10-01', '2026-10-04'), '2026-10-05')).toBe(4)
+  })
+
+  it('ein verpasster Plantag setzt auf 0 – auch wenn danach wieder erledigt wird', () => {
+    const done = new Set([...dayRange('2026-10-01', '2026-10-05'), ...dayRange('2026-10-07', '2026-10-09')])
+    expect(streakRunsBefore(daily, done, ['2026-10-06', '2026-10-07', '2026-10-08', '2026-10-10'])).toEqual([5, 0, 1, 3])
+  })
+
+  it('Wochentage: Nicht-Plantage werden übersprungen und zählen nicht – auch wenn dort erledigt', () => {
+    // Mo/Mi/Fr: Mo 02., Di 03. (kein Plantag), Mi 04., Fr 06., Mo 09.
+    const done = daySet('2026-11-02', '2026-11-03', '2026-11-04', '2026-11-06', '2026-11-09')
+    expect(streakRunsBefore(monWedFri, done, ['2026-11-03', '2026-11-04', '2026-11-06', '2026-11-09', '2026-11-11'])).toEqual([
+      1, 1, 2, 3, 4,
+    ])
+    // Fr 06. vergessen → Mo 09. beginnt neu (Sa/So brechen nichts, der Freitag schon)
+    expect(runBefore(monWedFri, daySet('2026-11-02', '2026-11-04', '2026-11-09'), '2026-11-09')).toBe(0)
+  })
+
+  it('Pausen werden übersprungen: zählen nicht und brechen nichts', () => {
+    const habit = makeHabit({ id: 'p', createdDay: '2026-10-01', pauses: [{ from: '2026-10-03', until: '2026-10-06' }] })
+    // Erledigt 01.–02., in der Pause nichts (bzw. am 04. trotzdem – zählt nicht), ab 06. wieder
+    const done = daySet('2026-10-01', '2026-10-02', '2026-10-04', '2026-10-06', '2026-10-07')
+    expect(streakRunsBefore(habit, done, ['2026-10-04', '2026-10-06', '2026-10-07', '2026-10-08'])).toEqual([2, 2, 3, 4])
+  })
+
+  it('vor dem Anlegen gibt es keine Serie (auch nicht in der ersten, angebrochenen Woche)', () => {
+    const habit = makeHabit({ id: 'n', createdDay: '2026-11-04', schedule: { type: 'weekly', times: 1 } })
+    const done = daySetRange('2026-10-01', '2026-11-08')
+    expect(streakRunsBefore(habit, done, ['2026-10-20', '2026-11-03', '2026-11-04', '2026-11-08', '2026-11-09'])).toEqual([
+      0, 0, 0, 0, 1,
+    ])
+    expect(runBefore(makeHabit({ id: 'd', createdDay: '2026-11-04' }), done, '2026-11-04')).toBe(0)
+  })
+
+  it('Wochen-Einheit: erfüllte Wochen vor der Woche des Tages; alle Tage einer Woche gleich', () => {
+    const weekly = makeHabit({ id: 'w', createdDay: '2026-11-02', schedule: { type: 'weekly', times: 2 } })
+    // KW 45 (02.–08.) erfüllt, KW 46 (09.–15.) erfüllt, KW 47 (16.–22.) nur 1×, KW 48 (23.–29.) erfüllt
+    const done = daySet('2026-11-02', '2026-11-05', '2026-11-10', '2026-11-11', '2026-11-18', '2026-11-23', '2026-11-24')
+    const week47 = dayRange('2026-11-16', '2026-11-22')
+    expect(streakRunsBefore(weekly, done, ['2026-11-02', '2026-11-08', '2026-11-09', '2026-11-15'])).toEqual([0, 0, 1, 1])
+    expect(streakRunsBefore(weekly, done, week47)).toEqual(week47.map(() => 2))
+    // Die nicht erfüllte KW 47 bricht die Serie; KW 48 beginnt bei 0, KW 49 bei 1
+    expect(streakRunsBefore(weekly, done, ['2026-11-23', '2026-11-29', '2026-11-30'])).toEqual([0, 0, 1])
+  })
+
+  it('Wochen-Einheit: Wochen mit Pausen brechen nichts, das Wochenziel gilt ab Montag', () => {
+    const weekly = makeHabit({
+      id: 'w',
+      createdDay: '2026-11-02',
+      schedule: { type: 'weekly', times: 1 },
+      // Am Mi 11.11. von 3× auf 1× gesenkt: KW 46 behält das Ziel 3
+      scheduleHistory: [{ until: '2026-11-11', schedule: { type: 'weekly', times: 3 } }],
+      pauses: [{ from: '2026-11-20', until: '2026-11-25' }],
+    })
+    // KW 45: 3× erfüllt · KW 46: nur 2× (Ziel vom Montag = 3) → bricht · KW 47: 1× (Ziel 1) erfüllt ·
+    // KW 48 (Pause bis Di 24.): nichts erledigt → bricht nichts · KW 49 bekommt die Serie aus KW 47
+    const done = daySet('2026-11-02', '2026-11-03', '2026-11-04', '2026-11-12', '2026-11-13', '2026-11-16')
+    expect(streakRunsBefore(weekly, done, ['2026-11-09', '2026-11-16', '2026-11-23', '2026-11-30'])).toEqual([1, 0, 1, 1])
+  })
+
+  it('folgt dem Rhythmus des jeweiligen Tages: nach einer Umstellung beginnt die Serie in der neuen Einheit', () => {
+    // Bis So 15.11. 1× pro Woche, ab Mo 16.11. täglich
+    const switched = makeHabit({
+      id: 's',
+      createdDay: '2026-11-02',
+      schedule: { type: 'daily' },
+      scheduleHistory: [{ until: '2026-11-16', schedule: { type: 'weekly', times: 1 } }],
+    })
+    const done = daySetRange('2026-11-02', '2026-11-20')
+    // Wochenphase: Wochen-Serie (KW 45 erfüllt → KW 46: 1). Tagesphase: Wochenquest-Tage sind keine Plantage → ab 0.
+    expect(streakRunsBefore(switched, done, ['2026-11-12', '2026-11-16', '2026-11-17', '2026-11-20'])).toEqual([1, 0, 1, 4])
+  })
+
+  it('archivierte Tage wirken wie eine Pause: der Bonus des Archivierungstags bleibt auch nach dem Zurückholen', () => {
+    // Heute (05.11.) erledigt und archiviert, am 10.11. zurückgeholt (Pause 05.–09.)
+    const done = daySetRange('2026-11-01', '2026-11-05')
+    const archived = makeHabit({ id: 'a', createdDay: '2026-11-01', archivedDay: '2026-11-05' })
+    const restored = makeHabit({ id: 'a', createdDay: '2026-11-01', pauses: [{ from: '2026-11-05', until: '2026-11-10' }] })
+    expect(streakRunsBefore(archived, done, ['2026-11-05', '2026-11-08'])).toEqual([4, 4])
+    expect(streakRunsBefore(restored, done, ['2026-11-05', '2026-11-08', '2026-11-10'])).toEqual([4, 4, 4])
+  })
+
+  it('akzeptiert Stichtage in beliebiger Reihenfolge und doppelt', () => {
+    const done = daySetRange('2026-10-01', '2026-10-10')
+    expect(streakRunsBefore(daily, done, ['2026-10-05', '2026-10-02', '2026-10-05', '2026-09-01'])).toEqual([4, 1, 4, 0])
+    expect(streakRunsBefore(daily, done, [])).toEqual([])
+  })
+
+  /**
+   * Die Quest, wie `computeStreak` sie zum Tag `day` sehen soll: Rhythmus des Tages als aktueller Rhythmus (die
+   * Einheit folgt bei `computeStreak` dem aktuellen), Verlauf nur bis `day`. Für alle Tage bis `day` gilt damit
+   * derselbe Rhythmus wie im Original.
+   */
+  function asOfDay(habit: Habit, day: DayKey): Habit {
+    const view: Habit = { ...habit, schedule: scheduleOn(habit, day) }
+    if (habit.scheduleHistory) view.scheduleHistory = habit.scheduleHistory.filter((entry) => compareDays(entry.until, day) <= 0)
+    return view
+  }
+
+  const before = (done: ReadonlySet<DayKey>, day: DayKey) => new Set([...done].filter((d) => compareDays(d, day) < 0))
+
+  it.each([false, true])(
+    'entspricht computeStreak: Tage = aktuelle Serie zum Tag ohne ihn, Wochen = Serie zum Montag (Verlauf & Pausen: %s)',
+    (timeline) => {
+      const random = seededRandom(timeline ? 5_2026 : 2_2026)
+      for (let i = 0; i < 300; i++) {
+        const { habit, done } = randomCase(random, timeline)
+        const days = dayRange(addDays(habit.createdDay, -3), addDays(habit.createdDay, 90))
+        const runs = streakRunsBefore(habit, done, days)
+        days.forEach((day, k) => {
+          const view = asOfDay(habit, day)
+          const monday = startOfWeek(day)
+          const expected =
+            view.schedule.type === 'weekly'
+              ? computeStreak(view, before(done, monday), monday).current
+              : computeStreak(view, before(done, day), day).current
+          expect(runs[k], `#${i} ${day} ${JSON.stringify(habit)}`).toBe(expected)
+        })
+      }
+    },
+  )
+
+  it('bleibt bei drei Jahren täglich linear schnell', () => {
+    const habit = makeHabit({ id: 'long', createdDay: '2024-01-01' })
+    const days = dayRange('2024-01-01', '2026-12-31')
+    const started = performance.now()
+    const runs = streakRunsBefore(habit, new Set(days), days)
+    expect(performance.now() - started).toBeLessThan(500)
+    expect(runs.at(-1)).toBe(days.length - 1)
   })
 })

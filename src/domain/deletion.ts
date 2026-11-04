@@ -10,7 +10,7 @@
  */
 import { deriveGameState } from './engine'
 import { isArchivedOn } from './schedule'
-import type { Chapter, DayKey, DeletedHabit, GameData, Habit, MainQuest } from './types'
+import type { Chapter, DayKey, DeletedHabit, GameData, GameState, Habit, MainQuest, MainQuestState } from './types'
 
 /**
  * Grabstein einer Quest, die am Spieltag `today` gelöscht wird. `archivedDay` ist der Archivierungstag,
@@ -67,28 +67,46 @@ export interface DeletionImpact {
   xpLost: number
   levelBefore: number
   levelAfter: number
+  /**
+   * Gold-Guthaben vorher − nachher (½ Gold pro verlorenem XP, dazu Gold noch nicht gespeicherter Erfolge, die
+   * danach nicht mehr erreicht sind); nie negativ. Ausgegebenes Gold bleibt ausgegeben.
+   */
+  goldLost: number
+  /** Gold-Guthaben nach dem Löschen – kann negativ werden (dann ist Einlösen gesperrt). */
+  goldAfter: number
   /** Betroffene Kampagnen (auch archivierte – ihre Kapitel-XP zählen ebenfalls), in gespeicherter Reihenfolge. */
   campaigns: CampaignDeletionImpact[]
 }
 
 /**
- * Exakte Auswirkung von `applyHabitDeletion(data, habitId, today)` auf den Spielstand zum Tag `today`:
- * verlorene XP (Quest-XP, Perfekter-Tag-Boni, Kapitel- und Kampagnen-XP) samt Level vorher/nachher und die
- * Kapitel, die ihren Abschluss oder Fortschritt verlieren.
+ * Alle Kampagnen eines Spielzustands in gespeicherter Reihenfolge: `deriveGameState` teilt sie (je in
+ * gespeicherter Reihenfolge) in nicht archivierte und archivierte – hier wieder zusammengeführt.
+ */
+function campaignsInStoredOrder(data: GameData, state: GameState): MainQuestState[] {
+  let active = 0
+  let archived = 0
+  return data.mainQuests.map((quest) =>
+    quest.archived === true ? state.archivedMainQuests[archived++] : state.mainQuests[active++],
+  )
+}
+
+/**
+ * Exakte Auswirkung von `applyHabitDeletion(data, habitId, today)` auf den Spielstand zum Tag `today` –
+ * `deriveGameState` vorher − nachher: verlorene XP (Quest-XP inklusive Streak-Bonus, Perfekter-Tag-Boni,
+ * Kapitel- und Kampagnen-XP) samt Level vorher/nachher, verlorenes Gold samt Guthaben danach und die Kapitel
+ * (auch archivierter Kampagnen), die ihren Abschluss oder Fortschritt verlieren.
  */
 export function deletionImpact(data: GameData, habitId: string, today: DayKey): DeletionImpact {
-  // Archivierte Kampagnen fehlen in `GameState.mainQuests`, zählen aber für XP – für die Aufzählung der
-  // betroffenen Kapitel werden sie hier wie aktive ausgewertet (an den XP ändert das nichts).
-  const withAllCampaigns = (input: GameData): GameData => ({
-    ...input,
-    mainQuests: input.mainQuests.map((quest) => (quest.archived === true ? { ...quest, archived: false } : quest)),
-  })
-  const before = deriveGameState(withAllCampaigns(data), today)
-  const after = deriveGameState(withAllCampaigns(applyHabitDeletion(data, habitId, today)), today)
+  const after = applyHabitDeletion(data, habitId, today)
+  const stateBefore = deriveGameState(data, today)
+  const stateAfter = deriveGameState(after, today)
+  // Löschen ändert keine Kampagne selbst – beide Listen stehen in derselben (gespeicherten) Reihenfolge.
+  const questsBefore = campaignsInStoredOrder(data, stateBefore)
+  const questsAfter = campaignsInStoredOrder(after, stateAfter)
 
   const campaigns: CampaignDeletionImpact[] = []
-  before.mainQuests.forEach((questBefore, index) => {
-    const questAfter = after.mainQuests[index]
+  questsBefore.forEach((questBefore, index) => {
+    const questAfter = questsAfter[index]
     const lostChapters: Chapter[] = []
     const openChapters: Chapter[] = []
     questBefore.chapters.forEach((chapterBefore, chapterIndex) => {
@@ -105,9 +123,11 @@ export function deletionImpact(data: GameData, habitId: string, today: DayKey): 
   })
 
   return {
-    xpLost: Math.max(0, before.level.totalXp - after.level.totalXp),
-    levelBefore: before.level.level,
-    levelAfter: after.level.level,
+    xpLost: Math.max(0, stateBefore.level.totalXp - stateAfter.level.totalXp),
+    levelBefore: stateBefore.level.level,
+    levelAfter: stateAfter.level.level,
+    goldLost: Math.max(0, stateBefore.gold.balance - stateAfter.gold.balance),
+    goldAfter: stateAfter.gold.balance,
     campaigns,
   }
 }

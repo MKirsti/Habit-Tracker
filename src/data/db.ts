@@ -1,5 +1,14 @@
 import { Dexie, type Table } from 'dexie'
-import type { BlueprintRef, Completion, Habit, MainQuest } from '../domain/types'
+import type {
+  AchievementUnlock,
+  BlueprintRef,
+  Completion,
+  Habit,
+  MainQuest,
+  Purchase,
+  Reward,
+  SideQuest,
+} from '../domain/types'
 
 /** Ein Eintrag im Schlüssel-Wert-Speicher (`kv`). */
 export interface KeyValueEntry {
@@ -20,11 +29,21 @@ export const KV_KEYS = {
 /** Standardname der IndexedDB-Datenbank. */
 export const DEFAULT_DB_NAME = 'questlog'
 
+/** Tabellen der Versionen 1 und 2 – nie ändern (neue Tabellen/Indizes nur über eine neue Version). */
 const SCHEMA = {
   habits: '&id, order, mainQuestId',
   completions: '&id, habitId, day',
   mainQuests: '&id',
   kv: '&key',
+} as const
+
+/** Ab Version 3 (Phase 2a): Schatzkammer, Gold-Ausgaben, Nebenquests, Erfolge. */
+const SCHEMA_V3 = {
+  ...SCHEMA,
+  rewards: '&id, order',
+  purchases: '&id, day',
+  sideQuests: '&id, order',
+  achievementUnlocks: '&id',
 } as const
 
 /** Titel der Kampagne, die das Onboarding vor der Kampagnen-Bibliothek angelegt hat. */
@@ -46,6 +65,7 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  * Indizes:
  * - `habits`: `order` (Sortierung), `mainQuestId` (Verknüpfung mit Kampagnen)
  * - `completions`: `habitId` (Kaskaden-Löschen), `day`
+ * - `rewards`, `sideQuests`: `order` (Sortierung); `purchases`: `day`
  *
  * Schemaänderungen immer über eine neue `version(n)` mit Upgrade-Funktion – niemals `version(1)` ändern.
  *
@@ -54,12 +74,19 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  * 2. Kampagnen-Bibliothek: Eine vorhandene "Der Weg des Gelehrten"-Kampagne (aus dem früheren Onboarding)
  *    bekommt ihre Herkunft `blueprint: { id: 'scholar', level: 'beginner' }` – damit sie in der Bibliothek als
  *    laufend gilt und nicht ein zweites Mal gestartet wird. Indizes unverändert.
+ * 3. Phase 2a: neue Tabellen `rewards` (Belohnungen der Schatzkammer), `purchases` (Gold-Ausgaben),
+ *    `sideQuests` (Nebenquests) und `achievementUnlocks` (freigeschaltete Erfolge). Sie starten leer;
+ *    vorhandene Daten bleiben unverändert.
  */
 export class QuestlogDB extends Dexie {
   habits!: Table<Habit, string>
   completions!: Table<Completion, string>
   mainQuests!: Table<MainQuest, string>
   kv!: Table<KeyValueEntry, string>
+  rewards!: Table<Reward, string>
+  purchases!: Table<Purchase, string>
+  sideQuests!: Table<SideQuest, string>
+  achievementUnlocks!: Table<AchievementUnlock, string>
 
   /** @param name Datenbankname – Tests verwenden pro Test einen eigenen Namen. */
   constructor(name: string = DEFAULT_DB_NAME) {
@@ -76,7 +103,26 @@ export class QuestlogDB extends Dexie {
             if (ref !== undefined) quest.blueprint = ref
           }),
       )
+    this.version(3).stores(SCHEMA_V3)
   }
+}
+
+/**
+ * Alle Tabellen der Datenbank – für Transaktionen, die `loadGameData` aufrufen (es liest alle Tabellen; eine
+ * verschachtelte Transaktion darf nur Tabellen der äußeren nutzen) oder alles ersetzen (Reset, Backup).
+ * Eine neue Tabelle gehört hier hinein.
+ */
+export function allTables(database: QuestlogDB) {
+  return [
+    database.habits,
+    database.completions,
+    database.mainQuests,
+    database.kv,
+    database.rewards,
+    database.purchases,
+    database.sideQuests,
+    database.achievementUnlocks,
+  ]
 }
 
 /** Die Datenbank-Instanz der App. */

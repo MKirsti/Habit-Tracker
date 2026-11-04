@@ -548,7 +548,10 @@ describe('deleteHabit – Grabsteine', () => {
   const D2 = '2026-11-01'
   const D1 = '2026-11-02'
 
-  /** Laufen (Mittel) an D-3…D-1 erledigt; Vokabeln (Leicht) heute (DAY) archiviert. */
+  /**
+   * Laufen (Mittel) an D-3…D-1 erledigt; Vokabeln (Leicht) heute (DAY) archiviert.
+   * Laufen bringt mit Streak-Bonus 20 + 21 (+5 %) + 22 (+10 %) = 63 XP.
+   */
   async function setup() {
     await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: D3 }, database)
     const running = await createHabit(checkDraft({ title: 'Laufen', difficulty: 'medium', attribute: 'strength' }), D3, database)
@@ -561,7 +564,7 @@ describe('deleteHabit – Grabsteine', () => {
   it('macht keinen vergangenen Tag perfekt und bringt keine XP (nie erledigte Pflicht-Quest)', async () => {
     const { vocabulary } = await setup()
     const before = deriveGameState(await loadGameData(database), DAY)
-    expect(before.level.totalXp).toBe(60)
+    expect(before.level.totalXp).toBe(63)
     expect(before.totals.perfectDays).toBe(0)
 
     await deleteHabit(vocabulary.id, DAY, database)
@@ -571,7 +574,7 @@ describe('deleteHabit – Grabsteine', () => {
       { id: vocabulary.id, createdDay: D3, archivedDay: DAY, schedule: { type: 'daily' } },
     ])
     const after = deriveGameState(data, DAY)
-    expect(after.level.totalXp).toBe(60)
+    expect(after.level.totalXp).toBe(63)
     expect(after.totals.perfectDays).toBe(0)
   })
 
@@ -579,12 +582,12 @@ describe('deleteHabit – Grabsteine', () => {
     const { vocabulary } = await setup()
     await toggleCompletion(vocabulary.id, D3, database)
     const before = deriveGameState(await loadGameData(database), DAY)
-    expect(before.level.totalXp).toBe(78)
+    expect(before.level.totalXp).toBe(81) // 63 + 10 (Vokabeln an D-3) + 8 (Perfekter Tag D-3: 25 % von 30)
     expect(before.totals.perfectDays).toBe(1)
 
     await deleteHabit(vocabulary.id, DAY, database)
     const after = deriveGameState(await loadGameData(database), DAY)
-    expect(after.level.totalXp).toBe(60)
+    expect(after.level.totalXp).toBe(63)
     expect(after.totals.perfectDays).toBe(0)
   })
 
@@ -1146,7 +1149,7 @@ describe('updateHabit – der heutige Eintrag folgt der Änderung', () => {
     await updateHabit(habit.id, { attribute: 'charisma' }, DAY, database)
     const { state } = await todayStatus(habit.id)
     expect(state.attributes.strength.totalXp).toBe(20) // gestern bleibt bei Stärke
-    expect(state.attributes.charisma.totalXp).toBe(20)
+    expect(state.attributes.charisma.totalXp).toBe(21) // heute: 20 + 5 % Streak-Bonus (Serie von 1 Tag davor)
   })
 
   it('Abhaken → messbar: erledigt bleibt erledigt (Wert = neues Ziel)', async () => {

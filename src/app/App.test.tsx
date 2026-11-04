@@ -50,7 +50,11 @@ describe('App-Rahmen', () => {
       .getAllByRole('link')
       .map((link) => link.textContent)
     expect(labels).toEqual(NAV_ITEMS.map((item) => item.label))
-    expect(NAV_ITEMS.map((item) => item.to)).toEqual(['/', '/quests', '/kampagne', '/held', '/einstellungen'])
+    expect(labels).toEqual(['Heute', 'Quests', 'Kampagne', 'Schätze', 'Held'])
+    expect(NAV_ITEMS.map((item) => item.sidebarLabel)).toEqual(['Heute', 'Quests', 'Kampagne', 'Schatzkammer', 'Held'])
+    expect(NAV_ITEMS.map((item) => item.to)).toEqual(['/', '/quests', '/kampagne', '/schatzkammer', '/held'])
+    // Die Einstellungen stehen nicht mehr in der Leiste (erreichbar über das Zahnrad der Held-Seite).
+    expect(within(bottomNav()).queryByRole('link', { name: /Einstellungen|Optionen/ })).not.toBeInTheDocument()
   })
 
   it('navigiert per Hash-Router zwischen den Seiten', async () => {
@@ -67,14 +71,48 @@ describe('App-Rahmen', () => {
   it.each([
     ['#/quests', 'Quests'],
     ['#/kampagne', 'Kampagne'],
+    ['#/schatzkammer', 'Schatzkammer'],
     ['#/held', 'Held'],
-    ['#/einstellungen', 'Einstellungen'],
   ])('öffnet die nachgeladene Seite %s direkt per Adresse', async (hash, title) => {
     window.location.hash = hash
     render(<App />)
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()
-    expect(within(bottomNav()).getByRole('link', { name: NAV_ITEMS.find((item) => `#${item.to}` === hash)?.label }))
-      .toHaveAttribute('aria-current', 'page')
+    expect(
+      within(bottomNav()).getByRole('link', { name: NAV_ITEMS.find((item) => `#${item.to}` === hash)?.label }),
+    ).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('öffnet die Einstellungen direkt per Adresse und hebt dabei „Held“ hervor', async () => {
+    window.location.hash = '#/einstellungen'
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Einstellungen' })).toBeInTheDocument()
+    const hero = within(bottomNav()).getByRole('link', { name: 'Held' })
+    // Optisch aktiv (Unterseite des Helden), aber nicht „aktuelle Seite“ – das ist die Einstellungen-Seite.
+    expect(hero).toHaveClass('text-gold-bright')
+    expect(hero).not.toHaveAttribute('aria-current')
+  })
+
+  it('erreicht die Einstellungen über das Zahnrad der Held-Seite und kommt zurück zum Helden', async () => {
+    const user = userEvent.setup()
+    window.location.hash = '#/held'
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Held' })
+    await user.click(screen.getByRole('link', { name: 'Einstellungen' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Einstellungen' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('#/einstellungen')
+
+    await user.click(screen.getByRole('link', { name: 'Zurück zum Helden' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Held' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('#/held')
+  })
+
+  it('navigiert zur Schatzkammer', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Heute' })
+    await user.click(within(bottomNav()).getByRole('link', { name: 'Schätze' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Schatzkammer' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('#/schatzkammer')
   })
 
   it('leitet unbekannte Adressen auf "Heute" um', async () => {

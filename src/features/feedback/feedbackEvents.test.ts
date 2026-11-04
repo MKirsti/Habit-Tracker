@@ -1,9 +1,34 @@
 import { describe, expect, it } from 'vitest'
 import { BALANCING } from '../../domain/balancing'
 import { deriveGameState } from '../../domain/engine'
-import { makeChapter, makeCompletion, makeGameData, makeHabit, makeMainQuest } from '../../domain/testing'
-import type { CharacterProfile, Completion, DayKey, GameData, GameState, Habit } from '../../domain/types'
-import { BULK_CHANGE_LIMIT, creditedCompletions, diffGameStates, feedbackStillHolds, isBulkChange } from './feedbackEvents'
+import {
+  makeAchievement,
+  makeChapter,
+  makeCompletion,
+  makeGameData,
+  makeHabit,
+  makeMainQuest,
+  makeSideQuest,
+} from '../../domain/testing'
+import type {
+  AchievementDefinition,
+  CharacterProfile,
+  Completion,
+  DayKey,
+  GameData,
+  GameState,
+  Habit,
+  SideQuest,
+} from '../../domain/types'
+import {
+  BULK_CHANGE_LIMIT,
+  creditedCompletions,
+  creditedSideQuests,
+  diffGameStates,
+  feedbackStillHolds,
+  goldForTotalXp,
+  isBulkChange,
+} from './feedbackEvents'
 import type { FeedbackEvent } from './feedbackEvents'
 
 const TODAY: DayKey = '2026-11-03'
@@ -90,6 +115,7 @@ describe('diffGameStates', () => {
         type: 'xp-gained',
         amount: 20,
         questXp: 20,
+        gold: 10,
         bonusXp: 0,
         quests: [{ id: 'read', title: 'Lesen', icon: '📖', xp: 20 }],
         backfill: false,
@@ -112,6 +138,7 @@ describe('diffGameStates', () => {
         type: 'xp-gained',
         amount: 80,
         questXp: 80,
+        gold: 40,
         bonusXp: 0,
         quests: [{ id: 'train', title: 'Krafttraining', icon: '🏋️', xp: 80 }],
         backfill: true,
@@ -126,7 +153,7 @@ describe('diffGameStates', () => {
     const before = game({ habits }, monday)
     const after = game({ habits, completions: [makeCompletion(running, '2026-11-01')] }, monday)
     expect(ofType(diffGameStates(before, after), 'xp-gained')).toEqual([
-      { type: 'xp-gained', amount: 40, questXp: 40, bonusXp: 0, quests: [], backfill: true },
+      { type: 'xp-gained', amount: 40, questXp: 40, gold: 20, bonusXp: 0, quests: [], backfill: true },
     ])
   })
 
@@ -161,21 +188,23 @@ describe('diffGameStates', () => {
   })
 
   it('erkennt einen Level-Up mit neuem Rang', () => {
-    // 4 × 80 + 2 × 20 = 360 XP (Level 2), an keinem Tag alle Pflicht-Quests erledigt.
+    // Training an Einzeltagen (kein Streak-Bonus): 4 × 80, Lesen 20 + 21 (Tag 2 der Serie: +5 %) = 361 XP
+    // (Level 2), an keinem Tag alle Pflicht-Quests erledigt.
     const past: Completion[] = [
-      ...['2026-10-28', '2026-10-29', '2026-10-30', '2026-10-31'].map((day) => makeCompletion(training, day)),
+      ...['2026-10-25', '2026-10-27', '2026-10-29', '2026-10-31'].map((day) => makeCompletion(training, day)),
       makeCompletion(reading, '2026-11-01'),
       makeCompletion(reading, YESTERDAY),
     ]
     const before = game({ completions: past })
-    const after = game({ completions: [...past, makeCompletion(training, TODAY)] }) // 440 XP → Level 3
-    expect(before.level.totalXp).toBe(360)
+    const after = game({ completions: [...past, makeCompletion(training, TODAY)] }) // 441 XP → Level 3
+    expect(before.level.totalXp).toBe(361)
     const [levelUp] = ofType(diffGameStates(before, after), 'level-up')
     expect(levelUp).toMatchObject({ from: 2, to: 3, rank: 'Lehrling', previousRank: 'Novize', rankChanged: true })
   })
 
   it('erkennt den Aufstieg eines Attributs', () => {
     const before = game({ completions: [makeCompletion(reading, YESTERDAY)] }) // Intelligenz 20 XP
+    // Heute: 21 XP (Tag 2 der Serie, +5 %) → 41 XP, Attribut-Level 2 braucht 40.
     const after = game({ completions: [makeCompletion(reading, YESTERDAY), makeCompletion(reading, TODAY)] })
     expect(ofType(diffGameStates(before, after), 'attribute-level-up')).toEqual([
       {
@@ -183,7 +212,7 @@ describe('diffGameStates', () => {
         attribute: 'intellect',
         from: 1,
         to: 2,
-        xpIntoLevel: 0,
+        xpIntoLevel: 1,
         xpForNextLevel: after.attributes.intellect.xpForNextLevel,
       },
     ])
@@ -199,11 +228,22 @@ describe('diffGameStates', () => {
         type: 'xp-gained',
         amount: 10,
         questXp: 10,
+        // 20 → 30 XP: 10 → 15 Gold (der Bonus des Perfekten Tages kommt danach).
+        gold: 5,
         bonusXp: 0,
         quests: [{ id: 'meditate', title: 'Meditieren', icon: '🧘', xp: 10 }],
         backfill: false,
       },
       { type: 'perfect-day', bonusXp: bonus, addedXp: bonus, today: true },
+      // Der erste Perfekte Tag schaltet den Erfolg „Makellos“ frei.
+      {
+        type: 'achievement-unlocked',
+        id: 'perfect-days-1',
+        title: 'Makellos',
+        icon: '✨',
+        tier: 'bronze',
+        gold: BALANCING.achievementGold.bronze,
+      },
     ])
   })
 
@@ -235,6 +275,8 @@ describe('diffGameStates', () => {
         type: 'xp-gained',
         amount: 40,
         questXp: 40,
+        // 25 → 65 XP: 12 → 32 Gold.
+        gold: 20,
         bonusXp: 0,
         quests: [{ id: 'run', title: 'Laufen', icon: '🏃', xp: 40 }],
         backfill: false,
@@ -304,6 +346,7 @@ describe('diffGameStates', () => {
           type: 'xp-gained',
           amount: 20,
           questXp: 20,
+          gold: 10,
           bonusXp: 0,
           quests: [{ id: 'mwf', title: 'Laufen', icon: '🏃', xp: 20 }],
           backfill: true,
@@ -320,6 +363,7 @@ describe('diffGameStates', () => {
           type: 'xp-gained',
           amount: 40,
           questXp: 40,
+          gold: 20,
           bonusXp: 0,
           quests: [{ id: 'run', title: 'Laufen', icon: '🏃', xp: 40 }],
           backfill: true,
@@ -335,6 +379,8 @@ describe('diffGameStates', () => {
           type: 'xp-gained',
           amount: 70,
           questXp: 70,
+          // 10 → 80 XP: 5 → 40 Gold.
+          gold: 35,
           bonusXp: 0,
           quests: [{ id: 'meditate', title: 'Meditieren', icon: '🧘', xp: 80 }],
           backfill: false,
@@ -423,7 +469,14 @@ describe('diffGameStates', () => {
           xp: BALANCING.mainQuestXp,
         },
       ])
-      expect(events.map((event) => event.type)).toEqual(['chapter-completed', 'campaign-completed', 'level-up'])
+      // Die erste gemeisterte Kampagne schaltet auch den Erfolg „Erster Triumph“ frei.
+      expect(events.map((event) => event.type)).toEqual([
+        'chapter-completed',
+        'campaign-completed',
+        'achievement-unlocked',
+        'level-up',
+      ])
+      expect(ofType(events, 'achievement-unlocked').map((event) => event.id)).toEqual(['campaigns-1'])
     })
 
     it('erkennt automatische Kapitel, die eine Quest-Erledigung abschließt', () => {
@@ -439,13 +492,18 @@ describe('diffGameStates', () => {
         mainQuests: [streakQuest],
         completions: [makeCompletion(reading, YESTERDAY), makeCompletion(reading, TODAY)],
       })
-      expect(diffGameStates(before, after).map((event) => event.type)).toEqual([
+      const events = diffGameStates(before, after)
+      expect(events.map((event) => event.type)).toEqual([
         'xp-gained',
         'chapter-completed',
         'campaign-completed',
         'attribute-level-up',
+        'achievement-unlocked',
+        'achievement-unlocked',
         'level-up',
       ])
+      // Erstes Kapitel und erste gemeisterte Kampagne – in Definitions-Reihenfolge.
+      expect(ofType(events, 'achievement-unlocked').map((event) => event.id)).toEqual(['chapters-1', 'campaigns-1'])
     })
 
     it('feiert neu angelegte oder wieder hervorgeholte Kampagnen nicht', () => {
@@ -499,6 +557,239 @@ describe('diffGameStates', () => {
       const after = game({ habits: [reading], completions })
       expect(after.totals.perfectDays - before.totals.perfectDays).toBe(4)
       expect(diffGameStates(before, after)).toEqual([])
+    })
+  })
+
+  describe('Gold im XP-Gewinn', () => {
+    it('nennt genau den Zuwachs des Golds aus XP – abgerundet auf den Gesamtstand, nicht auf den Gewinn', () => {
+      // Lesen an drei Tagen in Folge: 20 + 21 + 22 = 63 XP (31 Gold). Heute Tag 4 der Serie: +15 % → 23 XP.
+      const past = ['2026-10-31', '2026-11-01', YESTERDAY].map((day) => makeCompletion(reading, day))
+      const { prev, next, events } = step({ completions: past }, { completions: [...past, makeCompletion(reading, TODAY)] })
+      expect(prev.level.totalXp).toBe(63)
+      const [xp] = ofType(events, 'xp-gained')
+      expect(xp).toMatchObject({ amount: 23, gold: 12 }) // 86 XP → 43 Gold (nicht ⌊23 / 2⌋ = 11)
+      expect(xp.gold).toBe(next.gold.fromXp - prev.gold.fromXp)
+    })
+
+    it('zählt das Gold des Perfekter-Tag-Bonus nicht in den XP-Gewinn', () => {
+      const habits = [reading, meditation]
+      const { next, prev, events } = step(
+        { habits, completions: [makeCompletion(reading, TODAY)] },
+        { habits, completions: [makeCompletion(reading, TODAY), makeCompletion(meditation, TODAY)] },
+      )
+      const [xp] = ofType(events, 'xp-gained')
+      // 20 → 30 XP (Meditieren): 10 → 15 Gold. Der Bonus (+8 → 38 XP) bringt die restlichen 4 Gold.
+      expect(xp.gold).toBe(5)
+      expect(next.gold.fromXp - prev.gold.fromXp).toBe(9)
+    })
+
+    it('rechnet wie die Engine', () => {
+      for (const total of [0, 1, 2, 63, 86, 12_345]) {
+        const state = game({ completions: [] })
+        expect(goldForTotalXp(total)).toBe(Math.floor(total * BALANCING.goldPerXp))
+        expect(goldForTotalXp(state.level.totalXp)).toBe(state.gold.fromXp)
+      }
+    })
+  })
+
+  describe('Nebenquests', () => {
+    const taxes = makeSideQuest({
+      id: 'taxes',
+      title: 'Steuererklärung',
+      icon: '🧾',
+      attribute: 'discipline',
+      difficulty: 'hard',
+      createdDay: '2026-10-20',
+    })
+    const dentist = makeSideQuest({ id: 'dentist', title: 'Zahnarzt', icon: '🦷', difficulty: 'easy', order: 1 })
+
+    /** Wie `step`, aber mit Nebenquests und deren Zuordnung (wie in `GameFeedback`). */
+    function sideStep(before: SideQuest[], after: SideQuest[], extra: Partial<GameData> = {}) {
+      const prevData = makeGameData({ profile: PROFILE, habits: [reading, meditation, training], ...extra, sideQuests: before })
+      const nextData = makeGameData({ profile: PROFILE, habits: [reading, meditation, training], ...extra, sideQuests: after })
+      const prev = deriveGameState(prevData, TODAY)
+      const next = deriveGameState(nextData, TODAY)
+      const credits = [
+        ...creditedCompletions(prevData.completions, nextData.completions, nextData.habits, TODAY),
+        ...creditedSideQuests(prevData.sideQuests, nextData.sideQuests, TODAY),
+      ]
+      return { prev, next, events: diffGameStates(prev, next, credits) }
+    }
+
+    it('meldet eine erledigte Nebenquest als XP-Gewinn mit ihrem Titel', () => {
+      const { events } = sideStep([taxes], [{ ...taxes, doneDay: TODAY }])
+      expect(ofType(events, 'xp-gained')).toEqual([
+        {
+          type: 'xp-gained',
+          amount: 40,
+          questXp: 40,
+          gold: 20,
+          bonusXp: 0,
+          quests: [{ id: 'taxes', title: 'Steuererklärung', icon: '🧾', xp: 40, sideQuest: true }],
+          backfill: false,
+        },
+      ])
+    })
+
+    it('erkennt die Nebenquest auch ohne Daten (nur Zustände)', () => {
+      const { prev, next } = sideStep([taxes], [{ ...taxes, doneDay: TODAY }])
+      expect(ofType(diffGameStates(prev, next), 'xp-gained')).toMatchObject([
+        { amount: 40, backfill: false, quests: [{ id: 'taxes', title: 'Steuererklärung', sideQuest: true }] },
+      ])
+    })
+
+    it('meldet Quest und Nebenquest gemeinsam, wenn beide im selben Schritt erledigt werden', () => {
+      const prevData = makeGameData({ profile: PROFILE, habits: [reading, meditation, training], sideQuests: [taxes] })
+      const nextData: GameData = {
+        ...prevData,
+        completions: [makeCompletion(reading, TODAY)],
+        sideQuests: [{ ...taxes, doneDay: TODAY }],
+      }
+      const prev = deriveGameState(prevData, TODAY)
+      const next = deriveGameState(nextData, TODAY)
+      const credits = [
+        ...creditedCompletions(prevData.completions, nextData.completions, nextData.habits, TODAY),
+        ...creditedSideQuests(prevData.sideQuests, nextData.sideQuests, TODAY),
+      ]
+      const [xp] = ofType(diffGameStates(prev, next, credits), 'xp-gained')
+      expect(xp).toMatchObject({ amount: 60, questXp: 60, gold: 30 })
+      expect(xp.quests.map((quest) => quest.title)).toEqual(['Lesen', 'Steuererklärung'])
+    })
+
+    it('meldet nichts beim Wiedereröffnen oder Löschen – und nimmt den XP-Toast zurück', () => {
+      const done = { ...taxes, doneDay: TODAY }
+      const completed = sideStep([taxes], [done])
+      const [xp] = ofType(completed.events, 'xp-gained')
+      expect(feedbackStillHolds(xp, completed.next)).toBe(true)
+
+      const reopened = sideStep([done], [taxes])
+      expect(reopened.events).toEqual([])
+      expect(feedbackStillHolds(xp, reopened.next)).toBe(false)
+
+      const deleted = sideStep([done], [])
+      expect(deleted.events).toEqual([])
+      expect(feedbackStillHolds(xp, deleted.next)).toBe(false)
+    })
+
+    it('verwechselt eine Nebenquest nicht mit einer gleichnamigen ID einer Quest', () => {
+      const twin = makeSideQuest({ id: 'read', title: 'Buch zurückgeben', icon: '📕', difficulty: 'easy' })
+      const done = sideStep([twin], [{ ...twin, doneDay: TODAY }])
+      const [xp] = ofType(done.events, 'xp-gained')
+      expect(xp.quests).toEqual([{ id: 'read', title: 'Buch zurückgeben', icon: '📕', xp: 10, sideQuest: true }])
+      // Die Quest „Lesen“ (gleiche ID) ist heute nicht erledigt – der Toast stimmt trotzdem.
+      expect(feedbackStillHolds(xp, done.next)).toBe(true)
+    })
+
+    it('meldet die zusätzlichen XP, wenn eine erledigte Nebenquest schwerer wird', () => {
+      const done = { ...dentist, doneDay: TODAY }
+      const { events } = sideStep([done], [{ ...done, difficulty: 'hard' }])
+      expect(ofType(events, 'xp-gained')).toMatchObject([
+        { amount: 30, quests: [{ id: 'dentist', title: 'Zahnarzt', xp: 40, sideQuest: true }] },
+      ])
+    })
+
+    it('ignoriert Nebenquests, die erst nach heute erledigt sind (zurückgestellte Uhr)', () => {
+      expect(creditedSideQuests([taxes], [{ ...taxes, doneDay: '2026-11-04' }], TODAY)).toEqual([])
+      expect(creditedSideQuests(undefined, undefined, TODAY)).toEqual([])
+    })
+
+    it(`bleibt bei mehr als ${BULK_CHANGE_LIMIT} erledigten Nebenquests auf einmal stumm`, () => {
+      const quests = ['a', 'b', 'c', 'd'].map((id, order) => makeSideQuest({ id, order }))
+      const many = sideStep(quests, quests.map((quest) => ({ ...quest, doneDay: YESTERDAY })))
+      expect(isBulkChange(many.prev, many.next)).toBe(true)
+      expect(many.events).toEqual([])
+      const three = sideStep(quests, quests.map((quest, index) => (index < 3 ? { ...quest, doneDay: TODAY } : quest)))
+      expect(isBulkChange(three.prev, three.next)).toBe(false)
+      expect(ofType(three.events, 'xp-gained')).toHaveLength(1)
+    })
+  })
+
+  describe('Erfolge', () => {
+    const firstSideQuest = makeSideQuest({ id: 'taxes', title: 'Steuererklärung', icon: '🧾', difficulty: 'hard' })
+
+    function withAchievements(
+      definitions: readonly AchievementDefinition[],
+      overrides: Partial<GameData> = {},
+      today: DayKey = TODAY,
+    ): GameState {
+      return deriveGameState(
+        makeGameData({ profile: PROFILE, habits: [reading, meditation, training], ...overrides }),
+        today,
+        { achievements: definitions },
+      )
+    }
+
+    it('meldet einen neu freigeschalteten Erfolg mit Stufe und Gold-Belohnung', () => {
+      const before = game({ sideQuests: [firstSideQuest] })
+      const after = game({ sideQuests: [{ ...firstSideQuest, doneDay: TODAY }] })
+      const achievements = ofType(diffGameStates(before, after), 'achievement-unlocked')
+      expect(achievements).toEqual([
+        {
+          type: 'achievement-unlocked',
+          id: 'side-quests-1',
+          title: 'Abseits des Weges',
+          icon: '🧭',
+          tier: 'bronze',
+          gold: BALANCING.achievementGold.bronze,
+        },
+      ])
+      expect(feedbackStillHolds(achievements[0], after)).toBe(true)
+      // Wieder geöffnet, bevor die Freischaltung gespeichert wurde: Der Toast stimmt nicht mehr.
+      expect(feedbackStillHolds(achievements[0], before)).toBe(false)
+    })
+
+    it('meldet einen schon freigeschalteten Erfolg nicht erneut', () => {
+      const second = makeSideQuest({ id: 'second', order: 1 })
+      const before = game({ sideQuests: [{ ...firstSideQuest, doneDay: YESTERDAY }, second] })
+      const after = game({ sideQuests: [{ ...firstSideQuest, doneDay: YESTERDAY }, { ...second, doneDay: TODAY }] })
+      expect(ofType(diffGameStates(before, after), 'achievement-unlocked')).toEqual([])
+    })
+
+    it('bleibt still, wenn eine gespeicherte Freischaltung nur nachgetragen wird (AchievementRecorder)', () => {
+      const definitions = [makeAchievement('first', (stats) => stats.sideQuestsCompleted, 1)]
+      const done = [{ ...firstSideQuest, doneDay: TODAY }]
+      const unlocked = withAchievements(definitions, { sideQuests: done })
+      const recorded = withAchievements(definitions, { sideQuests: done, achievementUnlocks: [{ id: 'first', day: TODAY }] })
+      expect(diffGameStates(unlocked, recorded)).toEqual([])
+      // Gespeichert bleibt er freigeschaltet – auch wenn der Wert wieder sinkt; ein erneutes Erreichen feiert nichts.
+      const reopened = withAchievements(definitions, {
+        sideQuests: [firstSideQuest],
+        achievementUnlocks: [{ id: 'first', day: TODAY }],
+      })
+      const again = diffGameStates(reopened, recorded)
+      expect(ofType(again, 'xp-gained')).toHaveLength(1)
+      expect(ofType(again, 'achievement-unlocked')).toEqual([])
+    })
+
+    it(`gilt bei mehr als ${BULK_CHANGE_LIMIT} neuen Erfolgen auf einmal als Massenänderung`, () => {
+      const read = (stats: { sideQuestsCompleted: number }) => stats.sideQuestsCompleted
+      const four = ['a', 'b', 'c', 'd'].map((id) => makeAchievement(id, read, 1))
+      const before = withAchievements(four, { sideQuests: [firstSideQuest] })
+      const after = withAchievements(four, { sideQuests: [{ ...firstSideQuest, doneDay: TODAY }] })
+      expect(diffGameStates(before, after)).toEqual([])
+
+      const three = four.slice(0, 3)
+      const events = diffGameStates(
+        withAchievements(three, { sideQuests: [firstSideQuest] }),
+        withAchievements(three, { sideQuests: [{ ...firstSideQuest, doneDay: TODAY }] }),
+      )
+      expect(ofType(events, 'xp-gained')).toHaveLength(1)
+      expect(ofType(events, 'achievement-unlocked').map((event) => event.id)).toEqual(['a', 'b', 'c'])
+    })
+
+    it('bleibt beim Tageswechsel und beim ersetzten Profil still (wie alle Massenänderungen)', () => {
+      const definitions = [makeAchievement('days', (stats) => stats.adventureDay, 34)]
+      const before = withAchievements(definitions, {}, TODAY) // Tag 34 (seit 1.10.)
+      expect(before.achievements[0].unlocked).toBe(true)
+      const yesterday = withAchievements(definitions, {}, YESTERDAY)
+      expect(yesterday.achievements[0].unlocked).toBe(false)
+      expect(diffGameStates(yesterday, before)).toEqual([])
+    })
+
+    it('ignoriert Erfolge, die es vorher nicht gab (neue Definition nach einem Update)', () => {
+      const old = [makeAchievement('a', () => 1, 1)]
+      const updated = [...old, makeAchievement('b', () => 1, 1)]
+      expect(diffGameStates(withAchievements(old), withAchievements(updated))).toEqual([])
     })
   })
 })

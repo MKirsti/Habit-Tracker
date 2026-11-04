@@ -1,33 +1,47 @@
 /**
- * Erkennt aus zwei aufeinanderfolgenden Spielzuständen, was es zu feiern gibt (XP, Level-Up,
- * Attribut-Aufstieg, Perfekter Tag, Kapitel, Kampagne). Rein und ohne React – die Darstellung
+ * Erkennt aus zwei aufeinanderfolgenden Spielzuständen, was es zu feiern gibt (XP samt Gold, Level-Up,
+ * Attribut-Aufstieg, Perfekter Tag, Kapitel, Kampagne, Erfolg). Rein und ohne React – die Darstellung
  * übernimmt `GameFeedback`.
  *
  * Grundsätze:
  * - Nur Zuwächse zählen. Rückgänge (Abhaken rückgängig, Quest gelöscht) erzeugen keine Ereignisse.
  * - Massenänderungen (Tageswechsel, Backup-Wiederherstellung, Demo-Daten, anderes Profil) erzeugen
  *   gar keine Ereignisse – sonst würde z. B. ein Backup ein Feuerwerk aus Level-Ups auslösen.
+ *   Das gilt auch für Erfolge: Was beim ersten Laden (Ausgangszustand) oder durch eine Massenänderung
+ *   freigeschaltet ist, wird still übernommen.
  */
 import { ATTRIBUTE_IDS } from '../../domain/attributes'
 import { BALANCING } from '../../domain/balancing'
 import { compareDays, isValidDayKey } from '../../domain/dates'
 import { isDone, questXp } from '../../domain/schedule'
-import type { AttributeId, Completion, DayKey, GameState, Habit, LevelInfo, MainQuestState } from '../../domain/types'
+import type {
+  AchievementTier,
+  AttributeId,
+  Completion,
+  DayKey,
+  GameState,
+  Habit,
+  LevelInfo,
+  MainQuestState,
+  SideQuest,
+} from '../../domain/types'
 
 /**
- * Ändern sich in einem Schritt mehr als so viele Erledigungen (bzw. perfekte Tage oder Kapitel),
- * gilt die Änderung als Massenänderung (Backup, Demo-Daten …) und bleibt ohne Rückmeldung.
+ * Ändern sich in einem Schritt mehr als so viele Erledigungen (bzw. perfekte Tage, Nebenquests, Kapitel oder
+ * Erfolge), gilt die Änderung als Massenänderung (Backup, Demo-Daten …) und bleibt ohne Rückmeldung.
  */
 export const BULK_CHANGE_LIMIT = 3
 
-/** Eine Quest, die in diesem Schritt XP gebracht hat. */
+/** Eine Quest (bzw. Nebenquest), die in diesem Schritt XP gebracht hat. */
 export interface XpQuest {
   id: string
   title: string
   /** Emoji der Quest. */
   icon: string
-  /** XP der Erledigung (Schwierigkeit laut Snapshot). */
+  /** XP der Erledigung (Schwierigkeit laut Snapshot, ohne Streak-Bonus). */
   xp: number
+  /** true: eine Nebenquest (einmalige Aufgabe) statt einer Gewohnheit. */
+  sideQuest?: true
 }
 
 /**
@@ -42,8 +56,13 @@ export interface XpGainedEvent {
   type: 'xp-gained'
   /** Gesamt dieses Ereignisses: Quest-XP + `bonusXp`. */
   amount: number
-  /** XP aus erledigten Quests. */
+  /** XP aus erledigten Quests (inklusive Streak-Bonus) und Nebenquests. */
   questXp: number
+  /**
+   * Gold, das diese XP bringen (½ Gold pro XP, abgerundet auf den Gesamtstand): genau der Zuwachs von
+   * `gold.fromXp`, wenn sonst keine XP hinzukommen – sonst der Anteil dieser XP (zuerst gezählt).
+   */
+  gold: number
   /**
    * Zusätzliche Perfekter-Tag-Bonus-XP eines **vergangenen** Tages ohne eigenes Ereignis – z. B. eine
    * nachgetragene Wochenquest an einem schon perfekten Vortag (der Bonus wächst mit den Tages-XP).
@@ -120,6 +139,19 @@ export interface CampaignCompletedEvent {
   xp: number
 }
 
+/** Ein neu freigeschalteter Erfolg. */
+export interface AchievementUnlockedEvent {
+  type: 'achievement-unlocked'
+  /** ID der Erfolgs-Definition. */
+  id: string
+  title: string
+  /** Emoji des Erfolgs. */
+  icon: string
+  tier: AchievementTier
+  /** Gold-Belohnung des Erfolgs. */
+  gold: number
+}
+
 export type FeedbackEvent =
   | XpGainedEvent
   | LevelUpEvent
@@ -127,42 +159,56 @@ export type FeedbackEvent =
   | PerfectDayEvent
   | ChapterCompletedEvent
   | CampaignCompletedEvent
+  | AchievementUnlockedEvent
 
 /**
  * Massenänderung? Dann gibt es keine Rückmeldung, nur der neue Zustand wird zur Vergleichsbasis.
  * - anderer Spieltag (Tageswechsel, geänderter Tagesbeginn)
  * - anderer Abenteuertag am selben Spieltag → das Profil wurde ersetzt (Backup, Demo-Daten)
- * - mehr als `BULK_CHANGE_LIMIT` Erledigungen oder perfekte Tage auf einmal geändert
+ * - mehr als `BULK_CHANGE_LIMIT` Erledigungen, perfekte Tage oder erledigte Nebenquests auf einmal geändert
  */
 export function isBulkChange(prev: GameState, next: GameState): boolean {
   if (prev.today !== next.today) return true
   if (prev.adventureDay !== next.adventureDay) return true
   if (Math.abs(next.totals.questsCompleted - prev.totals.questsCompleted) > BULK_CHANGE_LIMIT) return true
   if (Math.abs(next.totals.perfectDays - prev.totals.perfectDays) > BULK_CHANGE_LIMIT) return true
+  if (Math.abs(next.totals.sideQuestsCompleted - prev.totals.sideQuestsCompleted) > BULK_CHANGE_LIMIT) return true
   return false
 }
 
 /**
  * Alle Rückmeldungen für den Schritt `prev` → `next`, in Anzeige-Reihenfolge:
- * XP, Perfekter Tag, Kapitel, Kampagnen, Attribute, Level-Up.
+ * XP, Perfekter Tag, Kapitel, Kampagnen, Attribute, Erfolge, Level-Up.
+ * Wie bei den Kapiteln gilt ein Schritt mit mehr als `BULK_CHANGE_LIMIT` neuen Erfolgen als Massenänderung.
  *
- * @param credits Die Erledigungen hinter dem XP-Gewinn (`creditedCompletions` aus den Daten beider
- *   Schritte). Ohne sie werden nur heute neu erledigte bzw. höher bewertete Quests erkannt.
+ * @param credits Die Erledigungen hinter dem XP-Gewinn (`creditedCompletions` und `creditedSideQuests` aus den
+ *   Daten beider Schritte). Ohne sie werden nur heute neu erledigte bzw. höher bewertete Quests und Nebenquests
+ *   erkannt.
  */
 export function diffGameStates(prev: GameState, next: GameState, credits?: readonly XpCredit[]): FeedbackEvent[] {
   if (prev === next || isBulkChange(prev, next)) return []
 
   const { chapters, campaigns } = campaignEvents(prev, next)
   if (chapters.length > BULK_CHANGE_LIMIT) return []
+  const achievements = achievementEvents(prev, next)
+  if (achievements.length > BULK_CHANGE_LIMIT) return []
 
   const perfect = perfectDayEvents(prev, next)
   const events: FeedbackEvent[] = []
   const xp = xpEvent(prev, next, perfect, credits ?? creditsFromToday(prev, next))
   if (xp) events.push(xp)
-  events.push(...perfect, ...chapters, ...campaigns, ...attributeEvents(prev, next))
+  events.push(...perfect, ...chapters, ...campaigns, ...attributeEvents(prev, next), ...achievements)
   const level = levelUpEvent(prev, next)
   if (level) events.push(level)
   return events
+}
+
+/**
+ * Gold aus XP bei `totalXp` Gesamt-XP – dieselbe Formel wie `gold.fromXp` in der Engine
+ * (floor(XP × goldPerXp), mit Toleranz gegen Gleitkomma-Rauschen).
+ */
+export function goldForTotalXp(totalXp: number): number {
+  return Math.max(0, Math.floor(totalXp * BALANCING.goldPerXp + 1e-9))
 }
 
 // ---------------------------------------------------------------------------
@@ -175,27 +221,41 @@ function xpEvent(
   perfect: readonly PerfectDayEvent[],
   credits: readonly XpCredit[],
 ): XpGainedEvent | undefined {
-  const gained = next.totals.xpFromQuests - prev.totals.xpFromQuests
+  // Quest-XP (inkl. Streak-Bonus) und Nebenquest-XP – jede Quelle zählt nur, wenn sie gewachsen ist.
+  const gained =
+    Math.max(0, next.totals.xpFromQuests - prev.totals.xpFromQuests) +
+    Math.max(0, next.totals.xpFromSideQuests - prev.totals.xpFromSideQuests)
   if (gained <= 0) return undefined
   // Was die Perfekter-Tag-Ereignisse melden (heute: den Zuwachs), zählt nicht noch einmal als Bonus.
   const reportedBonus = perfect.reduce((sum, event) => sum + event.addedXp, 0)
   const bonusXp = Math.max(0, next.totals.xpFromPerfectDays - prev.totals.xpFromPerfectDays - reportedBonus)
+  const amount = gained + bonusXp
   const today = credits.filter((credit) => credit.day === next.today)
   const backfill = today.length === 0
   const quests = uniqueQuests(backfill ? credits : today)
-  return { type: 'xp-gained', amount: gained + bonusXp, questXp: gained, bonusXp, quests, backfill }
+  // Gold dieser XP, gezählt vor allen anderen XP des Schritts (Perfekter Tag, Kapitel): Kommen keine dazu,
+  // ist das genau der Zuwachs des Guthabens aus XP.
+  const base = prev.level.totalXp
+  const gold = Math.max(0, goldForTotalXp(base + amount) - goldForTotalXp(base))
+  return { type: 'xp-gained', amount, questXp: gained, gold, bonusXp, quests, backfill }
 }
 
 /** Jede Quest nur einmal (die erste Erledigung zählt), ohne den Tag. */
 function uniqueQuests(credits: readonly XpCredit[]): XpQuest[] {
   const seen = new Set<string>()
   const quests: XpQuest[] = []
-  for (const { id, title, icon, xp } of credits) {
-    if (seen.has(id)) continue
-    seen.add(id)
-    quests.push({ id, title, icon, xp })
+  for (const { day: _day, ...quest } of credits) {
+    const key = questKey(quest)
+    if (seen.has(key)) continue
+    seen.add(key)
+    quests.push(quest)
   }
   return quests
+}
+
+/** Eindeutiger Schlüssel einer Quest bzw. Nebenquest (getrennte Tabellen, getrennte IDs). */
+export function questKey(quest: Pick<XpQuest, 'id' | 'sideQuest'>): string {
+  return `${quest.sideQuest ? 'side' : 'habit'}:${quest.id}`
 }
 
 /**
@@ -228,6 +288,36 @@ export function creditedCompletions(
   return credits
 }
 
+/**
+ * Die Nebenquests, die im Schritt `before` → `after` XP gebracht haben: bis `today` neu erledigt oder (schon
+ * erledigt) mit höherer Schwierigkeit als vorher. `day` ist ihr Erledigungstag.
+ */
+export function creditedSideQuests(
+  before: readonly SideQuest[] | undefined,
+  after: readonly SideQuest[] | undefined,
+  today: DayKey,
+): XpCredit[] {
+  if (before === after || after === undefined) return []
+  const previous = new Map<string, SideQuest>()
+  for (const quest of before ?? []) previous.set(quest.id, quest)
+  const credits: XpCredit[] = []
+  for (const quest of after) {
+    const doneDay = sideQuestDoneDay(quest, today)
+    if (doneDay === undefined) continue
+    const xp = questXp(quest.difficulty)
+    const old = previous.get(quest.id)
+    if (old && sideQuestDoneDay(old, today) !== undefined && questXp(old.difficulty) >= xp) continue
+    credits.push({ id: quest.id, title: quest.title, icon: quest.icon, xp, day: doneDay, sideQuest: true })
+  }
+  return credits
+}
+
+/** Erledigungstag einer Nebenquest, wenn sie zum Stichtag erledigt ist (wie in der Engine), sonst undefined. */
+function sideQuestDoneDay(quest: SideQuest, today: DayKey): DayKey | undefined {
+  const { doneDay } = quest
+  return doneDay !== undefined && isValidDayKey(doneDay) && compareDays(doneDay, today) <= 0 ? doneDay : undefined
+}
+
 /** Pro Quest und Tag die zuletzt geänderte Erledigung (wie die Engine bei doppelten Einträgen). */
 function latestPerQuestAndDay(completions: readonly Completion[]): Map<string, Completion> {
   const latest = new Map<string, Completion>()
@@ -241,8 +331,8 @@ function latestPerQuestAndDay(completions: readonly Completion[]): Map<string, C
 }
 
 /**
- * Ohne Daten (nur Zustände): heute neu erledigte bzw. höher bewertete Quests aus der Tagesansicht.
- * Nachgetragene Quests lassen sich so nicht bestimmen.
+ * Ohne Daten (nur Zustände): heute neu erledigte bzw. höher bewertete Quests aus der Tagesansicht und heute
+ * erledigte Nebenquests. Nachgetragene Quests lassen sich so nicht bestimmen.
  */
 function creditsFromToday(prev: GameState, next: GameState): XpCredit[] {
   const before = new Map(prev.todayState.habits.map((status) => [status.habit.id, status]))
@@ -250,10 +340,18 @@ function creditsFromToday(prev: GameState, next: GameState): XpCredit[] {
   for (const status of next.todayState.habits) {
     if (!status.done) continue
     // Maßgeblich ist die Schwierigkeit zum Zeitpunkt der Erledigung (Snapshot).
-    const xp = status.completion ? questXp(status.completion.difficulty) : status.xp
+    const xp = status.completion ? questXp(status.completion.difficulty) : status.baseXp
     const old = before.get(status.habit.id)
-    if (old?.done && (old.completion ? questXp(old.completion.difficulty) : old.xp) >= xp) continue
+    if (old?.done && (old.completion ? questXp(old.completion.difficulty) : old.baseXp) >= xp) continue
     credits.push({ id: status.habit.id, title: status.habit.title, icon: status.habit.icon, xp, day: next.today })
+  }
+  const sideBefore = new Map(prev.sideQuests.map((state) => [state.quest.id, state]))
+  for (const state of next.sideQuests) {
+    if (!state.done) continue
+    const old = sideBefore.get(state.quest.id)
+    if (old?.done && old.xp >= state.xp) continue
+    const { id, title, icon, doneDay } = state.quest
+    credits.push({ id, title, icon, xp: state.xp, day: doneDay ?? next.today, sideQuest: true })
   }
   return credits
 }
@@ -345,6 +443,27 @@ function attributeEvents(prev: GameState, next: GameState): AttributeLevelUpEven
   return events
 }
 
+/** Neu freigeschaltete Erfolge (vorher bekannt und gesperrt, jetzt freigeschaltet), in Definitions-Reihenfolge. */
+function achievementEvents(prev: GameState, next: GameState): AchievementUnlockedEvent[] {
+  const before = new Map<string, boolean>()
+  for (const achievement of prev.achievements) before.set(achievement.definition.id, achievement.unlocked)
+  const events: AchievementUnlockedEvent[] = []
+  for (const { definition, unlocked } of next.achievements) {
+    // Nur vorher gesperrte: Ein Erfolg ohne Vorgänger (neue Definition) ist kein Fortschritt.
+    if (!unlocked || before.get(definition.id) !== false) continue
+    const reward = definition.goldReward
+    events.push({
+      type: 'achievement-unlocked',
+      id: definition.id,
+      title: definition.title,
+      icon: definition.icon,
+      tier: definition.tier,
+      gold: Number.isFinite(reward) && reward > 0 ? reward : 0,
+    })
+  }
+  return events
+}
+
 function levelUpEvent(prev: GameState, next: GameState): LevelUpEvent | undefined {
   if (next.level.level <= prev.level.level) return undefined
   return {
@@ -373,8 +492,10 @@ export function feedbackStillHolds(event: FeedbackEvent, state: GameState): bool
   switch (event.type) {
     case 'xp-gained': {
       if (event.backfill) return true
-      const doneToday = new Set(state.todayState.habits.filter((status) => status.done).map((status) => status.habit.id))
-      return event.quests.every((quest) => doneToday.has(quest.id))
+      const done = new Set<string>()
+      for (const status of state.todayState.habits) if (status.done) done.add(questKey({ id: status.habit.id }))
+      for (const side of state.sideQuests) if (side.done) done.add(questKey({ id: side.quest.id, sideQuest: true }))
+      return event.quests.every((quest) => done.has(questKey(quest)))
     }
     case 'perfect-day':
       return !event.today || state.todayState.perfect
@@ -388,5 +509,7 @@ export function feedbackStillHolds(event: FeedbackEvent, state: GameState): bool
       return state.attributes[event.attribute].level >= event.to
     case 'level-up':
       return state.level.level >= event.to
+    case 'achievement-unlocked':
+      return state.achievements.some((achievement) => achievement.definition.id === event.id && achievement.unlocked)
   }
 }

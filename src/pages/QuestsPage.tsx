@@ -4,19 +4,38 @@ import type { Ref } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
 import { deleteHabit, moveHabit, restoreHabit } from '../data/repository'
-import type { Habit, MainQuest, Streak } from '../domain/types'
+import type { Habit, MainQuest, SideQuest, Streak } from '../domain/types'
 import { campaignColor } from '../features/campaignTheme'
 import { Button, EmptyState, PageHeader, SectionTitle, buttonClassName, cn, formatNumber, useToast } from '../ui'
 import { ArchivedQuests } from './quests/ArchivedQuests'
-import { questEditButtonId } from './quests/domIds'
+import { questEditButtonId, sideQuestEditButtonId } from './quests/domIds'
 import { errorMessage } from './quests/errors'
 import { HabitFormDialog } from './quests/HabitFormDialog'
 import { buildHabitStats, habitStreak, isArchivedOn } from './quests/questStats'
 import { QuestRow } from './quests/QuestRow'
 import type { MoveDirection } from './quests/QuestRow'
+import { QUEST_TAB_PARAM, questPanelId, questTabFromParam, questTabId } from './quests/questTabIds'
+import type { QuestTabId } from './quests/questTabIds'
+import { QuestTabs } from './quests/QuestTabs'
+import { SideQuestFormDialog } from './quests/SideQuestFormDialog'
+import { SideQuestPanel } from './quests/SideQuestPanel'
 
 /** Was der Quest-Dialog gerade zeigt. Bleibt beim Schließen erhalten (für die Ausblend-Animation). */
 type FormTarget = { mode: 'create'; mainQuestId?: string } | { mode: 'edit'; habitId: string }
+
+/** Was der Nebenquest-Dialog gerade zeigt (bleibt beim Schließen erhalten). */
+type SideFormTarget = { mode: 'create' } | { mode: 'edit'; questId: string }
+
+/** Fokus nach Aktionen im Reiter „Nebenquests“, sobald die Live-Daten sie zeigen. */
+interface PendingSideFocus {
+  questId: string
+  until: 'created' | 'deleted'
+}
+
+const SUBTITLES: Record<QuestTabId, string> = {
+  habits: 'Deine Gewohnheiten: anlegen, ordnen, anpassen – oder ins Archiv legen.',
+  side: 'Einmalige Aufgaben mit XP: anlegen, erledigen, anpassen.',
+}
 
 /**
  * Fokus nach Aktionen, die erst mit den nächsten Live-Daten sichtbar werden:
@@ -45,8 +64,11 @@ function compareByArchivedDay(a: Habit, b: Habit): number {
 }
 
 /**
- * Quest-Verwaltung (`/quests`): aktive Quests ordnen und bearbeiten, neue anlegen, archivierte
- * zurückholen oder endgültig löschen. Deep-Link `/quests?neu=1&kampagne=<id>` öffnet den Anlege-Dialog.
+ * Quest-Verwaltung (`/quests`) mit zwei Reitern:
+ * - „Gewohnheiten“: aktive Quests ordnen und bearbeiten, neue anlegen, archivierte zurückholen oder endgültig
+ *   löschen. Deep-Link `/quests?neu=1&kampagne=<id>` öffnet den Anlege-Dialog.
+ * - „Nebenquests“ (`?tab=nebenquests`): einmalige Aufgaben anlegen, erledigen, bearbeiten und löschen.
+ *   `/quests?tab=nebenquests&neu=1` öffnet „Neue Nebenquest“.
  */
 export function QuestsPage() {
   const { data, today, state } = useGameContext()
@@ -61,6 +83,13 @@ export function QuestsPage() {
   const formWasOpen = useRef(false)
   const archiveToggleRef = useRef<HTMLButtonElement>(null)
   const newQuestRef = useRef<HTMLButtonElement>(null)
+
+  const tab = questTabFromParam(searchParams.get('tab'))
+  const [sideForm, setSideForm] = useState<SideFormTarget>({ mode: 'create' })
+  const [sideFormOpen, setSideFormOpen] = useState(false)
+  const pendingSideFocus = useRef<PendingSideFocus | null>(null)
+  const newSideQuestRef = useRef<HTMLButtonElement>(null)
+  const sideFormWasOpen = useRef(false)
 
   const stats = useMemo(() => buildHabitStats(data.completions, today), [data.completions, today])
 
@@ -87,15 +116,20 @@ export function QuestsPage() {
     [state.mainQuests, state.archivedMainQuests],
   )
 
-  // Deep-Link: /quests?neu=1(&kampagne=<id>) öffnet den Anlege-Dialog (State während des Renderns
-  // anpassen), der Effekt entfernt danach die Parameter aus der Adresse.
+  // Deep-Link: /quests?neu=1(&kampagne=<id>) öffnet den Anlege-Dialog – im Reiter „Nebenquests“ den für eine
+  // neue Nebenquest (State während des Renderns anpassen), der Effekt entfernt danach die Parameter aus der Adresse.
   const deepLink = searchParams.get('neu') === '1' ? searchParams.toString() : null
   const [handledDeepLink, setHandledDeepLink] = useState<string | null>(null)
   if (deepLink !== handledDeepLink) {
     setHandledDeepLink(deepLink)
     if (deepLink !== null) {
-      setForm({ mode: 'create', mainQuestId: searchParams.get('kampagne') ?? undefined })
-      setFormOpen(true)
+      if (tab === 'side') {
+        setSideForm({ mode: 'create' })
+        setSideFormOpen(true)
+      } else {
+        setForm({ mode: 'create', mainQuestId: searchParams.get('kampagne') ?? undefined })
+        setFormOpen(true)
+      }
     }
   }
   useEffect(() => {
@@ -161,6 +195,57 @@ export function QuestsPage() {
       focused === null || focused === document.body || focused.closest('[role="dialog"], [role="alertdialog"]') !== null
     if (lost) newQuestRef.current?.focus()
   }, [formOpen])
+
+  // Nebenquests: neue Karte fokussieren bzw. nach dem Löschen „Neue Nebenquest“ (siehe PendingSideFocus).
+  useEffect(() => {
+    const pending = pendingSideFocus.current
+    if (!pending) return
+    const exists = (data.sideQuests ?? []).some((quest) => quest.id === pending.questId)
+    if (pending.until === 'created') {
+      if (!exists) return
+      pendingSideFocus.current = null
+      const editButton = document.getElementById(sideQuestEditButtonId(pending.questId))
+      if (!editButton) return
+      editButton.closest('li')?.scrollIntoView?.({ block: 'center' })
+      editButton.focus({ preventScroll: true })
+      return
+    }
+    if (exists) return
+    pendingSideFocus.current = null
+    newSideQuestRef.current?.focus()
+  }, [data.sideQuests])
+
+  // Wie beim Quest-Dialog: Fällt der Fokus nach dem Schließen ins Leere, bekommt ihn „Neue Nebenquest“.
+  useEffect(() => {
+    if (sideFormOpen) {
+      sideFormWasOpen.current = true
+      return
+    }
+    if (!sideFormWasOpen.current) return
+    sideFormWasOpen.current = false
+    const focused = document.activeElement
+    const lost =
+      focused === null || focused === document.body || focused.closest('[role="dialog"], [role="alertdialog"]') !== null
+    if (lost && pendingSideFocus.current === null) newSideQuestRef.current?.focus()
+  }, [sideFormOpen])
+
+  function selectTab(next: QuestTabId) {
+    const params = new URLSearchParams(searchParams)
+    const value = QUEST_TAB_PARAM[next]
+    if (value === null) params.delete('tab')
+    else params.set('tab', value)
+    setSearchParams(params, { replace: true })
+  }
+
+  function openSideCreate() {
+    setSideForm({ mode: 'create' })
+    setSideFormOpen(true)
+  }
+
+  function openSideEdit(quest: SideQuest) {
+    setSideForm({ mode: 'edit', questId: quest.id })
+    setSideFormOpen(true)
+  }
 
   function announce(text: string) {
     // Gleicher Text zweimal hintereinander würde nicht erneut vorgelesen – daher abwechselnd ein Leerzeichen.
@@ -228,73 +313,95 @@ export function QuestsPage() {
   }
 
   const editHabit = form.mode === 'edit' ? data.habits.find((h) => h.id === form.habitId) : undefined
+  const editSideQuest =
+    sideForm.mode === 'edit' ? (data.sideQuests ?? []).find((quest) => quest.id === sideForm.questId) : undefined
   const isEmpty = data.habits.length === 0
+  const hasSideQuests = (data.sideQuests ?? []).length > 0
+  const openSideQuests = state.sideQuests.filter((entry) => !entry.done).length
+
+  let headerAction
+  if (tab === 'habits' && !isEmpty) {
+    headerAction = (
+      <Button ref={newQuestRef} icon={<Plus />} onClick={openCreate}>
+        Neue Quest
+      </Button>
+    )
+  } else if (tab === 'side' && hasSideQuests) {
+    headerAction = (
+      <Button ref={newSideQuestRef} icon={<Plus />} onClick={openSideCreate}>
+        Neue Nebenquest
+      </Button>
+    )
+  }
 
   return (
     <>
-      <PageHeader
-        eyebrow="Dein Questbuch"
-        title="Quests"
-        subtitle="Deine Gewohnheiten: anlegen, ordnen, anpassen – oder ins Archiv legen."
-        action={
-          isEmpty ? undefined : (
-            <Button ref={newQuestRef} icon={<Plus />} onClick={openCreate}>
-              Neue Quest
-            </Button>
-          )
-        }
+      <PageHeader eyebrow="Dein Questbuch" title="Quests" subtitle={SUBTITLES[tab]} action={headerAction} />
+
+      <QuestTabs
+        value={tab}
+        onChange={selectTab}
+        tabs={[
+          { id: 'habits', label: 'Gewohnheiten', meta: formatNumber(active.length), metaLabel: 'aktiv' },
+          { id: 'side', label: 'Nebenquests', meta: formatNumber(openSideQuests), metaLabel: 'offen' },
+        ]}
+        className="mb-6 sm:mb-8"
       />
 
-      {isEmpty ? (
-        <EmptyQuestbook onCreate={openCreate} buttonRef={newQuestRef} />
-      ) : (
-        <div className="space-y-10">
-          <section aria-labelledby="quests-active-heading">
-            <SectionTitle id="quests-active-heading" meta={formatNumber(active.length)}>
-              Aktive Quests
-            </SectionTitle>
-            {active.length === 0 ? (
-              <EmptyState
-                icon="🗺️"
-                titleAs="h3"
-                title="Keine aktiven Quests"
-                text="Alle deine Quests ruhen im Archiv. Hol eine zurück oder beginne eine neue Quest."
-                className="py-10"
-              />
-            ) : (
-              <>
-                <p className="-mt-1 mb-4 text-sm text-muted">
-                  Die Reihenfolge gilt auch für deine Tagesübersicht.
-                </p>
-                <ul className="space-y-3">
-                  {active.map((habit, index) => (
-                    <QuestRow
-                      key={habit.id}
-                      habit={habit}
-                      campaign={habit.mainQuestId !== undefined ? campaignsById.get(habit.mainQuestId) : undefined}
-                      campaignColor={habit.mainQuestId !== undefined ? campaignColors.get(habit.mainQuestId) : undefined}
-                      streak={streaks.get(habit.id) ?? { current: 0, best: 0, unit: 'day' }}
-                      isFirst={index === 0}
-                      isLast={index === active.length - 1}
-                      onMove={handleMove}
-                      onEdit={openEdit}
-                    />
-                  ))}
-                </ul>
-              </>
-            )}
-          </section>
+      <div role="tabpanel" id={questPanelId(tab)} aria-labelledby={questTabId(tab)}>
+        {tab === 'side' ? (
+          <SideQuestPanel onCreate={openSideCreate} onEdit={openSideEdit} createButtonRef={newSideQuestRef} />
+        ) : isEmpty ? (
+          <EmptyQuestbook onCreate={openCreate} buttonRef={newQuestRef} />
+        ) : (
+          <div className="space-y-10">
+            <section aria-labelledby="quests-active-heading">
+              <SectionTitle id="quests-active-heading" meta={formatNumber(active.length)}>
+                Aktive Quests
+              </SectionTitle>
+              {active.length === 0 ? (
+                <EmptyState
+                  icon="🗺️"
+                  titleAs="h3"
+                  title="Keine aktiven Quests"
+                  text="Alle deine Quests ruhen im Archiv. Hol eine zurück oder beginne eine neue Quest."
+                  className="py-10"
+                />
+              ) : (
+                <>
+                  <p className="-mt-1 mb-4 text-sm text-muted">
+                    Die Reihenfolge gilt auch für deine Tagesübersicht.
+                  </p>
+                  <ul className="space-y-3">
+                    {active.map((habit, index) => (
+                      <QuestRow
+                        key={habit.id}
+                        habit={habit}
+                        campaign={habit.mainQuestId !== undefined ? campaignsById.get(habit.mainQuestId) : undefined}
+                        campaignColor={habit.mainQuestId !== undefined ? campaignColors.get(habit.mainQuestId) : undefined}
+                        streak={streaks.get(habit.id) ?? { current: 0, best: 0, unit: 'day' }}
+                        isFirst={index === 0}
+                        isLast={index === active.length - 1}
+                        onMove={handleMove}
+                        onEdit={openEdit}
+                      />
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
 
-          {archived.length > 0 && (
-            <ArchivedQuests
-              habits={archived}
-              toggleRef={archiveToggleRef}
-              onRestore={handleRestore}
-              onDelete={handleDelete}
-            />
-          )}
-        </div>
-      )}
+            {archived.length > 0 && (
+              <ArchivedQuests
+                habits={archived}
+                toggleRef={archiveToggleRef}
+                onRestore={handleRestore}
+                onDelete={handleDelete}
+              />
+            )}
+          </div>
+        )}
+      </div>
 
       <p className="sr-only" role="status" aria-live="polite">
         {announcement}
@@ -307,6 +414,20 @@ export function QuestsPage() {
         initialMainQuestId={form.mode === 'create' ? form.mainQuestId : undefined}
         onCreated={handleCreated}
         onArchived={handleArchived}
+      />
+
+      <SideQuestFormDialog
+        open={sideFormOpen && (sideForm.mode === 'create' || editSideQuest !== undefined)}
+        onClose={() => setSideFormOpen(false)}
+        sideQuest={editSideQuest}
+        onCreated={(quest) => {
+          announce(`„${quest.title}“ wurde angelegt.`)
+          pendingSideFocus.current = { questId: quest.id, until: 'created' }
+        }}
+        onDeleted={(quest) => {
+          announce(`„${quest.title}“ wurde gelöscht.`)
+          pendingSideFocus.current = { questId: quest.id, until: 'deleted' }
+        }}
       />
     </>
   )

@@ -16,13 +16,16 @@ import {
 } from './dashboard/dashboardText'
 import { HeroCard } from './dashboard/HeroCard'
 import { QuestList } from './dashboard/QuestList'
+import { SideQuestSection } from './dashboard/SideQuestSection'
 import { useQuestActions } from './dashboard/useQuestActions'
 
 /**
- * „Heute“ – die Tagesübersicht: Held, Tagesbilanz, Quests zum Abhaken, Kampagne und Attribute.
- * Rückwirkendes Nachtragen ist bis `BALANCING.backfillDays` Tage möglich (Umschalter „Gestern“).
+ * „Heute“ – die Tagesübersicht: Held (mit Gold-Guthaben → Schatzkammer), Tagesbilanz, Quests zum Abhaken
+ * (XP inklusive Streak-Bonus), Nebenquests, Kampagne und Attribute.
+ * Rückwirkendes Nachtragen ist bis `BALANCING.backfillDays` Tage möglich (Umschalter „Gestern“); Nebenquests
+ * gelten immer für heute.
  * Auf dem Handy stehen die heutigen Quests ganz oben (PLAN §4): Seitenkopf nur für Screenreader,
- * flache Heldenleiste, Tagesbilanz direkt im Abschnitt „Tagesquests“.
+ * flache Heldenleiste, Tagesbilanz direkt im Abschnitt „Tagesquests“, Nebenquests darunter.
  */
 export function DashboardPage() {
   const { data, today, state } = useGameContext()
@@ -94,6 +97,12 @@ export function DashboardPage() {
               }
             />
           )}
+          <SideQuestSection
+            entries={state.sideQuests}
+            hasAny={(data.sideQuests ?? []).length > 0}
+            today={today}
+            otherDaySelected={offset > 0}
+          />
         </div>
 
         <div className="flex min-w-0 flex-col gap-6">

@@ -2,9 +2,13 @@
  * Nur in der Entwicklung (`npm run dev`): Hilfsfunktionen im Browser unter `window.questlog`.
  * Nützlich zum Ausprobieren und für automatisierte Screenshots, z. B. in der Konsole:
  *
- *   await questlog.seedDemo(30)   // Held + Gelehrten-Kampagne + 30 Tage Verlauf
+ *   await questlog.seedDemo(30)   // Held + Gelehrten-Kampagne + 30 Tage Verlauf + Schatzkammer + Nebenquests
  *   await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })  // weitere Kampagne
  *   await questlog.reset()        // alles löschen → Onboarding
+ *
+ * Alle Repository-Funktionen stehen unter `questlog.repository` bereit, z. B.
+ *   await questlog.repository.createReward({ title: 'Pizza', icon: '🍕', price: 400, repeatable: true })
+ *   await questlog.repository.createSideQuest({ title: 'Steuer', icon: '🧾', attribute: 'discipline', difficulty: 'hard' }, await questlog.today())
  *
  * Wird in Produktions-Builds nicht eingebunden (siehe main.tsx).
  */
@@ -39,8 +43,15 @@ async function currentDay(): Promise<DayKey> {
  * Legt (nach vollständigem Zurücksetzen) einen Demo-Helden mit der Gelehrten-Kampagne an,
  * die vor `days` Tagen begonnen hat, und erzeugt einen plausiblen Verlauf bis gestern.
  * Heute bleibt offen, damit man das Abhaken selbst ausprobieren kann.
+ *
+ * Dazu (Phase 2a) drei Belohnungen in der Schatzkammer (zwei wiederholbare, eine einmalige teure), eine
+ * Einlösung vor zwei Tagen (nur, wenn das Gold reicht – `purchase: false` lässt sie weg) und zwei
+ * Nebenquests: eine vor ein paar Tagen erledigte und eine offene mit Termin übermorgen.
  */
-async function seedDemo(days = 30, options: { completeToday?: boolean; seed?: number } = {}): Promise<void> {
+async function seedDemo(
+  days = 30,
+  options: { completeToday?: boolean; seed?: number; purchase?: boolean } = {},
+): Promise<void> {
   const today = await currentDay()
   const start = addDays(today, -days)
   const rnd = random(options.seed ?? 42)
@@ -68,7 +79,60 @@ async function seedDemo(days = 30, options: { completeToday?: boolean; seed?: nu
   if (manual && days >= 20) await repository.setChapterManual(mainQuest.id, manual.id, true, addDays(today, -3))
   const counter = mainQuest.chapters.find((c) => c.criterion.type === 'counter')
   if (counter) await repository.setChapterCounter(mainQuest.id, counter.id, Math.floor(days / 25), today)
+  await seedTreasuryAndSideQuests(today, start, options.purchase ?? true)
   await repository.saveProfile({ name: 'Aria', avatar: '🧙', createdDay: start })
+}
+
+/** Beispiel-Belohnungen und -Nebenquests für `seedDemo` (Abenteuerbeginn `start`, heutiger Spieltag `today`). */
+async function seedTreasuryAndSideQuests(today: DayKey, start: DayKey, purchase: boolean): Promise<void> {
+  await repository.createReward({
+    title: 'Pizza bestellen',
+    icon: '🍕',
+    description: 'Ohne schlechtes Gewissen – du hast sie dir verdient.',
+    price: 400,
+    repeatable: true,
+  })
+  const movie = await repository.createReward({ title: 'Kinoabend', icon: '🎬', price: 250, repeatable: true })
+  await repository.createReward({
+    title: 'Neue Kopfhörer',
+    icon: '🎧',
+    description: 'Der große Wunsch für später.',
+    price: 2500,
+    repeatable: false,
+  })
+  // Vor 10 Tagen angelegt, vor 4 Tagen erledigt – bei kurzen Demos frühestens am ersten Abenteuertag.
+  const created = latest(start, addDays(today, -10))
+  const taxes = await repository.createSideQuest(
+    {
+      title: 'Steuererklärung abgeben',
+      icon: '🧾',
+      description: 'Belege sortieren und abschicken.',
+      attribute: 'discipline',
+      difficulty: 'hard',
+    },
+    created,
+  )
+  await repository.completeSideQuest(taxes.id, latest(created, addDays(today, -4)))
+  await repository.createSideQuest(
+    { title: 'Zahnarzttermin vereinbaren', icon: '🦷', attribute: 'vitality', difficulty: 'easy', dueDay: addDays(today, 2) },
+    latest(start, addDays(today, -1)),
+  )
+
+  if (purchase) {
+    // Eine Einlösung für die Chronik – nur, wenn das Gold zwei Tage vorher schon reicht (kurze Demos: keine).
+    const day = addDays(today, -2)
+    if (day < start) return
+    try {
+      await repository.purchaseReward(movie.id, day)
+    } catch (error) {
+      console.info('[questlog] Demo-Einlösung übersprungen:', error instanceof Error ? error.message : error)
+    }
+  }
+}
+
+/** Der spätere zweier Spieltage. */
+function latest(a: DayKey, b: DayKey): DayKey {
+  return a > b ? a : b
 }
 
 /** Startet eine Kampagne aus der Bibliothek am heutigen Spieltag (wie die App, gleiche Prüfungen). */

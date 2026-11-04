@@ -1,5 +1,7 @@
+import { ArrowLeft } from 'lucide-react'
 import { useId } from 'react'
-import { Ornament, PageHeader, SectionTitle } from '../ui'
+import { Link } from 'react-router'
+import { Ornament, PageHeader, SectionTitle, buttonClassName, cn } from '../ui'
 import { BackupCard } from './settings/BackupCard'
 import { DangerZone } from './settings/DangerZone'
 import { DayStartCard, EffectsCard } from './settings/GameSettings'
@@ -9,13 +11,18 @@ import { InstallCard } from './settings/InstallCard'
 export const APP_VERSION_LABEL = 'Version 0.1 (MVP)'
 
 /**
- * „Einstellungen“: Tageswechsel, Effekte, Datensicherung, Installation und Gefahrenzone.
+ * „Einstellungen“: Tageswechsel, Effekte, Datensicherung, Installation und Gefahrenzone. Ohne eigenen Eintrag in
+ * der Navigation – erreichbar über das Zahnrad der Held-Seite, zurück geht es über „Zurück zum Helden“.
  */
 export function SettingsPage() {
   const gameId = useId()
   const dataId = useId()
   return (
     <>
+      <Link to="/held" className={cn(buttonClassName({ variant: 'ghost', size: 'sm' }), '-mt-2 mb-3 -ml-3 sm:-mt-4')}>
+        <ArrowLeft aria-hidden />
+        Zurück zum Helden
+      </Link>
       <PageHeader
         eyebrow="Optionen"
         title="Einstellungen"

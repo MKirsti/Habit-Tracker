@@ -11,11 +11,14 @@ import {
   dayOffsetWord,
   deadlineText,
   formatValue,
+  goldChipLabel,
   hasActiveHabits,
   perfectBonusExplanation,
   perfectBonusPercent,
   selectableDayOffsets,
   stepValue,
+  streakBonusLabel,
+  streakBonusText,
   streakShort,
   streakText,
   weekWord,
@@ -201,5 +204,22 @@ describe('compactDayLabel', () => {
   it('zeigt Wochentag und Datum kurz', () => {
     expect(compactDayLabel(TODAY)).toBe('Di., 3. Nov.')
     expect(compactDayLabel('2027-03-28')).toBe('So., 28. März')
+  })
+})
+
+describe('Gold & Streak-Bonus', () => {
+  it('benennt das Gold-Abzeichen mit Ziel', () => {
+    expect(goldChipLabel(1234)).toBe('1.234 Gold – zur Schatzkammer')
+    expect(goldChipLabel(0)).toBe('0 Gold – zur Schatzkammer')
+    expect(goldChipLabel(-5)).toBe('-5 Gold – zur Schatzkammer')
+  })
+
+  it('zeigt den Streak-Bonus in Prozent – sichtbar knapp, vorgelesen ausgeschrieben', () => {
+    expect(streakBonusLabel(0.2)).toBe('+20 %')
+    expect(streakBonusLabel(0.05)).toBe('+5 %')
+    expect(streakBonusLabel(0.5)).toBe('+50 %')
+    // Gleitkomma-Rauschen (3 × 0,05 = 0,15000000000000002) bleibt unsichtbar.
+    expect(streakBonusLabel(3 * 0.05)).toBe('+15 %')
+    expect(streakBonusText(0.2)).toBe('Streak-Bonus 20 Prozent')
   })
 })

@@ -51,6 +51,12 @@ export interface BackupSummary {
   quests: number
   completions: number
   campaigns: number
+  /** Belohnungen der Schatzkammer. */
+  rewards: number
+  /** Nebenquests (offen und erledigt). */
+  sideQuests: number
+  /** Freigeschaltete Erfolge. */
+  achievements: number
   /** Exportzeitpunkt, lesbar formatiert (de-DE). */
   exportedAt: string
 }
@@ -64,6 +70,9 @@ export function summarizeBackup(backup: BackupFile): BackupSummary {
     quests: data.habits.length,
     completions: data.completions.length,
     campaigns: data.mainQuests.length,
+    rewards: data.rewards?.length ?? 0,
+    sideQuests: data.sideQuests?.length ?? 0,
+    achievements: data.achievementUnlocks?.length ?? 0,
     exportedAt: formatExportDate(backup.exportedAt),
   }
 }

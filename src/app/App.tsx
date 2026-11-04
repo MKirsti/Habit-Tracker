@@ -8,6 +8,7 @@ import { GameFeedback } from '../features/feedback/GameFeedback'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LoadingState } from '../ui/Spinner'
 import { ToastProvider } from '../ui/Toast'
+import { AchievementRecorder } from './AchievementRecorder'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { useGameContext } from './gameContext'
 import { AppLoading, GameProvider } from './GameProvider'
@@ -23,7 +24,8 @@ const OnboardingPage = lazy(async () => ({ default: (await import('../pages/Onbo
 
 /**
  * Routen (Hash-Router, damit GitHub Pages ohne Server-Rewrites funktioniert):
- * `/` Heute · `/quests` · `/kampagne` · `/held` · `/einstellungen` · alles andere → `/`.
+ * `/` Heute · `/quests` · `/kampagne` · `/schatzkammer` · `/held` · `/einstellungen` (ohne eigenen Eintrag in
+ * der Navigation, erreichbar über das Zahnrad der Held-Seite) · alles andere → `/`.
  */
 const routes: RouteObject[] = [
   {
@@ -36,6 +38,10 @@ const routes: RouteObject[] = [
       { index: true, element: <DashboardPage /> },
       { path: 'quests', lazy: async () => ({ Component: (await import('../pages/QuestsPage')).QuestsPage }) },
       { path: 'kampagne', lazy: async () => ({ Component: (await import('../pages/CampaignPage')).CampaignPage }) },
+      {
+        path: 'schatzkammer',
+        lazy: async () => ({ Component: (await import('../pages/TreasuryPage')).TreasuryPage }),
+      },
       { path: 'held', lazy: async () => ({ Component: (await import('../pages/HeroPage')).HeroPage }) },
       {
         path: 'einstellungen',
@@ -58,12 +64,14 @@ const routes: RouteObject[] = [
 
 /**
  * Aufbau: Fehlergrenze → Toasts → Spieldaten (einmal geladen) → Effekte → Onboarding oder Router.
+ * Daneben speichert `AchievementRecorder` still jeden neu erreichten Erfolg dauerhaft.
  */
 export function App() {
   return (
     <AppErrorBoundary>
       <ToastProvider>
         <GameProvider>
+          <AchievementRecorder />
           <EffectsConfig>
             <ProfileGate />
           </EffectsConfig>

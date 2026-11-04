@@ -47,8 +47,9 @@ const library = makeHabit({
 /**
  * Basisszenario (today = Mi 2026-11-04):
  * - Mo 02.: Liegestütze ✓, Lesen ✓, Bibliothek ✓ → perfekt, Quest-XP 70, Bonus round(17.5) = 18
- * - Di 03.: Liegestütze ✓ (Lesen nicht fällig)    → perfekt, Quest-XP 10, Bonus round(2.5) = 3
- * - Mi 04.: Liegestütze ✓, Lesen 5/10             → nicht perfekt, Quest-XP 10
+ * - Di 03.: Liegestütze ✓ (Lesen nicht fällig)    → perfekt, Quest-XP 11 (10 + 5 % Streak-Bonus), Bonus round(2.75) = 3
+ * - Mi 04.: Liegestütze ✓, Lesen 5/10             → nicht perfekt, Quest-XP 11 (10 + 10 % → round(11) = 11)
+ * Quest-XP gesamt 10 + 11 + 11 + 20 + 40 = 92, davon 2 Streak-Bonus.
  */
 function baseData(extra: Partial<GameData> = {}): GameData {
   return makeGameData({
@@ -91,8 +92,11 @@ describe('deriveGameState – leerer Spielstand', () => {
       bestWeekStreak: 0,
       activeDays: 0,
       xpFromQuests: 0,
+      xpFromStreakBonus: 0,
       xpFromPerfectDays: 0,
       xpFromChapters: 0,
+      xpFromSideQuests: 0,
+      sideQuestsCompleted: 0,
     })
     expect(state.todayState).toEqual({
       day: '2026-11-03',
@@ -104,6 +108,10 @@ describe('deriveGameState – leerer Spielstand', () => {
       perfectBonusXp: 0,
     })
     expect(state.mainQuests).toEqual([])
+    expect(state.gold).toEqual({ fromXp: 0, fromAchievements: 0, earned: 0, spent: 0, balance: 0 })
+    expect(state.sideQuests).toEqual([])
+    expect(state.achievements.length).toBeGreaterThan(0)
+    expect(state.achievements.every((achievement) => !achievement.unlocked)).toBe(true)
   })
 })
 
@@ -112,7 +120,9 @@ describe('deriveGameState – Basisszenario', () => {
 
   it('vergibt Quest-XP nur für erledigte Completions (Teilfortschritt = 0 XP)', () => {
     expect(state.totals.questsCompleted).toBe(5)
-    expect(state.totals.xpFromQuests).toBe(3 * 10 + 20 + 40)
+    // Liegestütze mit Streak-Bonus: 10 (Tag 1) + 11 (Tag 2, +5 %) + 11 (Tag 3, +10 %)
+    expect(state.totals.xpFromQuests).toBe(10 + 11 + 11 + 20 + 40)
+    expect(state.totals.xpFromStreakBonus).toBe(2)
   })
 
   it('vergibt den Perfekter-Tag-Bonus nach Regel 2 (Wochenquests zählen zur Tages-XP)', () => {
@@ -121,12 +131,12 @@ describe('deriveGameState – Basisszenario', () => {
   })
 
   it('berechnet Level und Rang aus allen Charakter-XP', () => {
-    expect(state.level).toMatchObject({ level: 2, totalXp: 111, xpIntoLevel: 11, xpForNextLevel: 283 })
+    expect(state.level).toMatchObject({ level: 2, totalXp: 113, xpIntoLevel: 13, xpForNextLevel: 283 })
     expect(state.rank).toBe('Novize')
   })
 
-  it('gibt Attribut-XP ohne Perfekter-Tag-Bonus', () => {
-    expect(state.attributes.strength).toMatchObject({ level: 1, totalXp: 30, xpIntoLevel: 30 })
+  it('gibt Attribut-XP ohne Perfekter-Tag-Bonus (aber mit Streak-Bonus)', () => {
+    expect(state.attributes.strength).toMatchObject({ level: 1, totalXp: 32, xpIntoLevel: 32 })
     expect(state.attributes.intellect).toMatchObject({ level: 1, totalXp: 20 })
     expect(state.attributes.wisdom).toMatchObject({ level: 2, totalXp: 40, xpIntoLevel: 0 })
     expect(state.attributes.charisma).toMatchObject({ level: 1, totalXp: 0 })
@@ -149,7 +159,7 @@ describe('deriveGameState – Basisszenario', () => {
     expect(today.requiredCount).toBe(2)
     expect(today.requiredDone).toBe(1)
     expect(today.perfect).toBe(false)
-    expect(today.questXp).toBe(10)
+    expect(today.questXp).toBe(11)
     expect(today.perfectBonusXp).toBe(0)
 
     const [lib, push, read] = today.habits
@@ -161,12 +171,17 @@ describe('deriveGameState – Basisszenario', () => {
       done: false,
       streak: { current: 0, best: 0, unit: 'week' },
       week: { done: 1, target: 2 },
+      // Erste Woche: noch keine erfüllte Woche davor → kein Bonus
       xp: 40,
+      baseXp: 40,
+      streakBonus: 0,
     })
-    expect(push).toMatchObject({ required: true, value: 1, target: 1, done: true, xp: 10 })
+    // Zwei erledigte Tage davor → +10 %
+    expect(push).toMatchObject({ required: true, value: 1, target: 1, done: true, xp: 11, baseXp: 10, streakBonus: 0.1 })
     expect(push.streak).toEqual({ current: 3, best: 3, unit: 'day' })
     expect(push.week).toBeUndefined()
-    expect(read).toMatchObject({ required: true, value: 5, target: 10, done: false, xp: 20 })
+    // Offen: Eine Erledigung brächte jetzt 20 + 5 % (Mo erledigt, Di kein Plantag) = 21 XP
+    expect(read).toMatchObject({ required: true, value: 5, target: 10, done: false, xp: 21, baseXp: 20, streakBonus: 0.05 })
     expect(read.completion).toMatchObject({ habitId: 'reading', day: '2026-11-04', value: 5 })
     // Offener Mittwoch bricht den Montag-Streak nicht
     expect(read.streak).toEqual({ current: 1, best: 1, unit: 'day' })
@@ -210,9 +225,15 @@ describe('deriveGameState – XP-Regeln im Detail', () => {
         makeCompletion(habit, '2026-11-03', { difficulty: 'easy', value: 4 }),
       ],
     })
-    // Heute offen: eine Erledigung brächte jetzt 40 XP. Gestern erledigt: gutgeschrieben wurden 10 XP.
-    expect(deriveGameState(data, '2026-11-03').todayState.habits[0]).toMatchObject({ done: false, xp: 40 })
-    expect(getDayState(data, '2026-11-02').habits[0]).toMatchObject({ done: true, xp: 10 })
+    // Heute offen: eine Erledigung brächte jetzt 40 XP (+5 % Streak-Bonus = 42). Gestern erledigt: gutgeschrieben
+    // wurden 10 XP (Snapshot-Schwierigkeit, erster Tag der Serie).
+    expect(deriveGameState(data, '2026-11-03').todayState.habits[0]).toMatchObject({
+      done: false,
+      xp: 42,
+      baseXp: 40,
+      streakBonus: 0.05,
+    })
+    expect(getDayState(data, '2026-11-02').habits[0]).toMatchObject({ done: true, xp: 10, baseXp: 10, streakBonus: 0 })
   })
 
   it('ignoriert Completions gelöschter Quests überall', () => {
@@ -222,7 +243,7 @@ describe('deriveGameState – XP-Regeln im Detail', () => {
     const state = deriveGameState(data, '2026-11-04')
     expect(state.totals).toMatchObject({
       questsCompleted: 5,
-      xpFromQuests: 90,
+      xpFromQuests: 92,
       activeDays: 3,
       perfectDays: 2,
       xpFromPerfectDays: 21,
@@ -238,7 +259,7 @@ describe('deriveGameState – XP-Regeln im Detail', () => {
       makeCompletion(pushups, '2026-11-06'),
     )
     const state = deriveGameState(data, '2026-11-04')
-    expect(state.totals).toMatchObject({ questsCompleted: 5, xpFromQuests: 90, activeDays: 3, perfectDays: 2 })
+    expect(state.totals).toMatchObject({ questsCompleted: 5, xpFromQuests: 92, activeDays: 3, perfectDays: 2 })
     expect(state.totals.bestDayStreak).toBe(3)
     // Die Bibliothek wurde "morgen" ein zweites Mal besucht – zählt heute noch nicht zur Woche
     const lib = state.todayState.habits.find((s) => s.habit.id === 'library')
@@ -283,8 +304,8 @@ describe('deriveGameState – XP-Regeln im Detail', () => {
       ],
     })
     const state = deriveGameState(data, '2026-11-03')
-    expect(state.totals.xpFromQuests).toBe(40 + 10 + 10)
-    // 02.: beide fällig & erledigt (Bonus round(12.5) = 13) · 03.: nur Liegestütze fällig (Bonus 3)
+    expect(state.totals.xpFromQuests).toBe(40 + 10 + 11)
+    // 02.: beide fällig & erledigt (Bonus round(12.5) = 13) · 03.: nur Liegestütze fällig (11 XP, Bonus 3)
     expect(state.totals.perfectDays).toBe(2)
     expect(state.totals.xpFromPerfectDays).toBe(13 + 3)
     expect(state.todayState.habits.map((s) => s.habit.id)).toEqual(['pushups'])
@@ -338,10 +359,10 @@ describe('deriveGameState – XP-Regeln im Detail', () => {
     data.completions.push(makeCompletion(library, '2026-11-03', { difficulty: 'legendary' as Difficulty }))
     const state = deriveGameState(data, '2026-11-04')
     // Zählt als erledigt, gibt aber 0 XP – alle anderen Werte bleiben wie im Basisszenario
-    expect(state.totals).toMatchObject({ questsCompleted: 6, xpFromQuests: 90, xpFromPerfectDays: 21 })
-    expect(state.level).toMatchObject({ level: 2, totalXp: 111 })
+    expect(state.totals).toMatchObject({ questsCompleted: 6, xpFromQuests: 92, xpFromPerfectDays: 21 })
+    expect(state.level).toMatchObject({ level: 2, totalXp: 113 })
     expect(state.attributes.wisdom.totalXp).toBe(40)
-    expect(getDayState(data, '2026-11-03')).toMatchObject({ questXp: 10, perfectBonusXp: 3 })
+    expect(getDayState(data, '2026-11-03')).toMatchObject({ questXp: 11, perfectBonusXp: 3 })
   })
 
   it('wertet aufaddierte Kommawerte als erledigt (10 × 0,2 L bei Ziel 2 L)', () => {
@@ -409,7 +430,7 @@ describe('deriveGameState – Kampagnen', () => {
     // Verknüpft (reading) plus von einem Kapitel referenziert (pushups), sortiert nach order.
     expect(quest.linkedHabitIds).toEqual(['pushups', 'reading'])
     expect(state.totals.xpFromChapters).toBe(2 * BALANCING.chapterXp)
-    expect(state.level.totalXp).toBe(90 + 21 + 200)
+    expect(state.level.totalXp).toBe(92 + 21 + 200)
   })
 
   it('vergibt mainQuestXp für eine komplett abgeschlossene Kampagne', () => {
@@ -705,6 +726,7 @@ describe('deriveGameState – Bearbeiten ändert die Vergangenheit nicht', () =>
     ],
   })
   const TODAY = '2026-11-16'
+  const YESTERDAY = addDays(TODAY, -1)
 
   /** Die Quest `id` bekommt heute den Rhythmus `schedule` – so, wie das Repository es speichert. */
   function editSchedule(data: GameData, id: string, schedule: Schedule, withHistory = true): GameData {
@@ -718,8 +740,8 @@ describe('deriveGameState – Bearbeiten ändert die Vergangenheit nicht', () =>
     }
   }
 
-  function xpTotals(data: GameData) {
-    const { totals, level, attributes } = deriveGameState(data, TODAY)
+  function xpTotals(data: GameData, day: DayKey = TODAY) {
+    const { totals, level, attributes } = deriveGameState(data, day)
     return {
       questsCompleted: totals.questsCompleted,
       perfectDays: totals.perfectDays,
@@ -730,14 +752,27 @@ describe('deriveGameState – Bearbeiten ändert die Vergangenheit nicht', () =>
     }
   }
 
-  it.each<[string, Schedule]>([
-    ['Wochenquest → täglich', { type: 'daily' }],
-    ['Wochenquest → Mo/Mi/Fr', { type: 'weekdays', days: [1, 3, 5] }],
-    ['Wochenquest → 3× pro Woche', { type: 'weekly', times: 3 }],
-  ])('%s: Perfekte Tage, XP und Level bleiben erhalten', (_label, schedule) => {
+  const statusToday = (data: GameData, id: string) =>
+    deriveGameState(data, TODAY).todayState.habits.find((status) => status.habit.id === id)
+
+  it.each<[string, Schedule, number]>([
+    // Als Tagesquest beginnt die Serie neu: Die Tage davor waren keine Plantage (damals Wochenquest).
+    ['Wochenquest → täglich', { type: 'daily' }, 40],
+    ['Wochenquest → Mo/Mi/Fr', { type: 'weekdays', days: [1, 3, 5] }, 40],
+    // Gleiche Einheit: Die beiden erfüllten Wochen davor zählen weiter (+10 %).
+    ['Wochenquest → 3× pro Woche', { type: 'weekly', times: 3 }, 44],
+  ])('%s: Perfekte Tage, XP und Level bleiben erhalten', (_label, schedule, libraryXpToday) => {
+    const edited = editSchedule(twoWeeks, 'library', schedule)
     const before = xpTotals(twoWeeks)
     expect(before.perfectDays).toBe(15)
-    expect(xpTotals(editSchedule(twoWeeks, 'library', schedule))).toEqual(before)
+    // Bis gestern ändert sich nichts – nur der laufende Tag darf sich ändern (ARCHITECTURE.md, Regel 5 ff.).
+    expect(xpTotals(edited, YESTERDAY)).toEqual(xpTotals(twoWeeks, YESTERDAY))
+    const after = xpTotals(edited)
+    expect(after).toMatchObject({ perfectDays: before.perfectDays, questsCompleted: before.questsCompleted })
+    // Heute folgt nur der Streak-Bonus der heutigen Erledigung der Einheit des neuen Rhythmus.
+    expect(statusToday(twoWeeks, 'library')).toMatchObject({ done: true, xp: 44, streakBonus: 0.1 })
+    expect(statusToday(edited, 'library')).toMatchObject({ done: true, xp: libraryXpToday })
+    if (libraryXpToday === 44) expect(after).toEqual(before)
   })
 
   it('ohne Verlauf gingen Perfekte Tage und XP verloren (Gegenprobe)', () => {
@@ -762,7 +797,11 @@ describe('deriveGameState – Bearbeiten ändert die Vergangenheit nicht', () =>
     const before = xpTotals(missed)
     expect(before.perfectDays).toBe(14)
     const loosened = editSchedule(missed, 'pushups', { type: 'weekly', times: 3 })
-    expect(xpTotals(loosened)).toEqual(before)
+    expect(xpTotals(loosened, YESTERDAY)).toEqual(xpTotals(missed, YESTERDAY))
+    expect(xpTotals(loosened)).toMatchObject({ perfectDays: 14, questsCompleted: before.questsCompleted })
+    // Heute: Die Tages-Serie (12.–15.11., +20 %) zählt für die neue Wochenquest nicht – sie beginnt neu.
+    expect(statusToday(missed, 'pushups')).toMatchObject({ xp: 12, streakBonus: 0.2 })
+    expect(statusToday(loosened, 'pushups')).toMatchObject({ xp: 10, streakBonus: 0 })
     expect(getDayState(loosened, '2026-11-11')).toMatchObject({ requiredCount: 2, requiredDone: 1, perfect: false })
     // Ohne Verlauf wäre der 11.11. nachträglich perfekt (Liegestütze keine Pflicht mehr)
     expect(xpTotals(editSchedule(missed, 'pushups', { type: 'weekly', times: 3 }, false)).perfectDays).toBe(15)
@@ -979,9 +1018,73 @@ describe('deriveGameState – Eingabereihenfolge', () => {
   })
 })
 
+/** Rhythmus eines Tages, wörtlich: Verlaufseintrag mit dem kleinsten until > day (bei Gleichstand der erste), sonst aktuell. */
+function referenceScheduleOn(h: Habit, day: DayKey): Schedule {
+  const historic = (h.scheduleHistory ?? [])
+    .filter((entry) => day < entry.until)
+    .sort((a, b) => (a.until < b.until ? -1 : a.until > b.until ? 1 : 0))[0]
+  return historic?.schedule ?? h.schedule
+}
+
 /**
- * Referenzmodell der XP-Regeln 1 + 2, wörtlich nach docs/ARCHITECTURE.md: Perfekte Tage werden Tag für
- * Tag über den *gesamten* Zeitraum (frühester Completion-Tag bzw. profile.createdDay bis today) gesucht –
+ * Streak-Bonus-Schritte vor einem Tag, wörtlich nach ARCHITECTURE.md „Streak-Bonus“ – von jedem Tag aus
+ * **rückwärts** gezählt (die Engine rechnet in einem Vorwärts-Durchlauf). Liefert eine Funktion Kalender-Index → n.
+ * - Tages-Einheit: erledigte Plantage direkt davor; Nicht-Plantage, Pausen und archivierte Tage überspringen,
+ *   ein verpasster Plantag beendet die Zählung.
+ * - Wochen-Einheit: erfüllte Wochen direkt vor der Woche des Tages (Ziel vom Montag); Wochen, deren Montag
+ *   keine Wochenquest war, und unvollständige Wochen (Pause, vor dem Anlegen, archiviert) brechen nichts.
+ */
+function referenceRunsBefore(h: Habit, done: ReadonlySet<DayKey>, calendar: readonly DayKey[]): (i: number) => number {
+  const scheduleAt = calendar.map((day) => referenceScheduleOn(h, day))
+  const active = calendar.map(
+    (day) =>
+      h.createdDay <= day &&
+      (h.archivedDay === undefined || day < h.archivedDay) &&
+      !(h.pauses ?? []).some((pause) => pause.from <= day && day < pause.until),
+  )
+  const plan = calendar.map((day, i) => {
+    const schedule = scheduleAt[i]
+    return active[i] && (schedule.type === 'daily' || (schedule.type === 'weekdays' && schedule.days.includes(isoWeekday(day))))
+  })
+  const doneAt = calendar.map((day) => done.has(day))
+  return (i) => {
+    const day = calendar[i]
+    if (day < h.createdDay) return 0
+    let n = 0
+    if (scheduleAt[i].type !== 'weekly') {
+      for (let j = i - 1; j >= 0 && calendar[j] >= h.createdDay; j--) {
+        if (!plan[j]) continue
+        if (!doneAt[j]) break
+        n++
+      }
+      return n
+    }
+    const monday = i - (isoWeekday(day) - 1)
+    for (let m = monday - 7; m >= 0 && calendar[m + 6] >= h.createdDay; m -= 7) {
+      const schedule = scheduleAt[m]
+      if (schedule.type !== 'weekly') continue
+      let count = 0
+      let interrupted = false
+      for (let j = m; j < m + 7; j++) {
+        if (!active[j]) interrupted = true
+        else if (doneAt[j]) count++
+      }
+      if (count >= Math.max(1, schedule.times)) n++
+      else if (!interrupted) break
+    }
+    return n
+  }
+}
+
+/** round(XP × (1 + min(5 % × n, 50 %))) in ganzen Prozent. */
+function referenceBonusXp(baseXp: number, run: number): number {
+  const percent = Math.min(Math.round(BALANCING.streakBonusPerStep * 100) * run, Math.round(BALANCING.streakBonusMax * 100))
+  return Math.round((baseXp * (100 + percent)) / 100)
+}
+
+/**
+ * Referenzmodell der XP-Regeln 1 + 2 samt Streak-Bonus, wörtlich nach docs/ARCHITECTURE.md: Perfekte Tage werden
+ * Tag für Tag über den *gesamten* Zeitraum (frühester Completion-Tag bzw. profile.createdDay bis today) gesucht –
  * unabhängig von der Optimierung der Engine, die nur Tage mit Completions betrachtet.
  */
 function referenceXp(data: GameData, today: DayKey) {
@@ -990,11 +1093,23 @@ function referenceXp(data: GameData, today: DayKey) {
   const doneOn = new Map<DayKey, Completion[]>()
   for (const c of relevant) if (c.value >= c.target) doneOn.set(c.day, [...(doneOn.get(c.day) ?? []), c])
 
+  // Kalender ab einem Montag weit vor allen Quests (Zufallsdaten beginnen frühestens 2026-08-27).
+  const calendar = dayRange('2026-08-17', addDays(today, 7))
+  const calendarIndex = new Map(calendar.map((day, i) => [day, i]))
+  const xpOf = new Map<Completion, number>()
+  for (const h of data.habits) {
+    const done = relevant.filter((c) => c.habitId === h.id && c.value >= c.target)
+    const runBefore = referenceRunsBefore(h, new Set(done.map((c) => c.day)), calendar)
+    for (const c of done) xpOf.set(c, referenceBonusXp(BALANCING.questXp[c.difficulty], runBefore(calendarIndex.get(c.day)!)))
+  }
+
   const attributeXp = Object.fromEntries(ATTRIBUTE_IDS.map((id) => [id, 0])) as Record<AttributeId, number>
   let xpFromQuests = 0
-  for (const c of relevant.filter((c) => c.value >= c.target)) {
-    xpFromQuests += BALANCING.questXp[c.difficulty]
-    attributeXp[c.attribute] += BALANCING.questXp[c.difficulty]
+  let xpFromStreakBonus = 0
+  for (const [c, xp] of xpOf) {
+    xpFromQuests += xp
+    xpFromStreakBonus += xp - BALANCING.questXp[c.difficulty]
+    attributeXp[c.attribute] += xp
   }
 
   const starts = [...relevant.map((c) => c.day), ...(data.profile ? [data.profile.createdDay] : [])].sort()
@@ -1018,15 +1133,14 @@ function referenceXp(data: GameData, today: DayKey) {
     })
     if (required.length > 0 && required.every((h) => done.some((c) => c.habitId === h.id))) {
       perfectDays++
-      xpFromPerfectDays += Math.round(
-        BALANCING.perfectDayBonus * done.reduce((sum, c) => sum + BALANCING.questXp[c.difficulty], 0),
-      )
+      xpFromPerfectDays += Math.round(BALANCING.perfectDayBonus * done.reduce((sum, c) => sum + xpOf.get(c)!, 0))
     }
   }
   return {
     questsCompleted: [...doneOn.values()].reduce((sum, list) => sum + list.length, 0),
     activeDays: doneOn.size,
     xpFromQuests,
+    xpFromStreakBonus,
     perfectDays,
     xpFromPerfectDays,
     attributeXp,
@@ -1107,6 +1221,7 @@ describe('deriveGameState – Referenzmodell (Zufallstests)', () => {
         questsCompleted: expected.questsCompleted,
         activeDays: expected.activeDays,
         xpFromQuests: expected.xpFromQuests,
+        xpFromStreakBonus: expected.xpFromStreakBonus,
         perfectDays: expected.perfectDays,
         xpFromPerfectDays: expected.xpFromPerfectDays,
         xpFromChapters: 0,
@@ -1122,11 +1237,14 @@ describe('deriveGameState – Referenzmodell (Zufallstests)', () => {
       const { data, today } = randomGameData(random, true)
       const expected = referenceXp(data, today)
       const label = `Fall #${i}, today ${today}`
-      expect(deriveGameState(data, today).totals, label).toMatchObject({
+      const state = deriveGameState(data, today)
+      expect(state.totals, label).toMatchObject({
         xpFromQuests: expected.xpFromQuests,
+        xpFromStreakBonus: expected.xpFromStreakBonus,
         perfectDays: expected.perfectDays,
         xpFromPerfectDays: expected.xpFromPerfectDays,
       })
+      for (const id of ATTRIBUTE_IDS) expect(state.attributes[id].totalXp, `${label}, ${id}`).toBe(expected.attributeXp[id])
     }
   })
 
@@ -1147,6 +1265,31 @@ describe('deriveGameState – Referenzmodell (Zufallstests)', () => {
         perfectDays,
         xpFromPerfectDays: bonus,
       })
+    }
+  })
+})
+
+describe('getDayState – Streak-Bonus je Quest (Zufallstests)', () => {
+  it.each([false, true])('zeigt an jedem Tag – offen oder erledigt – den Bonus der wörtlichen Regel (Verlauf & Pausen: %s)', (timeline) => {
+    const random = seededRandom(31)
+    for (let i = 0; i < 5; i++) {
+      const { data, today } = randomGameData(random, timeline)
+      const calendar = dayRange('2026-08-17', addDays(today, 7))
+      const calendarIndex = new Map(calendar.map((day, k) => [day, k]))
+      const runsOf = new Map(
+        data.habits.map((h) => {
+          const done = new Set(data.completions.filter((c) => c.habitId === h.id && c.value >= c.target).map((c) => c.day))
+          return [h.id, referenceRunsBefore(h, done, calendar)]
+        }),
+      )
+      for (const day of dayRange('2026-09-01', today)) {
+        for (const status of getDayState(data, day).habits) {
+          const run = runsOf.get(status.habit.id)!(calendarIndex.get(day)!)
+          const label = `Fall #${i}, ${day}, ${status.habit.id}`
+          expect(status.streakBonus, label).toBe(Math.min(5 * run, 50) / 100)
+          expect(status.xp, label).toBe(referenceBonusXp(status.baseXp, run))
+        }
+      }
     }
   })
 })

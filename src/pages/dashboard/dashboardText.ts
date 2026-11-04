@@ -89,6 +89,21 @@ export function streakText(streak: Streak): string {
     : `${countLabel(streak.current, 'Woche', 'Wochen')} in Folge`
 }
 
+/** Zugänglicher Name des Gold-Abzeichens: "1.234 Gold – zur Schatzkammer". */
+export function goldChipLabel(balance: number): string {
+  return `${formatNumber(balance)} Gold – zur Schatzkammer`
+}
+
+/** Streak-Bonus als sichtbares Kürzel: 0,2 → "+20 %". */
+export function streakBonusLabel(bonus: number): string {
+  return `+${formatNumber(Math.round(bonus * 100))} %`
+}
+
+/** Vorgelesener Streak-Bonus: 0,2 → "Streak-Bonus 20 Prozent". */
+export function streakBonusText(bonus: number): string {
+  return `Streak-Bonus ${formatNumber(Math.round(bonus * 100))} Prozent`
+}
+
 /** Sichtbarer Streak neben der Flamme: "12" bzw. bei Wochenquests "3 Wo.". */
 export function streakShort(streak: Streak): string {
   return streak.unit === 'day' ? formatNumber(streak.current) : `${formatNumber(streak.current)} Wo.`

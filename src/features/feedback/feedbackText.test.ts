@@ -6,10 +6,13 @@ import type { Celebration } from './celebrations'
 import { CONFETTI_COLORS, confettiLifetime, createConfettiParticles } from './confetti'
 import { XP_MERGE_WINDOW_MS, isXpSessionOpen, nextXpSession } from './xpSession'
 import type { CampaignCompletedEvent, LevelUpEvent, XpGainedEvent, XpQuest } from './feedbackEvents'
+import { ACHIEVEMENT_TIER_COLORS, achievementConfetti } from './achievementTier'
 import {
+  achievementToastText,
   attributeToastText,
   bonusGrowthToastText,
   chapterToastText,
+  goldLabel,
   joinTitles,
   nextRank,
   perfectDayToastText,
@@ -37,6 +40,45 @@ describe('Texte', () => {
     expect(xpToastText(60, [quest('A'), quest('B'), quest('C')], 0).description).toBe('A und 2 weitere')
     expect(xpToastText(80, [], 0)).toEqual({ title: '+80 XP', description: 'Nachgetragene Quest' })
     expect(xpToastText(80, [quest('Lesen')], 0, true).description).toBe('Nachgetragen: Lesen')
+  })
+
+  it('XP-Toast nennt das Gold dieser XP – ohne Gold nur die XP', () => {
+    expect(xpToastText(24, [quest('Lesen')], 0, false, 12)).toEqual({ title: '+24 XP · +12 Gold', description: 'Lesen' })
+    expect(xpToastText(2500, [quest('Lesen')], 0, false, 1250).title).toBe('+2.500 XP · +1.250 Gold')
+    expect(xpToastText(1, [quest('Lesen')], 0, false, 0).title).toBe('+1 XP')
+    expect(goldLabel(75)).toBe('+75 Gold')
+  })
+
+  it('XP-Toast benennt reine Nebenquests als solche', () => {
+    const side = (title: string): XpQuest => ({ ...quest(title), sideQuest: true })
+    expect(xpToastText(40, [side('Steuererklärung')], 0, false, 20).description).toBe('Nebenquest: Steuererklärung')
+    expect(xpToastText(50, [side('Steuer'), side('Zahnarzt')], 0).description).toBe('Nebenquests: Steuer und Zahnarzt')
+    // Gemischt: nur die Titel (die Quest steht ohnehin in der Tagesliste).
+    expect(xpToastText(60, [quest('Lesen'), side('Steuer')], 0).description).toBe('Lesen und Steuer')
+    expect(xpToastText(40, [side('Steuer')], 0, true).description).toBe('Nachgetragen: Steuer')
+  })
+
+  it('Erfolg: Titel, Gold-Belohnung und Stufe', () => {
+    expect(achievementToastText({ title: 'Ein ganzer Mond', tier: 'silver', gold: 75 })).toEqual({
+      title: 'Ein ganzer Mond · +75 Gold',
+      description: 'Silber-Erfolg freigeschaltet',
+    })
+    expect(achievementToastText({ title: 'Makellos', tier: 'bronze', gold: 25 }).description).toBe(
+      'Bronze-Erfolg freigeschaltet',
+    )
+    expect(achievementToastText({ title: 'Unsterblich', tier: 'gold', gold: 0 })).toEqual({
+      title: 'Unsterblich',
+      description: 'Gold-Erfolg freigeschaltet',
+    })
+  })
+
+  it('Erfolg: Konfetti in der Farbe der Stufe, Gold-Erfolge voll', () => {
+    expect(achievementConfetti('bronze')).toEqual({ intensity: 'light', accent: ACHIEVEMENT_TIER_COLORS.bronze })
+    expect(achievementConfetti('silver')).toEqual({ intensity: 'light', accent: ACHIEVEMENT_TIER_COLORS.silver })
+    expect(achievementConfetti('gold')).toEqual({ intensity: 'full', accent: ACHIEVEMENT_TIER_COLORS.gold })
+    // Drei deutlich verschiedene Metalle, Gold = App-Gold.
+    expect(new Set(Object.values(ACHIEVEMENT_TIER_COLORS)).size).toBe(3)
+    expect(ACHIEVEMENT_TIER_COLORS.gold).toBe('#d4a548')
   })
 
   it('Perfekter Tag, Kapitel, Attribut', () => {
@@ -171,6 +213,7 @@ describe('XP-Zusammenfassung', () => {
     type: 'xp-gained',
     amount,
     questXp: amount - bonusXp,
+    gold: Math.floor(amount / 2),
     bonusXp,
     quests: titles.map(quest),
     backfill,
@@ -181,12 +224,20 @@ describe('XP-Zusammenfassung', () => {
     expect(first.merged).toBe(false)
     const second = nextXpSession(first.session, gain(15, ['Meditieren'], false, 5), 1000 + XP_MERGE_WINDOW_MS)
     expect(second.merged).toBe(true)
-    expect(second.session).toMatchObject({ amount: 35, bonusXp: 5, backfill: false })
+    expect(second.session).toMatchObject({ amount: 35, gold: 17, bonusXp: 5, backfill: false })
     expect(second.session.quests.map((q) => q.title)).toEqual(['Lesen', 'Meditieren'])
     // Das Fenster zählt ab dem letzten Gewinn.
     const third = nextXpSession(second.session, gain(20, ['Lesen']), 1000 + 2 * XP_MERGE_WINDOW_MS)
     expect(third.session.quests.map((q) => q.title)).toEqual(['Lesen', 'Meditieren'])
     expect(third.session.amount).toBe(55)
+  })
+
+  it('hält Quest und gleich-identische Nebenquest auseinander', () => {
+    const first = nextXpSession(null, gain(20, ['Lesen']), 0)
+    const side: XpGainedEvent = { ...gain(10, []), quests: [{ ...quest('Lesen'), title: 'Buch zurückgeben', sideQuest: true }] }
+    const merged = nextXpSession(first.session, side, 10)
+    expect(merged.session.quests.map((q) => q.title)).toEqual(['Lesen', 'Buch zurückgeben'])
+    expect(merged.session.gold).toBe(15)
   })
 
   it('beginnt nach dem Zeitfenster neu', () => {

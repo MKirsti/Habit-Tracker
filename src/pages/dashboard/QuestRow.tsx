@@ -1,5 +1,4 @@
 import { Check, Minus, PenLine, Plus } from 'lucide-react'
-import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import { ATTRIBUTES } from '../../domain/attributes'
@@ -7,7 +6,8 @@ import { habitTarget, reachesTarget } from '../../domain/schedule'
 import type { HabitStatus } from '../../domain/types'
 import { ProgressBar, cn, formatNumber } from '../../ui'
 import { CheckButton } from './CheckButton'
-import { formatValue, stepValue, streakShort, streakText } from './dashboardText'
+import { CompletionBurst } from './CompletionBurst'
+import { formatValue, stepValue, streakBonusLabel, streakBonusText, streakShort, streakText } from './dashboardText'
 import type { QuestActions } from './useQuestActions'
 
 export interface QuestRowProps {
@@ -23,7 +23,7 @@ export interface QuestRowProps {
 
 /** Eine Quest in der Tagesliste: Abhak-Knopf, Titel, Meta-Zeile und ggf. Mess- bzw. Wochenfortschritt. */
 export function QuestRow({ status, campaign, weekWord, actions, onEditValue }: QuestRowProps) {
-  const { habit, done, value, target, streak, xp, week } = status
+  const { habit, done, value, target, streak, xp, week, streakBonus } = status
   const measure = habit.measure
   const attribute = ATTRIBUTES[habit.attribute]
   const weekMet = week !== undefined && week.done >= week.target
@@ -123,16 +123,11 @@ export function QuestRow({ status, campaign, weekWord, actions, onEditValue }: Q
               <span className="sr-only">Attribut:</span>
               {attribute.name}
             </span>
+            {/* XP inklusive Streak-Bonus – die tatsächlich gutgeschriebenen bzw. die, die ein Haken jetzt bringt. */}
             <span className={cn('font-semibold tabular-nums', done ? 'text-gold-bright' : 'text-gold')}>
               +{formatNumber(xp)} XP
             </span>
-            {streak.current > 0 && (
-              <span className="inline-flex items-center gap-1 text-parchment/90 tabular-nums" title={streakText(streak)}>
-                <span aria-hidden="true">🔥</span>
-                <span aria-hidden="true">{streakShort(streak)}</span>
-                <span className="sr-only">{streakText(streak)}</span>
-              </span>
-            )}
+            <StreakInfo streak={streak} bonus={streakBonus} />
             {campaign && (
               <span className="inline-flex items-center" title={`Kampagne: ${campaign.title}`}>
                 <span aria-hidden="true">{campaign.icon}</span>
@@ -197,6 +192,46 @@ export function QuestRow({ status, campaign, weekWord, actions, onEditValue }: Q
   )
 }
 
+/**
+ * Serie neben den XP: "🔥 12" – mit Streak-Bonus als kleines Abzeichen "🔥 12 · +20 %" (vorgelesen
+ * "12 Tage in Folge, Streak-Bonus 20 Prozent"). Ohne Serie und ohne Bonus nichts.
+ */
+function StreakInfo({ streak, bonus }: { streak: HabitStatus['streak']; bonus: number }) {
+  const hasStreak = streak.current > 0
+  if (bonus <= 0) {
+    if (!hasStreak) return null
+    return (
+      <span className="inline-flex items-center gap-1 text-parchment/90 tabular-nums" title={streakText(streak)}>
+        <span aria-hidden="true">🔥</span>
+        <span aria-hidden="true">{streakShort(streak)}</span>
+        <span className="sr-only">{streakText(streak)}</span>
+      </span>
+    )
+  }
+  const spoken = hasStreak ? `${streakText(streak)}, ${streakBonusText(bonus)}` : streakBonusText(bonus)
+  return (
+    <span
+      data-streak-bonus={Math.round(bonus * 100)}
+      title={spoken}
+      className="-my-0.5 inline-flex items-center gap-1 rounded-full bg-warning/10 py-0.5 pr-2 pl-1.5 text-parchment/90 tabular-nums ring-1 ring-warning/30 ring-inset"
+    >
+      <span aria-hidden="true">🔥</span>
+      {hasStreak && (
+        <>
+          <span aria-hidden="true">{streakShort(streak)}</span>
+          <span aria-hidden="true" className="text-faint">
+            ·
+          </span>
+        </>
+      )}
+      <span aria-hidden="true" className="font-semibold text-gold-bright">
+        {streakBonusLabel(bonus)}
+      </span>
+      <span className="sr-only">{spoken}</span>
+    </span>
+  )
+}
+
 function WeekProgress({ done, target, met, weekWord }: { done: number; target: number; met: boolean; weekWord: string }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
@@ -256,32 +291,5 @@ function StepButton({
     >
       {children}
     </button>
-  )
-}
-
-/** "+20 XP" steigt kurz über dem Haken auf, dazu ein sich ausbreitender Goldring. Rein dekorativ. */
-function CompletionBurst({ burst, xp, onDone }: { burst: number; xp: number; onDone: () => void }) {
-  return (
-    <AnimatePresence>
-      {burst > 0 && (
-        <motion.span key={`ring-${burst}`} aria-hidden="true" className="pointer-events-none absolute inset-0">
-          <motion.span
-            className="absolute inset-0 rounded-full ring-2 ring-gold-bright"
-            initial={{ scale: 1, opacity: 0.8 }}
-            animate={{ scale: 1.8, opacity: 0 }}
-            transition={{ duration: 0.65, ease: 'easeOut' }}
-          />
-          <motion.span
-            className="absolute -top-3 left-1/2 -translate-x-1/2 font-display text-sm font-bold whitespace-nowrap text-gold-bright [text-shadow:0_0_10px_rgb(240_201_106/0.85),0_1px_2px_rgb(0_0_0/0.9)]"
-            initial={{ opacity: 0, y: 4, scale: 0.8 }}
-            animate={{ opacity: [0, 1, 1, 0], y: -24, scale: 1 }}
-            transition={{ duration: 1.25, times: [0, 0.15, 0.7, 1], ease: 'easeOut' }}
-            onAnimationComplete={onDone}
-          >
-            +{formatNumber(xp)} XP
-          </motion.span>
-        </motion.span>
-      )}
-    </AnimatePresence>
   )
 }

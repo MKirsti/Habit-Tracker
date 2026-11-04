@@ -3,13 +3,16 @@ import { addDays, dayRange } from './dates'
 import { applyHabitDeletion, deletionImpact, habitTombstone } from './deletion'
 import { deriveGameState, getDayState } from './engine'
 import { isArchivedOn } from './schedule'
-import { makeChapter, makeCompletion, makeGameData, makeHabit, makeMainQuest, seededRandom } from './testing'
+import { makeChapter, makeCompletion, makeGameData, makeHabit, makeMainQuest, makePurchase, seededRandom } from './testing'
 import type { Chapter, Completion, DayKey, GameData, Habit, Schedule } from './types'
 
 const TODAY: DayKey = '2026-11-03'
 const D = (offset: number) => addDays(TODAY, offset)
 
-/** Laufen (Mittel, 20 XP) an D-3…D-1 erledigt, Vokabeln (Leicht, 10 XP) heute archiviert. */
+/**
+ * Laufen (Mittel, 20 XP) an D-3…D-1 erledigt – mit Streak-Bonus 20 + 21 + 22 = 63 XP –, Vokabeln (Leicht, 10 XP)
+ * heute archiviert.
+ */
 function scenario(vocabularyDoneOn: DayKey[] = []) {
   const running = makeHabit({ id: 'laufen', title: 'Laufen', difficulty: 'medium', attribute: 'strength', createdDay: D(-3) })
   const vocabulary = makeHabit({
@@ -36,11 +39,11 @@ describe('applyHabitDeletion', () => {
   it('macht keinen vergangenen Tag nachträglich perfekt (nie erledigte Pflicht-Quest)', () => {
     const data = scenario()
     const before = deriveGameState(data, TODAY)
-    expect(before.level.totalXp).toBe(60)
+    expect(before.level.totalXp).toBe(63)
     expect(before.totals.perfectDays).toBe(0)
 
     const after = deriveGameState(applyHabitDeletion(data, 'vokabeln', TODAY), TODAY)
-    expect(after.level.totalXp).toBe(60)
+    expect(after.level.totalXp).toBe(63)
     expect(after.totals.perfectDays).toBe(0)
     expect(after.totals.xpFromPerfectDays).toBe(0)
     // Auch die Tagesansicht von gestern (Nachtragen) bleibt nicht perfekt.
@@ -54,15 +57,15 @@ describe('applyHabitDeletion', () => {
   it('kostet nur: eigene XP und den Perfekten Tag, an dem die Quest erledigt war', () => {
     const data = scenario([D(-3)])
     const before = deriveGameState(data, TODAY)
-    // 3 × 20 + 10 Quest-XP, D-3 perfekt: round(0,25 × 30) = 8
-    expect(before.level.totalXp).toBe(78)
+    // 20 + 21 + 22 + 10 Quest-XP, D-3 perfekt: round(0,25 × 30) = 8
+    expect(before.level.totalXp).toBe(81)
     expect(before.totals.perfectDays).toBe(1)
 
     const after = deriveGameState(applyHabitDeletion(data, 'vokabeln', TODAY), TODAY)
-    expect(after.level.totalXp).toBe(60)
+    expect(after.level.totalXp).toBe(63)
     expect(after.totals.perfectDays).toBe(0)
     expect(after.attributes.intellect.totalXp).toBe(0)
-    expect(after.attributes.strength.totalXp).toBe(60)
+    expect(after.attributes.strength.totalXp).toBe(63)
   })
 
   it('entfernt Quest und Erledigungen, hinterlässt einen Grabstein und lässt die Eingabe unverändert', () => {
@@ -131,6 +134,8 @@ describe('deletionImpact', () => {
     expect(impact.xpLost).toBe(before.level.totalXp - after.level.totalXp)
     expect(impact.xpLost).toBe(10 + 8 + 100 + 500)
     expect(impact).toMatchObject({ levelBefore: before.level.level, levelAfter: after.level.level })
+    expect(impact.goldLost).toBe(before.gold.balance - after.gold.balance)
+    expect(impact.goldAfter).toBe(after.gold.balance)
     expect(impact.levelBefore).toBeGreaterThan(impact.levelAfter)
     expect(impact.campaigns).toHaveLength(1)
     expect(impact.campaigns[0]).toMatchObject({ losesCompletion: true, openChapters: [] })
@@ -146,13 +151,54 @@ describe('deletionImpact', () => {
     expect(impact.campaigns[0].openChapters.map((c) => c.id)).toEqual(['viele'])
   })
 
-  it('ohne Wirkung: 0 XP, gleiches Level, keine Kampagnen', () => {
-    expect(deletionImpact(scenario(), 'vokabeln', TODAY)).toStrictEqual({
+  it('ohne Wirkung: 0 XP, gleiches Level, kein Gold, keine Kampagnen', () => {
+    const data = scenario()
+    expect(deletionImpact(data, 'vokabeln', TODAY)).toStrictEqual({
       xpLost: 0,
       levelBefore: 1,
       levelAfter: 1,
+      goldLost: 0,
+      goldAfter: deriveGameState(data, TODAY).gold.balance,
       campaigns: [],
     })
+  })
+
+  it('nennt das verlorene Gold und das Guthaben danach – auch wenn es negativ wird', () => {
+    const data = scenario([D(-3), D(-2)])
+    // Vokabeln: 10 + 11 XP; der Grabstein bleibt Pflicht und ist nie erledigt – D-3 (30 → 8) und D-2 (32 → 8)
+    // sind danach nicht mehr perfekt
+    data.purchases = [makePurchase({ id: 'p', price: 60, day: D(-1) })]
+    const before = deriveGameState(data, TODAY)
+    const after = deriveGameState(applyHabitDeletion(data, 'vokabeln', TODAY), TODAY)
+    const impact = deletionImpact(data, 'vokabeln', TODAY)
+    expect(impact.xpLost).toBe(10 + 11 + 8 + 8)
+    expect(impact.goldLost).toBe(before.gold.balance - after.gold.balance)
+    expect(impact.goldLost).toBeGreaterThan(0)
+    expect(impact.goldAfter).toBe(after.gold.balance)
+  })
+
+  it('Gold exakt wie deriveGameState vorher − nachher, auch wenn archivierte Kampagnen im Spiel sind', () => {
+    // Löschen nimmt der gemeisterten Kampagne „sieg“ ihren Abschluss – sie wird wieder aktiv. Mit „a“ und „b“ sind
+    // es danach drei aktive Kampagnen. Die archivierte „ruhe“ zählt nie als aktiv.
+    const data = scenario([D(-3)])
+    const open = (id: string) => makeChapter({ id, criterion: { type: 'manual' } })
+    data.mainQuests = [
+      makeMainQuest({ id: 'a', chapters: [open('a1')] }),
+      makeMainQuest({ id: 'b', chapters: [open('b1')] }),
+      makeMainQuest({
+        id: 'sieg',
+        startDay: D(-3),
+        chapters: [makeChapter({ id: 's1', criterion: { type: 'habit', habitId: 'vokabeln', metric: 'completions', target: 1 } })],
+      }),
+      makeMainQuest({ id: 'ruhe', archived: true, chapters: [open('r1')] }),
+    ]
+    const before = deriveGameState(data, TODAY)
+    const after = deriveGameState(applyHabitDeletion(data, 'vokabeln', TODAY), TODAY)
+    const impact = deletionImpact(data, 'vokabeln', TODAY)
+    expect(impact.goldLost).toBe(Math.max(0, before.gold.balance - after.gold.balance))
+    expect(impact.goldAfter).toBe(after.gold.balance)
+    expect(impact.xpLost).toBe(before.level.totalXp - after.level.totalXp)
+    expect(impact.campaigns.map((c) => c.quest.id)).toEqual(['sieg'])
   })
 })
 
@@ -279,6 +325,13 @@ describe('applyHabitDeletion – Zufallstest', () => {
         // endet mit dem Löschen heute – wie beim Archivieren; gegenüber diesem Stand kostet Löschen nur.
         const reference = isArchivedOn(habit, TODAY) ? data : archivedToday(data, habit.id)
         expectNoGain(earned(after, TODAY), earned(reference, TODAY), `${label}, heute`)
+        // Die Vorschau vor dem Löschen ist exakt: XP und Gold wie deriveGameState vorher − nachher
+        const impact = deletionImpact(data, habit.id, TODAY)
+        const goldBefore = deriveGameState(data, TODAY).gold.balance
+        const goldAfter = deriveGameState(after, TODAY).gold.balance
+        expect(impact.goldAfter, label).toBe(goldAfter)
+        expect(impact.goldLost, label).toBe(Math.max(0, goldBefore - goldAfter))
+        expect(impact.xpLost, label).toBe(Math.max(0, earned(data, TODAY).totalXp - earned(after, TODAY).totalXp))
         if (earned(after, D(-1)).totalXp < earned(data, D(-1)).totalXp) decreased++
       }
     }

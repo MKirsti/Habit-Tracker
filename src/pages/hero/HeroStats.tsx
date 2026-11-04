@@ -48,14 +48,15 @@ export function HeroStats({ state }: HeroStatsProps) {
   )
 }
 
-/** Woher die XP stammen: Quests, Perfekte Tage, Kapitel & Kampagnen. */
+/** Woher die XP stammen: Quests (inkl. Streak-Bonus), Perfekte Tage, Kapitel & Kampagnen, Nebenquests. */
 export function XpBreakdown({ state }: HeroStatsProps) {
-  const { xpFromQuests, xpFromPerfectDays, xpFromChapters } = state.totals
-  const total = xpFromQuests + xpFromPerfectDays + xpFromChapters
+  const { xpFromQuests, xpFromPerfectDays, xpFromChapters, xpFromSideQuests, xpFromStreakBonus } = state.totals
+  const total = xpFromQuests + xpFromPerfectDays + xpFromChapters + xpFromSideQuests
   const rows: { label: string; xp: number; color?: string }[] = [
     { label: 'Quests', xp: xpFromQuests },
     { label: 'Perfekte Tage', xp: xpFromPerfectDays, color: 'var(--color-success)' },
     { label: 'Kapitel & Kampagnen', xp: xpFromChapters, color: 'var(--color-info)' },
+    { label: 'Nebenquests', xp: xpFromSideQuests, color: 'var(--color-parchment)' },
   ]
   // Zusammen immer genau 100 % – Balken, Beschriftung und Vorlesewert zeigen denselben Anteil.
   const shares = roundShares(rows.map((row) => row.xp))
@@ -84,6 +85,12 @@ export function XpBreakdown({ state }: HeroStatsProps) {
           )
         })}
       </ul>
+      {xpFromStreakBonus > 0 && (
+        <p className="mt-4 text-sm text-muted">
+          Davon Streak-Bonus bei den Quests:{' '}
+          <span className="font-medium text-gold-bright tabular-nums">{formatNumber(xpFromStreakBonus)} XP</span>
+        </p>
+      )}
       {total === 0 && (
         <p className="mt-4 text-sm text-muted">Noch keine XP – erledige deine erste Quest, dann füllt sich die Chronik.</p>
       )}

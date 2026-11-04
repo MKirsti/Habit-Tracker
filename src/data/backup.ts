@@ -6,7 +6,8 @@
  * dabei verworfen. Fehlermeldungen sind deutsch und können direkt angezeigt werden.
  *
  * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest, `deletedHabits`, `blueprint` und
- * `sharedHabitIds` einer Kampagne) erhöhen die Schema-Version nicht: Ältere Backups ohne sie bleiben gültig.
+ * `sharedHabitIds` einer Kampagne, die Phase-2a-Listen `rewards`, `purchases`, `sideQuests` und
+ * `achievementUnlocks`) erhöhen die Schema-Version nicht: Ältere Backups ohne sie bleiben gültig.
  */
 import { z } from 'zod'
 import { ATTRIBUTE_IDS } from '../domain/attributes'
@@ -15,8 +16,8 @@ import { isValidDayKey } from '../domain/dates'
 import type { BlueprintRef, GameData, MainQuest } from '../domain/types'
 import { getBlueprint } from './blueprints'
 import { BLUEPRINT_LEVELS } from './blueprints/types'
-import { db, KV_KEYS, legacyBlueprintRef, type QuestlogDB } from './db'
-import { completionId, resetAllData, loadGameData } from './repository'
+import { allTables, db, KV_KEYS, legacyBlueprintRef, type QuestlogDB } from './db'
+import { completionId, loadGameData, MAX_REWARD_PRICE, resetAllData } from './repository'
 
 export const BACKUP_APP_ID = 'questlog'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -178,6 +179,54 @@ const mainQuestSchema = z.object({
   createdAt: z.number(),
 })
 
+/**
+ * Belohnung der Schatzkammer (`Reward`): Preis ganzzahlig von 1 bis `MAX_REWARD_PRICE` – wie beim Anlegen im
+ * Repository (sonst ließe sich eine importierte Belohnung später nicht mehr bearbeiten).
+ */
+const rewardSchema = z.object({
+  id: idSchema,
+  title: z.string(),
+  icon: z.string(),
+  description: z.string().optional(),
+  price: z.number().int().min(1).max(MAX_REWARD_PRICE),
+  repeatable: z.boolean(),
+  order: z.number(),
+  archived: z.boolean().optional(),
+  createdAt: z.number(),
+})
+
+/** Gold-Ausgabe (`Purchase`) mit Momentaufnahme von Titel, Icon und Preis. */
+const purchaseSchema = z.object({
+  id: idSchema,
+  kind: z.literal('reward'),
+  rewardId: idSchema.optional(),
+  title: z.string(),
+  icon: z.string(),
+  price: z.number().int().min(1),
+  day: dayKeySchema,
+  createdAt: z.number(),
+})
+
+/** Nebenquest (`SideQuest`): einmalige Aufgabe mit optionalem Termin. */
+const sideQuestSchema = z.object({
+  id: idSchema,
+  title: z.string(),
+  icon: z.string(),
+  description: z.string().optional(),
+  attribute: attributeSchema,
+  difficulty: difficultySchema,
+  dueDay: dayKeySchema.optional(),
+  createdDay: dayKeySchema,
+  doneDay: dayKeySchema.optional(),
+  order: z.number(),
+})
+
+/** Freigeschalteter Erfolg (`AchievementUnlock`). */
+const achievementUnlockSchema = z.object({
+  id: idSchema,
+  day: dayKeySchema,
+})
+
 const profileSchema = z.object({
   name: z.string(),
   avatar: z.string(),
@@ -208,12 +257,20 @@ export const gameDataSchema = z
     completions: z.array(completionSchema),
     mainQuests: z.array(mainQuestSchema),
     deletedHabits: z.array(deletedHabitSchema).optional(),
+    rewards: z.array(rewardSchema).optional(),
+    purchases: z.array(purchaseSchema).optional(),
+    sideQuests: z.array(sideQuestSchema).optional(),
+    achievementUnlocks: z.array(achievementUnlockSchema).optional(),
   })
   .superRefine((data, ctx) => {
     checkUniqueIds(data.habits, ['habits'], ctx)
     if (data.deletedHabits) checkUniqueIds(data.deletedHabits, ['deletedHabits'], ctx)
     checkUniqueIds(data.completions, ['completions'], ctx)
     checkUniqueIds(data.mainQuests, ['mainQuests'], ctx)
+    if (data.rewards) checkUniqueIds(data.rewards, ['rewards'], ctx)
+    if (data.purchases) checkUniqueIds(data.purchases, ['purchases'], ctx)
+    if (data.sideQuests) checkUniqueIds(data.sideQuests, ['sideQuests'], ctx)
+    if (data.achievementUnlocks) checkUniqueIds(data.achievementUnlocks, ['achievementUnlocks'], ctx)
     data.mainQuests.forEach((quest, index) => checkUniqueIds(quest.chapters, ['mainQuests', index, 'chapters'], ctx))
     // Pro Quest und Tag darf es nur eine Erledigung geben – die ID muss das widerspiegeln.
     data.completions.forEach((completion, index) => {
@@ -286,7 +343,8 @@ export function parseBackup(json: unknown): ParseBackupResult {
  *
  * Backups aus der Zeit vor der Kampagnen-Bibliothek bekommen beim Import die Herkunft ihrer früheren
  * Onboarding-Kampagne (siehe `legacyOnboardingRef`) – sonst ließe sich der Gelehrte danach ein zweites Mal
- * starten. Alle anderen Daten kommen unverändert zurück.
+ * starten. Alle anderen Daten kommen unverändert zurück. Backups ohne die Phase-2a-Listen (Belohnungen,
+ * Einlösungen, Nebenquests, Erfolge) hinterlassen diese Tabellen leer.
  */
 export async function restoreBackup(backup: BackupFile, database: QuestlogDB = db): Promise<void> {
   const parsed = parseBackup(backup)
@@ -297,7 +355,7 @@ export async function restoreBackup(backup: BackupFile, database: QuestlogDB = d
     return ref === undefined ? quest : { ...quest, blueprint: ref }
   })
 
-  await database.transaction('rw', [database.habits, database.completions, database.mainQuests, database.kv], async () => {
+  await database.transaction('rw', allTables(database), async () => {
     await resetAllData(database)
     await database.habits.bulkAdd(data.habits)
     await database.completions.bulkAdd(data.completions)
@@ -307,6 +365,10 @@ export async function restoreBackup(backup: BackupFile, database: QuestlogDB = d
     if (data.deletedHabits && data.deletedHabits.length > 0) {
       await database.kv.put({ key: KV_KEYS.deletedHabits, value: data.deletedHabits })
     }
+    if (data.rewards) await database.rewards.bulkAdd(data.rewards)
+    if (data.purchases) await database.purchases.bulkAdd(data.purchases)
+    if (data.sideQuests) await database.sideQuests.bulkAdd(data.sideQuests)
+    if (data.achievementUnlocks) await database.achievementUnlocks.bulkAdd(data.achievementUnlocks)
   })
 }
 

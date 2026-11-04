@@ -173,6 +173,9 @@ function BackupSummaryList({ backup }: { backup: BackupFile }) {
     { label: 'Quests', value: formatNumber(summary.quests) },
     { label: 'Erledigungen', value: formatNumber(summary.completions) },
     { label: 'Kampagnen', value: formatNumber(summary.campaigns) },
+    ...(summary.sideQuests > 0 ? [{ label: 'Nebenquests', value: formatNumber(summary.sideQuests) }] : []),
+    ...(summary.rewards > 0 ? [{ label: 'Belohnungen', value: formatNumber(summary.rewards) }] : []),
+    ...(summary.achievements > 0 ? [{ label: 'Erfolge', value: formatNumber(summary.achievements) }] : []),
     { label: 'Exportiert am', value: summary.exportedAt },
   ]
   return (

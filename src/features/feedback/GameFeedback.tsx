@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useGameContext } from '../../app/gameContext'
 import { ATTRIBUTES } from '../../domain/attributes'
-import type { CharacterProfile, Completion, GameState } from '../../domain/types'
+import type { CharacterProfile, Completion, GameState, SideQuest } from '../../domain/types'
 import { useMediaQuery, useToast } from '../../ui'
 import type { ToastApi, ToastOptions } from '../../ui'
 import { accentVars } from '../campaignTheme'
+import { achievementConfetti, ACHIEVEMENT_TIER_COLORS } from './achievementTier'
 import { campaignAccentById } from './campaignAccent'
 import { CelebrationOverlay } from './CelebrationOverlay'
 import {
@@ -22,9 +23,22 @@ import {
 import type { Celebration } from './celebrations'
 import { Confetti } from './Confetti'
 import type { ConfettiBurstSpec } from './Confetti'
-import { creditedCompletions, diffGameStates, feedbackStillHolds, isBulkChange } from './feedbackEvents'
-import type { ChapterCompletedEvent, FeedbackEvent, PerfectDayEvent, XpGainedEvent } from './feedbackEvents'
 import {
+  creditedCompletions,
+  creditedSideQuests,
+  diffGameStates,
+  feedbackStillHolds,
+  isBulkChange,
+} from './feedbackEvents'
+import type {
+  AchievementUnlockedEvent,
+  ChapterCompletedEvent,
+  FeedbackEvent,
+  PerfectDayEvent,
+  XpGainedEvent,
+} from './feedbackEvents'
+import {
+  achievementToastText,
   attributeToastText,
   bonusGrowthToastText,
   chapterToastText,
@@ -57,7 +71,10 @@ type ConfettiChoice = Pick<ConfettiBurstSpec, 'intensity' | 'accent'>
  * - Eine schon gesehene Szene (gleicher Level, gleiche Kampagne) kommt nicht noch einmal.
  * - Der Bonus des Perfekten Tages erscheint immer als Tagessumme (wie in der Tagesbilanz): Wächst er,
  *   wird der Toast ersetzt statt ein „inkl. … Bonus-XP“ an XP-Toasts zu hängen.
- * - XP werden über die geänderten Erledigungen den Quests zugeordnet – auch nachgetragene.
+ * - XP werden über die geänderten Erledigungen den Quests zugeordnet – auch nachgetragene – und erledigte
+ *   Nebenquests zählen mit ihrem Titel. Der XP-Toast nennt auch das Gold dieser XP („+24 XP · +12 Gold“).
+ * - Neue Erfolge: eigener Toast mit Medaillon in der Farbe der Stufe (Bronze/Silber/Gold) und Gold-Belohnung.
+ *   Was schon beim ersten Laden freigeschaltet ist, bleibt still (Ausgangsbasis) – ebenso Massenänderungen.
  * - Kampagnenfarbe: Kapitel-Toast (Icon-Rahmen), Kapitel-Konfetti und die Szene „Kampagne gemeistert“ tragen die
  *   Hauptfarbe der Kampagne (`campaignAccentById`); XP, Belohnung und Pokal bleiben golden. Ohne Attribut bleibt
  *   alles golden.
@@ -85,18 +102,24 @@ export function GameFeedback() {
   const deferred = useRef<FeedbackEvent[]>([])
 
   // Vergleichsbasis: der zuletzt gesehene Zustand (beim Mounten der aktuelle – keine Rückmeldung) samt
-  // Erledigungen, damit sich XP-Gewinne den Quests zuordnen lassen.
-  const baseline = useRef<{ state: GameState; profile: string; completions: readonly Completion[] }>({
+  // Erledigungen und Nebenquests, damit sich XP-Gewinne den Quests zuordnen lassen.
+  const baseline = useRef<{
+    state: GameState
+    profile: string
+    completions: readonly Completion[]
+    sideQuests: readonly SideQuest[] | undefined
+  }>({
     state,
     profile: profileKey(data.profile),
     completions: data.completions,
+    sideQuests: data.sideQuests,
   })
   const memory = useRef(celebrationMemoryOf(state))
 
   useEffect(() => {
     const previous = baseline.current
     const profile = profileKey(data.profile)
-    baseline.current = { state, profile, completions: data.completions }
+    baseline.current = { state, profile, completions: data.completions, sideQuests: data.sideQuests }
     if (previous.state === state) return
 
     // Rückgängig gemacht: Toasts und Szenen, die nicht mehr stimmen, verschwinden.
@@ -114,7 +137,10 @@ export function GameFeedback() {
     // Gesunkener Tagesbonus (z. B. Wochenquest wieder offen): Der sichtbare Toast zeigt die neue Summe.
     syncPerfectBonus(state)
 
-    const credits = creditedCompletions(previous.completions, data.completions, data.habits, state.today)
+    const credits = [
+      ...creditedCompletions(previous.completions, data.completions, data.habits, state.today),
+      ...creditedSideQuests(previous.sideQuests, data.sideQuests, state.today),
+    ]
     const events = withoutCelebrated(diffGameStates(previous.state, state, credits), memory.current)
     if (events.length === 0) return
 
@@ -135,6 +161,7 @@ export function GameFeedback() {
     data.profile,
     data.completions,
     data.habits,
+    data.sideQuests,
     fancy,
     present,
     revoke,
@@ -340,7 +367,7 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
       const toastId = toast({
         tone: 'xp',
         icon: session.quests.length === 1 ? session.quests[0].icon : undefined,
-        ...xpToastText(session.amount, session.quests, session.bonusXp, session.backfill),
+        ...xpToastText(session.amount, session.quests, session.bonusXp, session.backfill, session.gold),
       })
       const events = merged && previous ? [...previous.events, event] : [event]
       xp.current = { session, toastId, events }
@@ -377,7 +404,8 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
 
   /**
    * Zeigt die Toasts zu `events`, soweit sie in `state` noch stimmen, und meldet, ob dazu Konfetti
-   * passt (Perfekter Tag: dezent, Kapitel: voll – in der Farbe der Kampagne).
+   * passt (Perfekter Tag: dezent, Kapitel: voll – in der Farbe der Kampagne, Erfolg: in der Farbe der Stufe,
+   * Gold-Erfolge voll).
    */
   const present = useCallback(
     (events: readonly FeedbackEvent[], state: GameState): ConfettiChoice | undefined => {
@@ -419,6 +447,23 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
           case 'attribute-level-up':
             claim(toast({ tone: 'success', icon: ATTRIBUTES[event.attribute].icon, ...attributeToastText(event) }), [event])
             break
+          case 'achievement-unlocked': {
+            claim(
+              toast({
+                tone: 'xp',
+                icon: <AchievementToastIcon event={event} />,
+                duration: HIGHLIGHT_TOAST_MS,
+                ...achievementToastText(event),
+              }),
+              [event],
+            )
+            // Ein Kapitel-Feuerwerk bleibt; ein Gold-Erfolg ersetzt dezentes Konfetti.
+            const choice = achievementConfetti(event.tier)
+            if (confetti === undefined || (confetti.intensity === 'light' && choice.intensity === 'full')) {
+              confetti = choice
+            }
+            break
+          }
           case 'level-up':
           case 'campaign-completed':
             break
@@ -485,6 +530,22 @@ function ChapterToastIcon({ event, accent }: { event: ChapterCompletedEvent; acc
       className="grid size-9 place-items-center rounded-full bg-[color-mix(in_srgb,var(--accent)_16%,var(--color-surface-raised))] shadow-[0_0_14px_-3px_var(--accent-60)] ring-1 ring-(--accent-60) ring-inset"
     >
       {event.campaignIcon}
+    </span>
+  )
+}
+
+/**
+ * Icon des Erfolgs-Toasts: das Emoji des Erfolgs als Medaillon in der Farbe seiner Stufe (Bronze, Silber, Gold).
+ * Deckt wie beim Kapitel-Toast den goldenen Icon-Kreis ab; der Toast selbst bleibt golden – er meldet Gold.
+ */
+function AchievementToastIcon({ event }: { event: AchievementUnlockedEvent }) {
+  return (
+    <span
+      data-achievement-tier={event.tier}
+      style={accentVars(ACHIEVEMENT_TIER_COLORS[event.tier])}
+      className="grid size-9 place-items-center rounded-full bg-[radial-gradient(circle_at_50%_30%,var(--accent-35),color-mix(in_srgb,var(--accent)_12%,var(--color-surface-raised))_72%)] shadow-[0_0_16px_-3px_var(--accent-60)] ring-2 ring-(--accent-60) ring-inset"
+    >
+      {event.icon}
     </span>
   )
 }

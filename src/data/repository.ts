@@ -22,9 +22,10 @@ import { BALANCING, DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
 import { CAMPAIGN_LIMIT_MESSAGE, CAMPAIGN_RESTORE_LIMIT_MESSAGE, isCampaignActive } from '../domain/campaigns'
 import { compareDays, isValidDayKey, toDayKey } from '../domain/dates'
 import { habitTombstone, withTombstone } from '../domain/deletion'
-import { evaluateMainQuests } from '../domain/engine'
+import { deriveGameState, evaluateMainQuests } from '../domain/engine'
 import { habitTarget, isArchivedOn, isDone, mergePauses, reachesTarget, sameSchedule } from '../domain/schedule'
 import type {
+  AchievementUnlock,
   AttributeId,
   BlueprintRef,
   Chapter,
@@ -40,12 +41,15 @@ import type {
   IsoWeekday,
   MainQuest,
   Measure,
+  Purchase,
+  Reward,
   Schedule,
   ScheduleHistoryEntry,
   Settings,
+  SideQuest,
 } from '../domain/types'
 import { BLUEPRINT_LEVELS } from './blueprints/types'
-import { db, KV_KEYS, type QuestlogDB } from './db'
+import { allTables, db, KV_KEYS, type QuestlogDB } from './db'
 import { newId } from './ids'
 
 // ---------------------------------------------------------------------------
@@ -60,10 +64,20 @@ export const DEFAULT_MAIN_QUEST_ICON = '🏔️'
 export const DEFAULT_AVATAR = '🧙'
 /** Bezeichnung eines Kapitel-Zählers, wenn keine angegeben wurde. */
 export const DEFAULT_COUNTER_LABEL = 'Fortschritt'
+/** Icon, wenn eine Belohnung ohne Emoji angelegt wird. */
+export const DEFAULT_REWARD_ICON = '🎁'
+/** Icon, wenn eine Nebenquest ohne Emoji angelegt wird. */
+export const DEFAULT_SIDE_QUEST_ICON = '📜'
+/** Höchster Preis einer Belohnung in Gold. */
+export const MAX_REWARD_PRICE = 1_000_000
 
 /** Die bearbeitbaren Felder einer Quest. Verlauf (`scheduleHistory`) und Pausen pflegt das Repository selbst. */
 export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay' | 'scheduleHistory' | 'pauses'>
 export type MainQuestDraft = Omit<MainQuest, 'id' | 'createdAt'>
+/** Die bearbeitbaren Felder einer Belohnung. Reihenfolge, Archivierung und Zeitstempel pflegt das Repository. */
+export type RewardDraft = Omit<Reward, 'id' | 'order' | 'createdAt' | 'archived'>
+/** Die bearbeitbaren Felder einer Nebenquest. Erledigt wird sie über `completeSideQuest`/`reopenSideQuest`. */
+export type SideQuestDraft = Omit<SideQuest, 'id' | 'order' | 'createdDay' | 'doneDay'>
 
 const HABIT_METRICS = ['completions', 'total', 'streak'] as const
 
@@ -72,7 +86,17 @@ const MSG = {
   questNotFound: 'Diese Kampagne gibt es nicht (mehr).',
   chapterNotFound: 'Dieses Kapitel gibt es nicht (mehr).',
   blueprintRunning: 'Eine Kampagne aus dieser Vorlage läuft bereits. Schließe sie ab oder beende sie zuerst.',
+  rewardNotFound: 'Diese Belohnung gibt es nicht (mehr).',
+  rewardUnavailable: 'Diese Belohnung ist nicht mehr verfügbar.',
+  rewardAlreadyPurchased: 'Diese Belohnung hast du schon eingelöst.',
+  rewardPrice: `Der Preis muss eine ganze Zahl zwischen 1 und ${MAX_REWARD_PRICE.toLocaleString('de-DE')} Gold sein.`,
+  sideQuestNotFound: 'Diese Nebenquest gibt es nicht (mehr).',
 } as const
+
+/** Meldung, wenn das Gold für eine Belohnung nicht reicht, z. B. "Dafür fehlen dir noch 150 Gold." */
+export function missingGoldMessage(missing: number): string {
+  return `Dafür fehlen dir noch ${missing.toLocaleString('de-DE')} Gold.`
+}
 
 // ---------------------------------------------------------------------------
 // Laden
@@ -84,16 +108,33 @@ const MSG = {
  * - `profile` fehlt, solange das Onboarding nicht abgeschlossen ist
  * - `habits` nach `order` sortiert (bei Gleichstand nach Titel), `mainQuests` nach `createdAt`
  * - `deletedHabits` (Grabsteine gelöschter Quests) geprüft und normalisiert; fehlt, wenn es keine gibt
+ * - Phase 2a: `rewards` nach `order`, `purchases` nach `createdAt`, `sideQuests` nach `order`,
+ *   `achievementUnlocks` nach Tag – jeweils nur, wenn es welche gibt (fehlt = keine)
  */
 export async function loadGameData(database: QuestlogDB = db): Promise<GameData> {
   return database.transaction('r', allTables(database), async () => {
-    const [habits, completions, mainQuests, profileEntry, settingsEntry, deletedEntry] = await Promise.all([
+    const [
+      habits,
+      completions,
+      mainQuests,
+      profileEntry,
+      settingsEntry,
+      deletedEntry,
+      rewards,
+      purchases,
+      sideQuests,
+      achievementUnlocks,
+    ] = await Promise.all([
       database.habits.toArray(),
       database.completions.toArray(),
       database.mainQuests.toArray(),
       database.kv.get(KV_KEYS.profile),
       database.kv.get(KV_KEYS.settings),
       database.kv.get(KV_KEYS.deletedHabits),
+      database.rewards.toArray(),
+      database.purchases.toArray(),
+      database.sideQuests.toArray(),
+      database.achievementUnlocks.toArray(),
     ])
 
     const data: GameData = {
@@ -106,6 +147,10 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
     if (isRecord(profileEntry?.value)) data.profile = profileEntry.value as unknown as CharacterProfile
     const deletedHabits = sanitizeTombstones(deletedEntry?.value)
     if (deletedHabits.length > 0) data.deletedHabits = deletedHabits
+    if (rewards.length > 0) data.rewards = rewards.sort(compareRewardOrder)
+    if (purchases.length > 0) data.purchases = purchases.sort(comparePurchases)
+    if (sideQuests.length > 0) data.sideQuests = sideQuests.sort(compareSideQuestOrder)
+    if (achievementUnlocks.length > 0) data.achievementUnlocks = achievementUnlocks.sort(compareUnlocks)
     return data
   })
 }
@@ -342,30 +387,8 @@ export async function moveHabit(
   assertDayKey(today)
   await database.transaction('rw', database.habits, async () => {
     const all = (await database.habits.toArray()).sort(compareHabitOrder)
-    const active = all.filter((habit) => !isArchivedOn(habit, today))
-    const index = active.findIndex((habit) => habit.id === id)
-    const neighborIndex = direction === 'up' ? index - 1 : index + 1
-    if (index === -1 || neighborIndex < 0 || neighborIndex >= active.length) return
-
-    const changed = new Set<Habit>()
-    if (needsOrderNormalization(all)) {
-      all.forEach((habit, position) => {
-        if (habit.order !== position) {
-          habit.order = position
-          changed.add(habit)
-        }
-      })
-    }
-
-    // `active` enthält dieselben Objekte wie `all`, d. h. die Normalisierung ist hier schon sichtbar.
-    const self = active[index]
-    const neighbor = active[neighborIndex]
-    const selfOrder = self.order
-    self.order = neighbor.order
-    neighbor.order = selfOrder
-    changed.add(self).add(neighbor)
-
-    await database.habits.bulkPut([...changed])
+    const changed = swapOrder(all, all.filter((habit) => !isArchivedOn(habit, today)), id, direction)
+    if (changed.length > 0) await database.habits.bulkPut(changed)
   })
 }
 
@@ -774,10 +797,262 @@ export async function setChapterCounter(
 }
 
 // ---------------------------------------------------------------------------
+// Schatzkammer: Belohnungen & Einlösungen
+// ---------------------------------------------------------------------------
+
+/**
+ * Legt eine Belohnung an. Sie wird ans Ende der Liste gestellt (`order` = max + 1).
+ * Der Titel ist Pflicht, der Preis eine ganze Zahl von 1 bis `MAX_REWARD_PRICE` Gold.
+ */
+export async function createReward(draft: RewardDraft, database: QuestlogDB = db): Promise<Reward> {
+  const clean = normalizeRewardDraft(draft)
+  return database.transaction('rw', database.rewards, async () => {
+    const last = await database.rewards.orderBy('order').last()
+    const reward: Reward = { id: newId(), ...clean, order: last ? last.order + 1 : 0, createdAt: Date.now() }
+    await database.rewards.add(reward)
+    return reward
+  })
+}
+
+/**
+ * Ändert eine Belohnung. Pflichtfelder, die im Patch fehlen oder `undefined` sind, bleiben unverändert;
+ * `description` wird entfernt, wenn der Patch sie explizit mit `undefined` (oder leer) enthält. Reihenfolge,
+ * Archivierung und Anlagezeit bleiben. Bisherige Einlösungen behalten ihre Momentaufnahme (Titel, Icon, Preis).
+ */
+export async function updateReward(id: string, patch: Partial<RewardDraft>, database: QuestlogDB = db): Promise<void> {
+  await database.transaction('rw', database.rewards, async () => {
+    const existing = await requireReward(database, id)
+    const merged: RewardDraft = {
+      title: patch.title ?? existing.title,
+      icon: patch.icon ?? existing.icon,
+      price: patch.price ?? existing.price,
+      repeatable: patch.repeatable ?? existing.repeatable,
+      description: Object.hasOwn(patch, 'description') ? patch.description : existing.description,
+    }
+    const next: Reward = {
+      id: existing.id,
+      ...normalizeRewardDraft(merged),
+      order: existing.order,
+      createdAt: existing.createdAt,
+    }
+    if (existing.archived === true) next.archived = true
+    await database.rewards.put(next)
+  })
+}
+
+/** Blendet eine Belohnung aus (nicht mehr einlösbar); ihre Einlösungen bleiben in der Chronik. */
+export async function archiveReward(id: string, database: QuestlogDB = db): Promise<void> {
+  await mutateReward(database, id, (reward) => (reward.archived === true ? reward : { ...reward, archived: true }))
+}
+
+/** Macht eine ausgeblendete Belohnung wieder einlösbar (an ihrem bisherigen Platz). */
+export async function restoreReward(id: string, database: QuestlogDB = db): Promise<void> {
+  await mutateReward(database, id, (reward) => {
+    if (reward.archived === undefined) return reward
+    const next: Reward = { ...reward }
+    delete next.archived
+    return next
+  })
+}
+
+/**
+ * Löscht eine Belohnung endgültig – aber nur, wenn sie nie eingelöst wurde. Mit Einlösungen wird sie
+ * stattdessen ausgeblendet (wie `archiveReward`): Die Chronik verweist auf sie, und eine einmalige Belohnung
+ * bliebe sonst nicht „eingelöst“.
+ * @returns `'deleted'` bzw. `'archived'` – für die Rückmeldung in der UI. Eine unbekannte Belohnung ändert
+ * nichts (`'deleted'`).
+ */
+export async function deleteReward(id: string, database: QuestlogDB = db): Promise<'deleted' | 'archived'> {
+  return database.transaction('rw', database.rewards, database.purchases, async () => {
+    const reward = await database.rewards.get(id)
+    if (!reward) return 'deleted'
+    const purchased = (await database.purchases.filter((purchase) => purchase.rewardId === id).count()) > 0
+    if (!purchased) {
+      await database.rewards.delete(id)
+      return 'deleted'
+    }
+    if (reward.archived !== true) await database.rewards.put({ ...reward, archived: true })
+    return 'archived'
+  })
+}
+
+/**
+ * Verschiebt eine (nicht ausgeblendete) Belohnung um eine Position nach oben/unten – Tausch des `order` mit dem
+ * Nachbarn unter den nicht ausgeblendeten (wie `moveHabit`). Am Rand, bei ausgeblendeten oder unbekannten
+ * Belohnungen passiert nichts.
+ */
+export async function moveReward(id: string, direction: 'up' | 'down', database: QuestlogDB = db): Promise<void> {
+  await database.transaction('rw', database.rewards, async () => {
+    const all = (await database.rewards.toArray()).sort(compareRewardOrder)
+    const changed = swapOrder(all, all.filter((reward) => reward.archived !== true), id, direction)
+    if (changed.length > 0) await database.rewards.bulkPut(changed)
+  })
+}
+
+/**
+ * Löst eine Belohnung am Spieltag `today` ein (Gold-Ausgabe). Alles in **einer** Transaktion – geprüft wird:
+ * - ausgeblendet → „Diese Belohnung ist nicht mehr verfügbar.“
+ * - einmalig und schon eingelöst → „Diese Belohnung hast du schon eingelöst.“
+ * - Guthaben `deriveGameState(loadGameData(), today).gold.balance` kleiner als der Preis →
+ *   „Dafür fehlen dir noch N Gold.“ (`missingGoldMessage`)
+ * Die Einlösung hält Titel, Icon und Preis als Momentaufnahme fest.
+ */
+export async function purchaseReward(rewardId: string, today: DayKey, database: QuestlogDB = db): Promise<Purchase> {
+  assertDayKey(today)
+  return database.transaction('rw', allTables(database), async () => {
+    const reward = await requireReward(database, rewardId)
+    if (reward.archived === true) throw new Error(MSG.rewardUnavailable)
+    const data = await loadGameData(database)
+    if (!reward.repeatable && (data.purchases ?? []).some((purchase) => purchase.rewardId === reward.id)) {
+      throw new Error(MSG.rewardAlreadyPurchased)
+    }
+    const balance = deriveGameState(data, today).gold.balance
+    if (balance < reward.price) throw new Error(missingGoldMessage(reward.price - balance))
+    const purchase: Purchase = {
+      id: newId(),
+      kind: 'reward',
+      rewardId: reward.id,
+      title: reward.title,
+      icon: reward.icon,
+      price: reward.price,
+      day: today,
+      createdAt: Date.now(),
+    }
+    await database.purchases.add(purchase)
+    return purchase
+  })
+}
+
+/**
+ * Macht eine Einlösung rückgängig (z. B. versehentlich getippt): Sie verschwindet aus der Chronik, das Gold ist
+ * wieder da, eine einmalige Belohnung ist wieder einlösbar. Eine unbekannte (schon rückgängig gemachte)
+ * Einlösung ändert nichts.
+ */
+export async function undoPurchase(purchaseId: string, database: QuestlogDB = db): Promise<void> {
+  await database.purchases.delete(purchaseId)
+}
+
+// ---------------------------------------------------------------------------
+// Nebenquests
+// ---------------------------------------------------------------------------
+
+/**
+ * Legt eine offene Nebenquest am Spieltag `today` an (`createdDay`), ans Ende der Liste (`order` = max + 1).
+ * Titel Pflicht; der Termin (`dueDay`) ist optional – leer bzw. `undefined` = ohne Termin.
+ */
+export async function createSideQuest(
+  draft: SideQuestDraft,
+  today: DayKey,
+  database: QuestlogDB = db,
+): Promise<SideQuest> {
+  assertDayKey(today)
+  const clean = normalizeSideQuestDraft(draft)
+  return database.transaction('rw', database.sideQuests, async () => {
+    const last = await database.sideQuests.orderBy('order').last()
+    const quest: SideQuest = { id: newId(), ...clean, createdDay: today, order: last ? last.order + 1 : 0 }
+    await database.sideQuests.add(quest)
+    return quest
+  })
+}
+
+/**
+ * Ändert eine Nebenquest. Pflichtfelder, die im Patch fehlen oder `undefined` sind, bleiben unverändert;
+ * `description` und `dueDay` werden entfernt, wenn der Patch sie explizit mit `undefined` (oder leer) enthält.
+ * Anlagetag, Reihenfolge und Erledigung bleiben.
+ */
+export async function updateSideQuest(
+  id: string,
+  patch: Partial<SideQuestDraft>,
+  database: QuestlogDB = db,
+): Promise<void> {
+  await database.transaction('rw', database.sideQuests, async () => {
+    const existing = await requireSideQuest(database, id)
+    const merged: SideQuestDraft = {
+      title: patch.title ?? existing.title,
+      icon: patch.icon ?? existing.icon,
+      attribute: patch.attribute ?? existing.attribute,
+      difficulty: patch.difficulty ?? existing.difficulty,
+      description: Object.hasOwn(patch, 'description') ? patch.description : existing.description,
+      dueDay: Object.hasOwn(patch, 'dueDay') ? patch.dueDay : existing.dueDay,
+    }
+    const next: SideQuest = {
+      id: existing.id,
+      ...normalizeSideQuestDraft(merged),
+      createdDay: existing.createdDay,
+      order: existing.order,
+    }
+    if (existing.doneDay !== undefined) next.doneDay = existing.doneDay
+    await database.sideQuests.put(next)
+  })
+}
+
+/**
+ * Erledigt eine Nebenquest am Spieltag `day` (`doneDay = day`). Ist sie schon erledigt (`doneDay ≤ day`),
+ * bleibt sie unverändert – doppeltes Tippen verschiebt ihre XP nicht. Ein `doneDay` nach `day` (der
+ * Tageswechsel wurde später gelegt, die Erledigung zählt noch nicht) wird auf `day` vorgezogen.
+ */
+export async function completeSideQuest(id: string, day: DayKey, database: QuestlogDB = db): Promise<void> {
+  assertDayKey(day)
+  await mutateSideQuest(database, id, (quest) =>
+    quest.doneDay !== undefined && isValidDayKey(quest.doneDay) && compareDays(quest.doneDay, day) <= 0
+      ? quest
+      : { ...quest, doneDay: day },
+  )
+}
+
+/** Öffnet eine erledigte Nebenquest wieder (`doneDay` entfällt, ihre XP auch). Offen → keine Änderung. */
+export async function reopenSideQuest(id: string, database: QuestlogDB = db): Promise<void> {
+  await mutateSideQuest(database, id, (quest) => {
+    if (quest.doneDay === undefined) return quest
+    const next: SideQuest = { ...quest }
+    delete next.doneDay
+    return next
+  })
+}
+
+/** Löscht eine Nebenquest endgültig (eine erledigte samt ihrer XP). Eine unbekannte ändert nichts. */
+export async function deleteSideQuest(id: string, database: QuestlogDB = db): Promise<void> {
+  await database.sideQuests.delete(id)
+}
+
+// ---------------------------------------------------------------------------
+// Erfolge
+// ---------------------------------------------------------------------------
+
+/**
+ * Speichert neu freigeschaltete Erfolge dauerhaft (einmal erreicht = für immer). Idempotent: Ein schon
+ * gespeicherter Erfolg behält seinen Tag – er wird nie überschrieben; kommt eine ID mehrfach vor, zählt der
+ * früheste Tag. Ungültige Einträge (leere ID, ungültiger Tag) → Fehler, nichts wird gespeichert.
+ */
+export async function recordAchievementUnlocks(
+  unlocks: readonly AchievementUnlock[],
+  database: QuestlogDB = db,
+): Promise<void> {
+  const earliest = new Map<string, DayKey>()
+  for (const unlock of unlocks) {
+    const id = optionalId(unlock?.id)
+    if (id === undefined) throw new Error('Ungültiger Erfolg.')
+    assertDayKey(unlock.day, 'Datum eines Erfolgs')
+    const known = earliest.get(id)
+    if (known === undefined || compareDays(unlock.day, known) < 0) earliest.set(id, unlock.day)
+  }
+  if (earliest.size === 0) return
+  await database.transaction('rw', database.achievementUnlocks, async () => {
+    const candidates = [...earliest].map(([id, day]): AchievementUnlock => ({ id, day }))
+    const stored = await database.achievementUnlocks.bulkGet(candidates.map((unlock) => unlock.id))
+    const fresh = candidates.filter((_, index) => stored[index] === undefined)
+    if (fresh.length > 0) await database.achievementUnlocks.bulkAdd(fresh)
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Alles zurücksetzen
 // ---------------------------------------------------------------------------
 
-/** Löscht ALLE Daten (Profil, Einstellungen, Quests, Erledigungen, Kampagnen) in einer Transaktion. */
+/**
+ * Löscht ALLE Daten (Profil, Einstellungen, Quests, Erledigungen, Kampagnen, Belohnungen, Einlösungen,
+ * Nebenquests, Erfolge) in einer Transaktion.
+ */
 export async function resetAllData(database: QuestlogDB = db): Promise<void> {
   const tables = allTables(database)
   await database.transaction('rw', tables, async () => {
@@ -789,18 +1064,74 @@ export async function resetAllData(database: QuestlogDB = db): Promise<void> {
 // Interne Helfer: Datenbank
 // ---------------------------------------------------------------------------
 
-function allTables(database: QuestlogDB) {
-  return [database.habits, database.completions, database.mainQuests, database.kv]
-}
-
 /** Sortierung von Quests: `order`, dann Titel, dann ID (stabil & deterministisch). */
 function compareHabitOrder(a: Habit, b: Habit): number {
   return a.order - b.order || a.title.localeCompare(b.title, 'de') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 }
 
-function needsOrderNormalization(habits: Habit[]): boolean {
-  const orders = habits.map((habit) => habit.order)
+/** Sortierung von Belohnungen: `order`, dann Anlagezeit, dann ID. */
+function compareRewardOrder(a: Reward, b: Reward): number {
+  return a.order - b.order || a.createdAt - b.createdAt || compareIds(a.id, b.id)
+}
+
+/** Sortierung der Einlösungen (Chronik): Zeitpunkt, dann ID. */
+function comparePurchases(a: Purchase, b: Purchase): number {
+  return a.createdAt - b.createdAt || compareIds(a.id, b.id)
+}
+
+/** Sortierung von Nebenquests: `order`, dann Titel, dann ID (wie Quests). */
+function compareSideQuestOrder(a: SideQuest, b: SideQuest): number {
+  return a.order - b.order || a.title.localeCompare(b.title, 'de') || compareIds(a.id, b.id)
+}
+
+/** Sortierung freigeschalteter Erfolge: Tag, dann ID. */
+function compareUnlocks(a: AchievementUnlock, b: AchievementUnlock): number {
+  return compareDays(a.day, b.day) || compareIds(a.id, b.id)
+}
+
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function needsOrderNormalization(items: readonly { order: number }[]): boolean {
+  const orders = items.map((item) => item.order)
   return orders.some((order) => !Number.isFinite(order)) || new Set(orders).size !== orders.length
+}
+
+/**
+ * Tauscht den `order` des Eintrags `id` mit dem seines Nachbarn (oben/unten) unter `movable` – einer Teilmenge
+ * von `sorted` mit denselben Objekten in derselben Reihenfolge (z. B. nur die aktiven Quests). Sind `order`-Werte
+ * doppelt oder ungültig, werden vorher alle Einträge lückenlos neu durchnummeriert (0, 1, 2, …), damit der Tausch
+ * eindeutig ist. Ändert die Objekte und liefert die geänderten; am Rand oder bei unbekannter ID: `[]`.
+ */
+function swapOrder<T extends { id: string; order: number }>(
+  sorted: T[],
+  movable: T[],
+  id: string,
+  direction: 'up' | 'down',
+): T[] {
+  const index = movable.findIndex((item) => item.id === id)
+  const neighborIndex = direction === 'up' ? index - 1 : index + 1
+  if (index === -1 || neighborIndex < 0 || neighborIndex >= movable.length) return []
+
+  const changed = new Set<T>()
+  if (needsOrderNormalization(sorted)) {
+    sorted.forEach((item, position) => {
+      if (item.order !== position) {
+        item.order = position
+        changed.add(item)
+      }
+    })
+  }
+
+  // `movable` enthält dieselben Objekte wie `sorted`, d. h. die Normalisierung ist hier schon sichtbar.
+  const self = movable[index]
+  const neighbor = movable[neighborIndex]
+  const selfOrder = self.order
+  self.order = neighbor.order
+  neighbor.order = selfOrder
+  changed.add(self).add(neighbor)
+  return [...changed]
 }
 
 async function nextHabitOrder(database: QuestlogDB): Promise<number> {
@@ -818,6 +1149,40 @@ async function requireMainQuest(database: QuestlogDB, id: string): Promise<MainQ
   const quest = await database.mainQuests.get(id)
   if (!quest) throw new Error(MSG.questNotFound)
   return quest
+}
+
+async function requireReward(database: QuestlogDB, id: string): Promise<Reward> {
+  const reward = await database.rewards.get(id)
+  if (!reward) throw new Error(MSG.rewardNotFound)
+  return reward
+}
+
+async function requireSideQuest(database: QuestlogDB, id: string): Promise<SideQuest> {
+  const quest = await database.sideQuests.get(id)
+  if (!quest) throw new Error(MSG.sideQuestNotFound)
+  return quest
+}
+
+/** Lesen → ändern → schreiben einer Belohnung in einer Transaktion; unverändert (dasselbe Objekt) → kein Schreiben. */
+async function mutateReward(database: QuestlogDB, id: string, change: (reward: Reward) => Reward): Promise<void> {
+  await database.transaction('rw', database.rewards, async () => {
+    const reward = await requireReward(database, id)
+    const next = change(reward)
+    if (next !== reward) await database.rewards.put(next)
+  })
+}
+
+/** Lesen → ändern → schreiben einer Nebenquest in einer Transaktion; unverändert → kein Schreiben. */
+async function mutateSideQuest(
+  database: QuestlogDB,
+  id: string,
+  change: (quest: SideQuest) => SideQuest,
+): Promise<void> {
+  await database.transaction('rw', database.sideQuests, async () => {
+    const quest = await requireSideQuest(database, id)
+    const next = change(quest)
+    if (next !== quest) await database.sideQuests.put(next)
+  })
 }
 
 /** Lesen → ändern → schreiben einer Quest in einer Transaktion. */
@@ -1149,6 +1514,45 @@ function normalizeChapters(chapters: Chapter[]): Chapter[] {
     }
     return result
   })
+}
+
+/** Preis einer Belohnung: ganze Zahl von 1 bis `MAX_REWARD_PRICE`, sonst Fehler. */
+function normalizeRewardPrice(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_REWARD_PRICE) {
+    throw new Error(MSG.rewardPrice)
+  }
+  return value
+}
+
+/** Validiert und normalisiert die bearbeitbaren Felder einer Belohnung. Eine leere Beschreibung entfällt. */
+function normalizeRewardDraft(draft: RewardDraft): RewardDraft {
+  const result: RewardDraft = {
+    title: requireText(draft.title, 'Die Belohnung braucht einen Namen.'),
+    icon: optionalText(draft.icon) ?? DEFAULT_REWARD_ICON,
+    price: normalizeRewardPrice(draft.price),
+    repeatable: draft.repeatable === true,
+  }
+  const description = optionalText(draft.description)
+  if (description !== undefined) result.description = description
+  return result
+}
+
+/** Validiert und normalisiert die bearbeitbaren Felder einer Nebenquest. Leere optionale Felder entfallen. */
+function normalizeSideQuestDraft(draft: SideQuestDraft): SideQuestDraft {
+  const result: SideQuestDraft = {
+    title: requireText(draft.title, 'Die Nebenquest braucht einen Namen.'),
+    icon: optionalText(draft.icon) ?? DEFAULT_SIDE_QUEST_ICON,
+    attribute: normalizeAttribute(draft.attribute),
+    difficulty: normalizeDifficulty(draft.difficulty),
+  }
+  const description = optionalText(draft.description)
+  if (description !== undefined) result.description = description
+  const dueDay: unknown = draft.dueDay
+  if (dueDay !== undefined && dueDay !== null && dueDay !== '') {
+    assertDayKey(dueDay, 'Datum für den Termin')
+    result.dueDay = dueDay
+  }
+  return result
 }
 
 /** Validiert und normalisiert die bearbeitbaren Felder einer Kampagne. Leere optionale Felder entfallen. */

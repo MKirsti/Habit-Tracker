@@ -200,6 +200,21 @@ function DeleteMessage({ title, impact }: { title: string; impact: DeletionImpac
           'Deine XP und dein Level bleiben dabei unverändert.'
         )}
       </span>
+      {impact.goldLost > 0 && (
+        <span className="mt-2 block">
+          Dein Gold sinkt um <strong className="font-semibold text-parchment">{formatNumber(impact.goldLost)} Gold</strong>
+          {impact.goldAfter < 0 ? (
+            <>
+              {' '}
+              – danach stündest du mit{' '}
+              <strong className="font-semibold text-parchment">{formatNumber(Math.abs(impact.goldAfter))} Gold</strong> im Minus und
+              könntest bis zum Ausgleich nichts einlösen.
+            </>
+          ) : (
+            '.'
+          )}
+        </span>
+      )}
       {chapterLosses.map((text) => (
         <span key={text} className="mt-2 block">
           {text}

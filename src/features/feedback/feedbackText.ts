@@ -1,10 +1,17 @@
 /**
  * Deutsche Texte für die Spiel-Rückmeldungen (Toasts & Feier-Szenen). Rein, damit testbar.
  */
+import { ACHIEVEMENT_TIER_LABELS } from '../../domain/achievements/definitions'
 import { ATTRIBUTES } from '../../domain/attributes'
 import { RANKS } from '../../domain/balancing'
 import { formatNumber } from '../../ui'
-import type { AttributeLevelUpEvent, ChapterCompletedEvent, PerfectDayEvent, XpQuest } from './feedbackEvents'
+import type {
+  AchievementUnlockedEvent,
+  AttributeLevelUpEvent,
+  ChapterCompletedEvent,
+  PerfectDayEvent,
+  XpQuest,
+} from './feedbackEvents'
 
 export interface ToastText {
   title: string
@@ -14,6 +21,11 @@ export interface ToastText {
 /** "+1.250 XP" */
 export function xpLabel(amount: number): string {
   return `+${formatNumber(amount)} XP`
+}
+
+/** "+12 Gold" */
+export function goldLabel(amount: number): string {
+  return `+${formatNumber(amount)} Gold`
 }
 
 /**
@@ -29,24 +41,30 @@ export function joinTitles(titles: readonly string[], max = 3): string {
 }
 
 /**
- * XP-Toast: "+20 XP" · "Lesen" (bzw. mehrere Quests, "Nachgetragen: …", Bonus-Hinweis).
- * Höchstens zwei Titel werden ausgeschrieben – der Toast soll auch auf schmalen Handys kompakt bleiben.
+ * XP-Toast: "+20 XP · +10 Gold" · "Lesen" (bzw. mehrere Quests, "Nebenquest: …", "Nachgetragen: …",
+ * Bonus-Hinweis). Ohne Gold (0) nur die XP. Höchstens zwei Titel werden ausgeschrieben – der Toast soll auch auf
+ * schmalen Handys kompakt bleiben.
  */
 export function xpToastText(
   amount: number,
   quests: readonly XpQuest[],
   bonusXp: number,
   backfill = false,
+  gold = 0,
 ): ToastText {
   const parts: string[] = []
   const titles = joinTitles(
     quests.map((quest) => quest.title),
     2,
   )
+  // Nur Nebenquests: als solche benennen (sie stehen nicht in der Tagesliste).
+  const sideOnly = quests.length > 0 && quests.every((quest) => quest.sideQuest)
+  const named = sideOnly ? `${quests.length === 1 ? 'Nebenquest' : 'Nebenquests'}: ${titles}` : titles
   if (titles === '') parts.push('Nachgetragene Quest')
-  else parts.push(backfill ? `Nachgetragen: ${titles}` : titles)
+  else parts.push(backfill ? `Nachgetragen: ${titles}` : named)
   if (bonusXp > 0) parts.push(`inkl. ${formatNumber(bonusXp)} Bonus-XP`)
-  return { title: xpLabel(amount), description: parts.join(' · ') }
+  const title = gold > 0 ? `${xpLabel(amount)} · ${goldLabel(gold)}` : xpLabel(amount)
+  return { title, description: parts.join(' · ') }
 }
 
 /** "+28 Bonus-XP" */
@@ -74,6 +92,17 @@ export function chapterToastText(event: ChapterCompletedEvent): ToastText {
   return {
     title: `Kapitel abgeschlossen: ${event.chapterTitle} · ${xpLabel(event.xp)}`,
     description: event.campaignTitle,
+  }
+}
+
+/**
+ * Erfolgs-Toast: "Ein ganzer Mond · +75 Gold" · "Silber-Erfolg freigeschaltet" (das Emoji kommt ins Toast-Icon,
+ * in der Farbe der Stufe). Ohne Gold-Belohnung nur der Titel.
+ */
+export function achievementToastText(event: Pick<AchievementUnlockedEvent, 'title' | 'tier' | 'gold'>): ToastText {
+  return {
+    title: event.gold > 0 ? `${event.title} · ${goldLabel(event.gold)}` : event.title,
+    description: `${ACHIEVEMENT_TIER_LABELS[event.tier]}-Erfolg freigeschaltet`,
   }
 }
 

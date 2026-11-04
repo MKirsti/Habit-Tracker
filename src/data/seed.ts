@@ -28,7 +28,7 @@ import type {
 import { getBlueprint } from './blueprints'
 import { BLUEPRINT_LEVELS } from './blueprints/types'
 import type { BlueprintCriterion, BlueprintOptions, BlueprintQuest, CampaignBlueprint } from './blueprints/types'
-import { db, type QuestlogDB } from './db'
+import { allTables, db, type QuestlogDB } from './db'
 import { newId } from './ids'
 import { loadGameData, saveProfile } from './repository'
 
@@ -279,10 +279,6 @@ function assertToday(today: DayKey): void {
   if (typeof today !== 'string' || !isValidDayKey(today)) {
     throw new Error(`Ungültiges Datum: ${String(today)} (erwartet JJJJ-MM-TT).`)
   }
-}
-
-function allTables(database: QuestlogDB) {
-  return [database.habits, database.completions, database.mainQuests, database.kv]
 }
 
 /** Sortierung wie in der Quest-Liste: `order`, dann Titel, dann ID. */

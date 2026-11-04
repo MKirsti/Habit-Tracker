@@ -28,7 +28,7 @@
  * Die in der früheren Einheit erreichten Serien liefert `bestStreakIn` – damit gehen Bestwerte und
  * erreichte Streak-Kapitel (und deren XP) durch das Umstellen nicht verloren.
  */
-import { fromEpochDay, isoWeekday, toEpochDay } from './dates'
+import { fromEpochDay, isoWeekday, isValidDayKey, toEpochDay } from './dates'
 import { isScheduledWeekday, mergePauses } from './schedule'
 import type { DayKey, Habit, IsoWeekday, Schedule, Streak } from './types'
 
@@ -234,6 +234,100 @@ export function bestStreakIn(
 ): number {
   if (!everHadUnit(habit, unit)) return 0
   return scan(habit, doneDays, unit, asOf, from).best
+}
+
+/**
+ * Länge der Serie unmittelbar **vor** jedem der Tage `days` – Grundlage des Streak-Bonus (ARCHITECTURE.md
+ * „Streak-Bonus“, `streakBonus.ts`). `ergebnis[i]` gehört zu `days[i]`; die Reihenfolge von `days` ist beliebig.
+ *
+ * Die Einheit richtet sich nach dem Rhythmus **des jeweiligen Tages** (`scheduleOn`), nicht nach dem aktuellen:
+ * So ändert eine spätere Umstellung des Rhythmus nie den Bonus (und damit die XP) vergangener Tage.
+ * - Tages-Einheit (daily / weekdays): aufeinanderfolgende erledigte Plantage direkt vor dem Tag – gleiche Regeln
+ *   wie `computeStreak`: Nicht-Plantage (auch Tage, an denen die Quest damals eine Wochenquest war) und Pausen
+ *   werden übersprungen, ein verpasster Plantag setzt auf 0. Der Tag selbst zählt nicht mit.
+ * - Wochen-Einheit (weekly): aufeinanderfolgende erfüllte Wochen direkt vor der Woche des Tages – gleiche Regeln
+ *   wie `computeStreak` (Wochenziel vom Montag, übersprungene Wochen und Wochen mit Pausen brechen nichts).
+ *   Alle Tage einer Woche bekommen denselben Wert.
+ *
+ * Vor `createdDay` gibt es keine Serie (0). Tage ab `archivedDay` wirken wie Pausen – die Serie ruht: Eine
+ * Erledigung am Archivierungstag behält so ihren Bonus, auch nachdem die Quest zurückgeholt wurde (die
+ * archivierte Zeit wird dabei zur Pause). Der Wert eines Tages hängt nur von den Tagen davor und dem Rhythmus
+ * des Tages ab.
+ *
+ * Laufzeit: ein Durchlauf von `createdDay` bis zum spätesten Tag in `days`, O(Tage + Erledigungen + Einträge).
+ */
+export function streakRunsBefore(habit: Habit, doneDays: ReadonlySet<DayKey>, days: readonly DayKey[]): number[] {
+  const runs = days.map(() => 0)
+  const start = toEpochDay(habit.createdDay)
+  const queries = days
+    .map((day, index) => ({ day: toEpochDay(day), index }))
+    .filter((query) => query.day >= start) // vor dem Anlegen: keine Serie
+    .sort((a, b) => a.day - b.day)
+  if (queries.length === 0) return runs
+
+  const lastDay = queries[queries.length - 1].day
+  const archived = habit.archivedDay === undefined ? Number.POSITIVE_INFINITY : toEpochDay(habit.archivedDay)
+  const done = new Set<number>()
+  for (const day of doneDays) if (isValidDayKey(day)) done.add(toEpochDay(day))
+  const timeline = habitTimeline(habit)
+
+  // Tages-Einheit (wie scanDays, ohne Ausnahme für den Stichtag: vor einem Tag liegt nur Vergangenes).
+  let schedule: Schedule | undefined
+  const scheduled: boolean[] = []
+  let dayRun = 0
+  // Wochen-Einheit (wie scanWeeks).
+  let weekRun = 0
+  /** Serie unmittelbar vor der laufenden Woche. */
+  let weekRunBefore = 0
+  let times = 0
+  let doneInWeek = 0
+  let weekFulfilled = false
+  /** Woche mit pausierten (oder archivierten) Tagen: bricht nichts. */
+  let weekInterrupted = false
+
+  let next = 0
+  let weekday = isoWeekday(fromEpochDay(start))
+  for (let day = start; day <= lastDay; day++, weekday = nextWeekday(weekday)) {
+    if (day === start || weekday === 1) {
+      weekRunBefore = weekRun
+      // Maßgeblich ist der Rhythmus am Montag der Woche (auch wenn die Quest erst später angelegt wurde).
+      const weekSchedule = timeline.scheduleAt(day - (weekday - 1))
+      times = weekSchedule.type === 'weekly' ? Math.max(1, weekSchedule.times) : 0
+    }
+    const daySchedule = timeline.scheduleAt(day)
+    // Stichtage beantworten, bevor der Tag selbst zählt.
+    while (next < queries.length && queries[next].day === day) {
+      runs[queries[next].index] = daySchedule.type === 'weekly' ? weekRunBefore : dayRun
+      next++
+    }
+    if (next === queries.length) break
+
+    if (day < archived && !timeline.pausedAt(day)) {
+      const isDoneDay = done.has(day)
+      if (daySchedule !== schedule) {
+        schedule = daySchedule
+        for (let w = 1; w <= 7; w++) scheduled[w] = isScheduledWeekday(daySchedule, w as IsoWeekday)
+      }
+      if (scheduled[weekday]) dayRun = isDoneDay ? dayRun + 1 : 0
+      if (times > 0 && isDoneDay) {
+        doneInWeek++
+        if (!weekFulfilled && doneInWeek >= times) {
+          weekFulfilled = true
+          weekRun++
+        }
+      }
+    } else {
+      weekInterrupted = true
+    }
+
+    if (weekday === 7) {
+      if (times > 0 && !weekFulfilled && !weekInterrupted) weekRun = 0
+      doneInWeek = 0
+      weekFulfilled = false
+      weekInterrupted = false
+    }
+  }
+  return runs
 }
 
 /**

@@ -15,10 +15,16 @@ import {
 import { QuestlogDB } from './db'
 import {
   archiveHabit,
+  archiveReward,
+  completeSideQuest,
   createHabit,
   createMainQuest,
+  createReward,
+  createSideQuest,
   deleteHabit,
   loadGameData,
+  purchaseReward,
+  recordAchievementUnlocks,
   saveProfile,
   setChapterCounter,
   setChapterManual,
@@ -149,6 +155,50 @@ async function fillWithRichData(database: QuestlogDB): Promise<void> {
     },
     database,
   )
+
+  // Phase 2a: Schatzkammer (auch ausgeblendet, einmalig), Einlösungen, Nebenquests (offen/erledigt), Erfolge
+  const pizza = await createReward(
+    { title: 'Pizza', icon: '🍕', description: 'Mit extra Käse', price: 40, repeatable: true },
+    database,
+  )
+  const book = await createReward({ title: 'Buch', icon: '📕', price: 5, repeatable: false }, database)
+  const old = await createReward({ title: 'Alter Wunsch', icon: '🗝️', price: 999, repeatable: true }, database)
+  await archiveReward(old.id, database)
+  const taxes = await createSideQuest(
+    { title: 'Steuer', icon: '🧾', description: 'Belege', attribute: 'discipline', difficulty: 'epic', dueDay: '2026-10-20' },
+    '2026-10-01',
+    database,
+  )
+  await completeSideQuest(taxes.id, '2026-10-03', database)
+  await createSideQuest({ title: 'Zahnarzt', icon: '🦷', attribute: 'vitality', difficulty: 'easy' }, '2026-10-05', database)
+  await purchaseReward(pizza.id, '2026-10-16', database)
+  await purchaseReward(book.id, '2026-10-17', database)
+  await recordAchievementUnlocks(
+    [
+      { id: 'quests-10', day: '2026-10-09' },
+      { id: 'side-quests-1', day: '2026-10-03' },
+    ],
+    database,
+  )
+}
+
+/** Einträge der Phase-2a-Listen, wie sie ein Backup enthalten kann. */
+function phase2aEntries() {
+  return {
+    rewards: [
+      { id: 'r1', title: 'Pizza', icon: '🍕', description: 'Mit Käse', price: 40, repeatable: true, order: 0, createdAt: 1 },
+      { id: 'r2', title: 'Alt', icon: '🗝️', price: 5, repeatable: false, order: 1, archived: true, createdAt: 2 },
+    ],
+    purchases: [
+      { id: 'p1', kind: 'reward', rewardId: 'r1', title: 'Pizza', icon: '🍕', price: 40, day: DAY, createdAt: 3 },
+      { id: 'p2', kind: 'reward', title: 'Ohne Verweis', icon: '🎁', price: 1, day: DAY, createdAt: 4 },
+    ],
+    sideQuests: [
+      { id: 's1', title: 'Steuer', icon: '🧾', description: 'Belege', attribute: 'discipline', difficulty: 'hard', dueDay: DAY, createdDay: DAY, doneDay: DAY, order: 0 },
+      { id: 's2', title: 'Keller', icon: '📦', attribute: 'vitality', difficulty: 'easy', createdDay: DAY, order: 1 },
+    ],
+    achievementUnlocks: [{ id: 'streak-7', day: DAY }],
+  }
 }
 
 /** Ein gültiges, minimales Backup als frisches Objekt (zum gezielten Kaputtmachen in Tests). */
@@ -219,6 +269,12 @@ describe('Backup-Roundtrip', () => {
     expect(original.habits.some((h) => h.scheduleHistory?.length && h.pauses?.length)).toBe(true)
     expect(original.mainQuests.flatMap((q) => q.chapters).some((c) => c.completedDay && c.manualDone)).toBe(true)
     expect(original.deletedHabits?.some((t) => t.scheduleHistory?.length && t.pauses?.length)).toBe(true)
+    expect(original.rewards?.some((r) => r.archived) && original.rewards.some((r) => r.description && r.repeatable)).toBe(true)
+    expect(original.rewards?.some((r) => !r.repeatable)).toBe(true)
+    expect(original.purchases).toHaveLength(2)
+    expect(original.sideQuests?.some((q) => q.doneDay && q.dueDay && q.description)).toBe(true)
+    expect(original.sideQuests?.some((q) => q.doneDay === undefined)).toBe(true)
+    expect(original.achievementUnlocks).toHaveLength(2)
 
     const json = JSON.stringify(await createBackup(EXPORT_TIME, source))
     const parsed = parseBackup(JSON.parse(json))
@@ -278,6 +334,38 @@ describe('Backup-Roundtrip', () => {
     vi.restoreAllMocks()
 
     expect(await loadGameData(target)).toStrictEqual(before)
+  })
+
+  it('lässt bei einem Fehler in den Phase-2a-Tabellen den alten Stand unangetastet', async () => {
+    await fillWithRichData(source)
+    const backup = await createBackup(EXPORT_TIME, source)
+
+    const target = freshDatabase()
+    await fillWithRichData(target)
+    await createReward({ title: 'Nur im Ziel', icon: '🎈', price: 3, repeatable: true }, target)
+    const before = await loadGameData(target)
+
+    vi.spyOn(target.achievementUnlocks, 'bulkAdd').mockRejectedValue(new Error('Festplatte voll'))
+    await expect(restoreBackup(backup, target)).rejects.toThrow('Festplatte voll')
+    vi.restoreAllMocks()
+
+    expect(await loadGameData(target)).toStrictEqual(before)
+  })
+
+  it('ein älteres Backup ohne Phase-2a-Listen leert Belohnungen, Einlösungen, Nebenquests und Erfolge', async () => {
+    const target = freshDatabase()
+    await fillWithRichData(target)
+    const parsed = parseBackup(validBackup())
+    if (!parsed.ok) throw new Error(parsed.error)
+
+    await restoreBackup(parsed.backup, target)
+
+    const restored = await loadGameData(target)
+    for (const key of ['rewards', 'purchases', 'sideQuests', 'achievementUnlocks']) expect(key in restored).toBe(false)
+    for (const table of [target.rewards, target.purchases, target.sideQuests, target.achievementUnlocks]) {
+      expect(await table.count()).toBe(0)
+    }
+    expect(restored.habits.map((habit) => habit.id)).toEqual(['h1'])
   })
 
   it('wirft bei ungültigem Backup, ohne Daten zu ändern', async () => {
@@ -366,6 +454,45 @@ describe('parseBackup', () => {
       ...override,
     }))
     expect(expectError(input)).toMatch(message)
+  })
+
+  it('übernimmt Belohnungen, Einlösungen, Nebenquests und Erfolge; ältere Backups ohne sie bleiben gültig', () => {
+    const input = validBackup()
+    Object.assign(input.data, phase2aEntries())
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.backup.schemaVersion).toBe(1)
+    expect(result.backup.data).toMatchObject(phase2aEntries())
+    const { rewards, purchases, sideQuests, achievementUnlocks } = result.backup.data
+    expect({ rewards, purchases, sideQuests, achievementUnlocks }).toStrictEqual(phase2aEntries())
+
+    const legacy = parseBackup(validBackup())
+    if (!legacy.ok) throw new Error(legacy.error)
+    for (const key of ['rewards', 'purchases', 'sideQuests', 'achievementUnlocks']) expect(key in legacy.backup.data).toBe(false)
+  })
+
+  it.each([
+    ['Preis 0', (e: Phase2a) => (e.rewards[0].price = 0), 'data.rewards.0.price'],
+    ['Preis mit Nachkommastellen', (e: Phase2a) => (e.rewards[1].price = 2.5), 'data.rewards.1.price'],
+    ['Belohnung ohne wiederholbar-Angabe', (e: Phase2a) => delete (e.rewards[0] as Partial<Phase2a['rewards'][0]>).repeatable, 'data.rewards.0.repeatable'],
+    ['doppelte Belohnung', (e: Phase2a) => (e.rewards[1].id = 'r1'), 'data.rewards.1.id'],
+    ['unbekannte Ausgabe-Art', (e: Phase2a) => (e.purchases[0].kind = 'item'), 'data.purchases.0.kind'],
+    ['Einlösung an ungültigem Tag', (e: Phase2a) => (e.purchases[1].day = '2026-02-30'), 'data.purchases.1.day'],
+    ['negativer Einlösungspreis', (e: Phase2a) => (e.purchases[0].price = -40), 'data.purchases.0.price'],
+    ['doppelte Einlösung', (e: Phase2a) => (e.purchases[1].id = 'p1'), 'data.purchases.1.id'],
+    ['Nebenquest mit ungültigem Termin', (e: Phase2a) => (e.sideQuests[0].dueDay = 'morgen'), 'data.sideQuests.0.dueDay'],
+    ['Nebenquest mit unbekannter Schwierigkeit', (e: Phase2a) => (e.sideQuests[1].difficulty = 'legendary'), 'data.sideQuests.1.difficulty'],
+    ['Nebenquest ohne Anlagetag', (e: Phase2a) => delete (e.sideQuests[1] as Partial<Phase2a['sideQuests'][1]>).createdDay, 'data.sideQuests.1.createdDay'],
+    ['doppelte Nebenquest', (e: Phase2a) => (e.sideQuests[1].id = 's1'), 'data.sideQuests.1.id'],
+    ['Erfolg ohne ID', (e: Phase2a) => (e.achievementUnlocks[0].id = ''), 'data.achievementUnlocks.0.id'],
+    ['Erfolg an ungültigem Tag', (e: Phase2a) => (e.achievementUnlocks[0].day = '3.11.2026'), 'data.achievementUnlocks.0.day'],
+    ['doppelter Erfolg', (e: Phase2a) => e.achievementUnlocks.push({ id: 'streak-7', day: DAY }), 'data.achievementUnlocks.1.id'],
+  ])('lehnt ungültige Phase-2a-Daten ab: %s', (_label, breakIt, path) => {
+    const entries: Phase2a = phase2aEntries()
+    breakIt(entries)
+    const input = validBackup()
+    Object.assign(input.data, entries)
+    expect(expectError(input)).toContain(`Ungültige Daten: ${path} – `)
   })
 
   it('meldet kaputtes JSON', () => {
@@ -498,6 +625,9 @@ describe('Schema-Typen', () => {
     expectTypeOf<z.output<typeof gameDataSchema>>().toEqualTypeOf<GameData>()
   })
 })
+
+/** Phase-2a-Einträge (Texte als `string` typisiert) – Tests machen sie gezielt kaputt. */
+type Phase2a = ReturnType<typeof phase2aEntries>
 
 function habitOf(backup: ReturnType<typeof validBackup>): Record<string, unknown> {
   return (backup.data.habits as Record<string, unknown>[])[0]

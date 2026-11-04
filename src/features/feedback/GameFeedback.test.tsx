@@ -10,8 +10,11 @@ import { createBackup, restoreBackup } from '../../data/backup'
 import { db } from '../../data/db'
 import {
   archiveHabit,
+  completeSideQuest,
   createHabit,
   createMainQuest,
+  createSideQuest,
+  reopenSideQuest,
   resetAllData,
   saveProfile,
   setChapterCounter,
@@ -23,6 +26,7 @@ import { ATTRIBUTES } from '../../domain/attributes'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { ToastProvider } from '../../ui'
+import { ACHIEVEMENT_TIER_COLORS } from './achievementTier'
 import { GameFeedback } from './GameFeedback'
 
 /** Dienstag, 3. November 2026, 12:00 Uhr → Spieltag 2026-11-03. */
@@ -105,11 +109,11 @@ function controllableClock() {
   }
 }
 
-/** Summe aller sichtbaren XP-Toasts („+30 XP“). */
+/** Summe aller sichtbaren XP-Toasts („+30 XP · +15 Gold“ zählt 30). */
 function visibleXpSum(): number {
   return screen
-    .queryAllByText(/^\+[\d.]+ XP$/)
-    .reduce((sum, element) => sum + Number((element.textContent ?? '').replace(/[^\d]/g, '')), 0)
+    .queryAllByText(/^\+[\d.]+ XP( · \+[\d.]+ Gold)?$/)
+    .reduce((sum, element) => sum + Number(/^\+([\d.]+) XP/.exec(element.textContent ?? '')?.[1].replace(/\./g, '')), 0)
 }
 
 async function renderFeedback() {
@@ -130,9 +134,9 @@ describe('GameFeedback', () => {
     await renderFeedback()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
-    // 80 XP → noch Level 1: nur Toasts (XP + Attribut).
+    // 80 XP → noch Level 1: nur Toasts (XP samt Gold + Attribut).
     await setCompletionValue(training.id, TODAY, 1)
-    expect(await screen.findByText('+80 XP')).toBeInTheDocument()
+    expect(await screen.findByText('+80 XP · +40 Gold')).toBeInTheDocument()
     expect(screen.getByText('Krafttraining')).toBeInTheDocument()
     expect(await screen.findByText('Stärke steigt auf Level 2')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -165,15 +169,18 @@ describe('GameFeedback', () => {
     await setCompletionValue(training.id, TODAY, 1)
     const dialog = await screen.findByRole('dialog', { name: 'Level 2 erreicht!' })
     // Hinter der Szene würden die Toasts ungesehen ablaufen.
-    expect(screen.queryByText('+80 XP')).not.toBeInTheDocument()
+    expect(screen.queryByText('+80 XP · +40 Gold')).not.toBeInTheDocument()
     expect(screen.queryByText('Perfekter Tag! +20 Bonus-XP')).not.toBeInTheDocument()
     expect(screen.queryByText('Stärke steigt auf Level 2')).not.toBeInTheDocument()
+    expect(screen.queryByText('Makellos · +25 Gold')).not.toBeInTheDocument()
 
     await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Weiter' }))
-    expect(await screen.findByText('+80 XP')).toBeInTheDocument()
+    expect(await screen.findByText('+80 XP · +40 Gold')).toBeInTheDocument()
     expect(screen.getByText('Krafttraining')).toBeInTheDocument()
     expect(screen.getByText('Perfekter Tag! +20 Bonus-XP')).toBeInTheDocument()
     expect(screen.getByText('Stärke steigt auf Level 2')).toBeInTheDocument()
+    // Der erste Perfekte Tag ist auch ein Erfolg – sein Toast kommt ebenfalls erst nach der Szene.
+    expect(screen.getByText('Makellos · +25 Gold')).toBeInTheDocument()
   })
 
   it('feiert denselben Level nach Haken entfernen und wieder setzen nicht erneut', async () => {
@@ -205,8 +212,9 @@ describe('GameFeedback', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // Nichts davon ist mehr wahr – auch die zurückgehaltenen Toasts erscheinen nicht.
     await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(screen.queryByText('+80 XP')).not.toBeInTheDocument()
+    expect(screen.queryByText('+80 XP · +40 Gold')).not.toBeInTheDocument()
     expect(screen.queryByText('Perfekter Tag! +20 Bonus-XP')).not.toBeInTheDocument()
+    expect(screen.queryByText('Makellos · +25 Gold')).not.toBeInTheDocument()
 
     // Wird der Level danach wirklich erreicht, gibt es die Szene (sie wurde ja nie gesehen).
     await setCompletionValue(training.id, TODAY, 1)
@@ -219,7 +227,7 @@ describe('GameFeedback', () => {
     await renderFeedback()
 
     await setCompletionValue(meditation.id, TODAY, 1)
-    expect(await screen.findByText('+10 XP')).toBeInTheDocument()
+    expect(await screen.findByText('+10 XP · +5 Gold')).toBeInTheDocument()
     // Nach dem Zusammenfass-Fenster: eigener Toast für die zweite Quest.
     await new Promise((resolve) => setTimeout(resolve, 1300))
     await setCompletionValue(stretching.id, TODAY, 1)
@@ -302,7 +310,8 @@ describe('GameFeedback', () => {
     await setCompletionValue(deep.id, TODAY, 1)
     expect(await screen.findByText('Tagesbonus steigt auf +13 Bonus-XP')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText(/^Perfekter Tag!/)).not.toBeInTheDocument())
-    expect(screen.getByText('+40 XP')).toBeInTheDocument()
+    // 13 → 53 XP: 6 → 26 Gold.
+    expect(screen.getByText('+40 XP · +20 Gold')).toBeInTheDocument()
     expect(screen.getByText('Tiefe')).toBeInTheDocument()
   })
 
@@ -330,7 +339,7 @@ describe('GameFeedback', () => {
     await renderFeedback()
     // Dienstag: Die Mo/Mi/Fr-Quest wird für Montag nachgetragen.
     await setCompletionValue(running.id, '2026-11-02', 1)
-    expect(await screen.findByText('+20 XP')).toBeInTheDocument()
+    expect(await screen.findByText('+20 XP · +10 Gold')).toBeInTheDocument()
     expect(screen.getByText('Nachgetragen: Laufen')).toBeInTheDocument()
     expect(screen.queryByText('Nachgetragene Quest')).not.toBeInTheDocument()
   })
@@ -341,11 +350,12 @@ describe('GameFeedback', () => {
     await createHabit(TRAINING, TODAY) // noch offen → kein Perfekter Tag
     await renderFeedback()
     await setCompletionValue(meditation.id, TODAY, 1)
-    expect(await screen.findByText('+10 XP')).toBeInTheDocument()
+    expect(await screen.findByText('+10 XP · +5 Gold')).toBeInTheDocument()
 
     clock.skip(2000) // eigener Toast statt Zusammenfassen
     await db.completions.where('habitId').equals(meditation.id).modify({ difficulty: 'epic', updatedAt: Date.now() + 1 })
-    expect(await screen.findByText('+70 XP')).toBeInTheDocument()
+    // 10 → 80 XP: 5 → 40 Gold.
+    expect(await screen.findByText('+70 XP · +35 Gold')).toBeInTheDocument()
     expect(screen.getAllByText('Meditieren')).toHaveLength(2)
     expect(screen.queryByText(/Nachgetragen/)).not.toBeInTheDocument()
   })
@@ -381,6 +391,12 @@ describe('GameFeedback', () => {
     await user.click(within(levelUp).getByRole('button', { name: 'Weiter' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByText('Kapitel abgeschlossen: Der erste Funke · +100 XP')).toBeInTheDocument()
+    // Dazu die Erfolge „Das erste Kapitel“ (Bronze) und „Erster Triumph“ (Gold) – nach den Szenen.
+    const bronze = screen.getByText('Das erste Kapitel · +25 Gold').closest('li')
+    expect(bronze?.querySelector('[data-achievement-tier]')).toHaveAttribute('data-achievement-tier', 'bronze')
+    const gold = screen.getByText('Erster Triumph · +200 Gold').closest('li')
+    expect(gold).toHaveTextContent('Gold-Erfolg freigeschaltet')
+    expect(gold?.querySelector('[data-achievement-tier]')).toHaveTextContent('🏰')
   })
 
   it('Kapitel und Kampagne in der Hauptfarbe der Kampagne – XP und Belohnung bleiben golden', async () => {
@@ -472,10 +488,10 @@ describe('GameFeedback', () => {
     )
     await screen.findByTestId('level')
     await setCompletionValue(training.id, TODAY, 1)
-    expect(await screen.findByText('+80 XP')).toBeInTheDocument()
+    expect(await screen.findByText('+80 XP · +40 Gold')).toBeInTheDocument()
 
     await resetAllData()
-    await waitFor(() => expect(screen.queryByText('+80 XP')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('+80 XP · +40 Gold')).not.toBeInTheDocument())
   })
 
   it('bleibt beim Start und bei Massenänderungen (Backup) stumm', async () => {
@@ -498,6 +514,52 @@ describe('GameFeedback', () => {
     await restoreBackup(backup)
     await waitFor(() => expect(screen.getByTestId('level')).toHaveTextContent('Level 3'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(screen.queryByText(/XP$/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^\+[\d.]+ XP/)).not.toBeInTheDocument()
+  })
+
+  it('meldet eine erledigte Nebenquest mit Gold und ihren ersten Erfolg in der Farbe der Stufe', async () => {
+    const taxes = await createSideQuest(
+      { title: 'Steuererklärung', icon: '🧾', attribute: 'discipline', difficulty: 'hard' },
+      TODAY,
+    )
+    await createHabit(READING, TODAY) // offen → kein Perfekter Tag
+    await renderFeedback()
+
+    await completeSideQuest(taxes.id, TODAY)
+    const xp = await screen.findByText('+40 XP · +20 Gold')
+    expect(xp.closest('li')).toHaveTextContent('Nebenquest: Steuererklärung')
+    const achievement = await screen.findByText('Abseits des Weges · +25 Gold')
+    const toast = achievement.closest('li')
+    expect(toast).toHaveTextContent('Bronze-Erfolg freigeschaltet')
+    const medal = toast?.querySelector<HTMLElement>('[data-achievement-tier]')
+    expect(medal).toHaveAttribute('data-achievement-tier', 'bronze')
+    expect(medal).toHaveTextContent('🧭')
+    expect(medal?.style.getPropertyValue('--accent')).toBe(ACHIEVEMENT_TIER_COLORS.bronze)
+    // Dezentes Konfetti in Bronze.
+    expect(document.querySelector('[data-confetti] [data-accent]')).toHaveAttribute(
+      'data-accent',
+      ACHIEVEMENT_TIER_COLORS.bronze,
+    )
+
+    // Versehentlich abgehakt und wieder geöffnet: Der XP-Toast stimmt nicht mehr.
+    await reopenSideQuest(taxes.id)
+    await waitFor(() => expect(screen.queryByText('+40 XP · +20 Gold')).not.toBeInTheDocument())
+  })
+
+  it('bleibt beim Start still, auch wenn schon Erfolge erreicht sind', async () => {
+    const taxes = await createSideQuest(
+      { title: 'Steuererklärung', icon: '🧾', attribute: 'discipline', difficulty: 'hard' },
+      '2026-11-01',
+    )
+    await completeSideQuest(taxes.id, '2026-11-02')
+    const second = await createSideQuest({ title: 'Zahnarzt', icon: '🦷', attribute: 'vitality', difficulty: 'easy' }, TODAY)
+    await renderFeedback()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(screen.queryByText(/Erfolg freigeschaltet/)).not.toBeInTheDocument()
+
+    // Die zweite Nebenquest bringt XP, aber keinen schon erreichten Erfolg noch einmal.
+    await completeSideQuest(second.id, TODAY)
+    expect(await screen.findByText('+10 XP · +5 Gold')).toBeInTheDocument()
+    expect(screen.queryByText(/Erfolg freigeschaltet/)).not.toBeInTheDocument()
   })
 })

@@ -2,9 +2,23 @@
  * Test-Hilfen: kleine Fabriken für Domain-Objekte mit sinnvollen Standardwerten.
  * Nur für Tests gedacht – im App-Code wird diese Datei nicht importiert.
  */
+import { ATTRIBUTE_IDS } from './attributes'
 import { DEFAULT_SETTINGS } from './balancing'
 import { dayRange } from './dates'
-import type { Chapter, Completion, DayKey, GameData, Habit, MainQuest } from './types'
+import type {
+  AchievementDefinition,
+  AchievementStats,
+  AttributeId,
+  Chapter,
+  Completion,
+  DayKey,
+  GameData,
+  Habit,
+  MainQuest,
+  Purchase,
+  Reward,
+  SideQuest,
+} from './types'
 
 export function makeHabit(overrides: Partial<Habit> & Pick<Habit, 'id'>): Habit {
   return {
@@ -91,6 +105,95 @@ export function makeGameData(overrides: Partial<GameData> = {}): GameData {
     habits: [],
     completions: [],
     mainQuests: [],
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2a: Schatzkammer, Nebenquests, Erfolge
+// ---------------------------------------------------------------------------
+
+export function makeReward(overrides: Partial<Reward> & Pick<Reward, 'id'>): Reward {
+  return {
+    title: `Belohnung ${overrides.id}`,
+    icon: '🍕',
+    price: 100,
+    repeatable: true,
+    order: 0,
+    createdAt: 0,
+    ...overrides,
+  }
+}
+
+/** Eine Einlösung (Standard: 100 Gold am 2026-01-01). Mit `reward` werden Titel, Icon und Preis übernommen. */
+export function makePurchase(overrides: Partial<Purchase> & Pick<Purchase, 'id'>, reward?: Reward): Purchase {
+  return {
+    kind: 'reward',
+    title: reward?.title ?? `Einlösung ${overrides.id}`,
+    icon: reward?.icon ?? '🍕',
+    price: reward?.price ?? 100,
+    day: '2026-01-01',
+    createdAt: 0,
+    ...(reward ? { rewardId: reward.id } : {}),
+    ...overrides,
+  }
+}
+
+export function makeSideQuest(overrides: Partial<SideQuest> & Pick<SideQuest, 'id'>): SideQuest {
+  return {
+    title: `Nebenquest ${overrides.id}`,
+    icon: '📜',
+    attribute: 'discipline',
+    difficulty: 'medium',
+    createdDay: '2026-01-01',
+    order: 0,
+    ...overrides,
+  }
+}
+
+/** Kennzahlen für Erfolge: alles 0 (Level und Attribut-Level 1, Abenteuertag 1), einzelne Werte überschreibbar. */
+export function makeAchievementStats(overrides: Partial<AchievementStats> = {}): AchievementStats {
+  const attributeLevels = Object.fromEntries(ATTRIBUTE_IDS.map((id) => [id, 1])) as Record<AttributeId, number>
+  return {
+    questsCompleted: 0,
+    perfectDays: 0,
+    bestDayStreak: 0,
+    bestWeekStreak: 0,
+    activeDays: 0,
+    adventureDay: 1,
+    level: 1,
+    totalXp: 0,
+    attributeLevels,
+    chaptersCompleted: 0,
+    campaignsCompleted: 0,
+    activeCampaigns: 0,
+    sideQuestsCompleted: 0,
+    purchases: 0,
+    goldFromXp: 0,
+    comebacks: 0,
+    ...overrides,
+  }
+}
+
+/**
+ * Erfolgs-Definition für Tests: freigeschaltet, sobald `read(stats) ≥ target`.
+ * Mit `deriveGameState(data, today, { achievements: [...] })` lassen sich so auch die Kennzahlen der Engine prüfen.
+ */
+export function makeAchievement(
+  id: string,
+  read: (stats: AchievementStats) => number,
+  target: number,
+  overrides: Partial<AchievementDefinition> = {},
+): AchievementDefinition {
+  return {
+    id,
+    title: `Erfolg ${id}`,
+    description: 'Ein Erfolg für Tests.',
+    icon: '🏅',
+    tier: 'bronze',
+    category: 'special',
+    goldReward: 25,
+    progress: (stats) => ({ current: read(stats), target }),
     ...overrides,
   }
 }

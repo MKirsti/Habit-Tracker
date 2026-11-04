@@ -699,8 +699,9 @@ describe('QuestsPage – Archiv', () => {
     await user.click(screen.getByRole('button', { name: '„Lesen“ endgültig löschen' }))
     const confirm = await screen.findByRole('alertdialog', { name: 'Quest endgültig löschen?' })
     expect(confirm).toHaveTextContent('„Lesen“ wird mit ihrem gesamten Verlauf gelöscht.')
-    // 40 Quest-XP plus die Boni der beiden Perfekten Tage (30.10.: 8, 31.10.: 5), die ohne Lesen keine mehr sind.
-    expect(confirm).toHaveTextContent('Du verlierst 53 XP.')
+    // 20 + 21 Quest-XP (31.10.: Tag 2 der Serie, +5 % Streak-Bonus) plus die Boni der beiden Perfekten Tage
+    // (30.10.: 8, 31.10.: 5), die ohne Lesen keine mehr sind.
+    expect(confirm).toHaveTextContent('Du verlierst 54 XP.')
     expect(confirm).toHaveTextContent('Das lässt sich nicht rückgängig machen.')
     // Bei destruktiven Aktionen startet der Fokus auf „Abbrechen“.
     expect(within(confirm).getByRole('button', { name: 'Abbrechen' })).toHaveFocus()

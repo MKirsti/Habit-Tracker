@@ -433,11 +433,15 @@ describe('DashboardPage', () => {
     await screen.findByText('Du trägst für gestern nach')
     expect(runningRow()).toHaveTextContent('2 / 2 diese Woche – Wochenziel erreicht')
     expect(runningRow()).toHaveTextContent('3 Wo.')
-    expect(within(runningRow()).getByText('3 Wochen in Folge')).toBeInTheDocument()
+    // Zwei erfüllte Vorwochen → +10 % Streak-Bonus für diese Woche (vorgelesen mit der Serie).
+    expect(within(runningRow()).getByText('3 Wochen in Folge, Streak-Bonus 10 Prozent')).toBeInTheDocument()
     const meditationRow = () =>
       within(section('Tagesquests')).getByRole('checkbox', { name: 'Meditieren erledigt' }).closest('li') as HTMLElement
     // Warten: Die Live-Daten können die letzten Erledigungen (Meditieren) erst nach denen fürs Laufen liefern.
-    await waitFor(() => expect(within(meditationRow()).getByText('3 Tage in Folge')).toBeInTheDocument())
+    // Gestern war Tag 3 der Serie: +10 % Streak-Bonus.
+    await waitFor(() =>
+      expect(within(meditationRow()).getByText('3 Tage in Folge, Streak-Bonus 10 Prozent')).toBeInTheDocument(),
+    )
   })
 
   it('zeigt im Modus „Gestern“ den damals gültigen Rhythmus', async () => {

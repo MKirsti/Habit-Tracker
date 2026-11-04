@@ -1,9 +1,9 @@
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Coins } from 'lucide-react'
 import { useId } from 'react'
 import { Link } from 'react-router'
 import type { CharacterProfile, DayKey, GameState } from '../../domain/types'
-import { Card, XpBar, formatNumber } from '../../ui'
-import { compactDayLabel } from './dashboardText'
+import { Card, XpBar, cn, formatNumber } from '../../ui'
+import { compactDayLabel, goldChipLabel } from './dashboardText'
 
 export interface HeroCardProps {
   profile: CharacterProfile
@@ -15,13 +15,15 @@ export interface HeroCardProps {
 }
 
 /**
- * Kopfkarte mit Avatar, Name, Level/Rang, Abenteuertag und XP-Balken.
- * Die ganze Karte ist ein Link zur Heldenseite (unsichtbarer Link über der Fläche).
- * Unter `md` eine flache Leiste (~96 px), damit die heutigen Quests weit oben stehen (PLAN §4).
+ * Kopfkarte mit Avatar, Name, Level/Rang, Abenteuertag, XP-Balken und Gold-Guthaben.
+ * Die ganze Karte ist ein Link zur Heldenseite (unsichtbarer Link über der Fläche); das Gold ist ein eigener
+ * Link zur Schatzkammer, der über dieser Fläche liegt.
+ * Unter `md` eine flache Leiste (~96 px), damit die heutigen Quests weit oben stehen (PLAN §4): Datum und Gold
+ * stehen dort rechtsbündig untereinander.
  */
 export function HeroCard({ profile, state, shimmer, today }: HeroCardProps) {
   const nameId = useId()
-  const { level, rank, adventureDay } = state
+  const { level, rank, adventureDay, gold } = state
 
   return (
     <Card
@@ -58,17 +60,25 @@ export function HeroCard({ profile, state, shimmer, today }: HeroCardProps) {
                 {compactDayLabel(today)}
               </span>
             </div>
-            {/* Handy: eine Zeile „Level 5 · Wanderer · Tag 31“; ab md zweizeilig mit „… deines Abenteuers“. */}
-            <p className="mt-0.5 truncate text-xs font-semibold text-gold-bright md:mt-1 md:overflow-visible md:text-sm md:whitespace-normal">
-              Level <span className="tabular-nums">{formatNumber(level.level)}</span> · {rank}
-              <span aria-hidden="true" className="font-normal text-muted md:hidden">
-                {' ·'}
-              </span>{' '}
-              <span className="font-normal text-muted md:mt-0.5 md:block md:text-xs">
-                Tag <span className="tabular-nums">{formatNumber(adventureDay)}</span>
-                <span className="max-md:sr-only"> deines Abenteuers</span>
-              </span>
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              {/* Handy: eine Zeile „Level 5 · Wanderer · Tag 31“; ab md zweizeilig mit „… deines Abenteuers“.
+                  Neben dem Gold wird es auf schmalen Handys eng: Die Zeile ist dort eine umbrechende Flex-Zeile mit
+                  der Höhe einer Textzeile – passt „· Tag 31“ nicht mehr daneben, rutscht es in die (abgeschnittene)
+                  zweite Zeile, statt als „Ta…“ zu enden. Vorgelesen wird es weiterhin. */}
+              <p className="mt-0.5 min-w-0 flex-1 text-xs font-semibold text-gold-bright max-md:flex max-md:h-4 max-md:flex-wrap max-md:gap-x-1 max-md:overflow-hidden md:mt-1 md:text-sm">
+                <span className="max-md:min-w-0 max-md:truncate">
+                  Level <span className="tabular-nums">{formatNumber(level.level)}</span> · {rank}
+                </span>{' '}
+                <span className="font-normal text-muted max-md:shrink-0 max-md:whitespace-nowrap md:mt-0.5 md:block md:text-xs">
+                  <span aria-hidden="true" className="md:hidden">
+                    ·{' '}
+                  </span>
+                  Tag <span className="tabular-nums">{formatNumber(adventureDay)}</span>
+                  <span className="max-md:sr-only"> deines Abenteuers</span>
+                </span>
+              </p>
+              <GoldChip balance={gold.balance} className="md:hidden" />
+            </div>
           </div>
         </div>
         <XpBar
@@ -80,11 +90,43 @@ export function HeroCard({ profile, state, shimmer, today }: HeroCardProps) {
           // Handy: Zahlen rechts neben dem Balken (eine Zeile); ab md wie gehabt darüber.
           className="max-md:flex max-md:flex-row-reverse max-md:items-center max-md:gap-2.5 max-md:[&>div:first-child]:mb-0 max-md:[&>div:first-child]:shrink-0 max-md:[&>div:first-child]:gap-0 max-md:[&>div:first-child]:text-xs md:max-w-md md:flex-1"
         />
+        <GoldChip balance={gold.balance} size="lg" className="max-md:hidden md:ml-auto" />
       </div>
       <ChevronRight
         aria-hidden
         className="pointer-events-none absolute top-1/2 right-2.5 size-5 -translate-y-1/2 text-gold/70 md:right-5"
       />
     </Card>
+  )
+}
+
+/**
+ * Gold-Guthaben als Münz-Abzeichen, das zur Schatzkammer führt („1.234 Gold – zur Schatzkammer“). Liegt über dem
+ * unsichtbaren Helden-Link der Karte (eigene Ebene, keine verschachtelten Links). Ein negatives Guthaben (nach
+ * nachträglichen Änderungen) erscheint rot. Das Tap-Ziel ist auch in der kompakten Form 40 px hoch.
+ */
+function GoldChip({ balance, size = 'sm', className }: { balance: number; size?: 'sm' | 'lg'; className?: string }) {
+  const negative = balance < 0
+  return (
+    <Link
+      to="/schatzkammer"
+      aria-label={goldChipLabel(balance)}
+      title="Zur Schatzkammer"
+      data-gold-balance={balance}
+      className={cn(
+        'relative z-20 inline-flex shrink-0 items-center rounded-full border font-semibold whitespace-nowrap tabular-nums transition-[border-color,background-color,box-shadow] duration-150',
+        'border-gold/40 bg-linear-to-b from-gold/18 to-gold/6 shadow-[inset_0_1px_0_rgb(240_201_106/0.2)] hover:border-gold/70 hover:from-gold/26 hover:shadow-[0_0_14px_-4px_rgb(240_201_106/0.6)] active:scale-95',
+        // Kompakt sichtbar 26 px hoch, das Tap-Ziel per Pseudo-Element auf 40 px vergrößert.
+        size === 'sm'
+          ? 'h-[1.625rem] gap-1 px-2 text-xs before:absolute before:-inset-x-1 before:-inset-y-[7px] before:content-[""]'
+          : 'h-10 gap-1.5 px-3.5 text-sm',
+        negative ? 'text-danger' : 'text-gold-bright',
+        className,
+      )}
+    >
+      <Coins aria-hidden className={cn('shrink-0', size === 'sm' ? 'size-3.5' : 'size-4', negative ? 'text-danger' : 'text-gold')} />
+      <span>{formatNumber(balance)}</span>
+      {size === 'lg' && <span className="font-medium text-muted">Gold</span>}
+    </Link>
   )
 }

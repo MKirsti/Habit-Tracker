@@ -26,12 +26,15 @@ src/
     dates.ts         Spieltage (DayKey) & Kalender-Arithmetik
     leveling.ts      XP-Kurven, Level, Ränge
     schedule.ts      Wann ist eine Quest aktiv/fällig, Wochenfortschritt
-    streaks.ts       Streak-Berechnung
+    streaks.ts       Streak-Berechnung (inkl. streakRunsBefore für den Streak-Bonus)
+    streakBonus.ts   Streak-Bonus: Anteil je Serienlänge, XP inklusive Bonus (Phase 2a)
+    achievements/    Erfolge: definitions.ts (ACHIEVEMENTS, Kategorien, Stufen), evaluate.ts (Auswertung) (Phase 2a)
     chapters.ts      Auswertung von Kampagnen-Kapiteln
-    engine.ts        deriveGameState / getDayState / evaluateMainQuests
+    engine.ts        deriveGameState / getDayState / evaluateMainQuests (inkl. Gold, Nebenquests, Erfolge)
     training.ts      Geplante XP pro Woche & dominantAttribute (Grundlage der Kampagnenfarbe)
     campaigns.ts     Aktive Kampagnen & Limit (isCampaignActive, campaignSlotsLeft …)
     deletion.ts      Löschen einer Quest als reine Funktion (Grabstein) + Vorschau der Folgen
+    testing.ts       Fabriken für Tests (makeHabit, makeCompletion, makeReward, makeSideQuest, makeAchievement …)
   data/          Persistenz (IndexedDB via Dexie) & React-Hooks
     db.ts            Dexie-Datenbank
     repository.ts    Alle schreibenden Operationen
@@ -43,10 +46,10 @@ src/
   ui/            Wiederverwendbare, rein darstellende Komponenten (Design-System)
   app/           App-Rahmen: Router, Layout, Navigation
   features/      Seitenübergreifende Features
-    feedback/        XP-, Level-Up-, Perfekter-Tag- und Kapitel-Rückmeldungen (GameFeedback)
+    feedback/        XP- (mit Gold), Level-Up-, Perfekter-Tag-, Kapitel- und Erfolgs-Rückmeldungen (GameFeedback)
     blueprints/      UI der Kampagnen-Bibliothek (BlueprintLibrary, Einrichtung, Klassenwahl, Vorschau)
     campaignTheme/   Hauptfarbe einer Kampagne (campaignColor, accentVars …), siehe „Kampagnenfarben“
-  pages/         Eine Datei/Ordner pro Seite (campaign/, dashboard/, onboarding/, quests/, hero/, settings/)
+  pages/         Eine Datei/Ordner pro Seite (campaign/, dashboard/, onboarding/, quests/, hero/, settings/, treasury/)
   dev/devtools.ts  window.questlog – nur im Dev-Server
   test/setup.ts  Vitest-Setup (jest-dom)
 ```
@@ -126,6 +129,9 @@ export function bestStreakIn(habit: Habit, doneDays: ReadonlySet<DayKey>, unit: 
   // 0, wenn die Quest (auch laut scheduleHistory) nie einen Rhythmus dieser Einheit hatte
 export function streakReachedDay(habit: Habit, doneDays: ReadonlySet<DayKey>, target: number, asOf: DayKey, from?: DayKey, unit?: 'day' | 'week'): DayKey | undefined
   // frühester Tag, an dem die Serie (Einheit: unit ?? streakUnit(habit.schedule)) die Länge target erreicht hat
+export function streakRunsBefore(habit: Habit, doneDays: ReadonlySet<DayKey>, days: readonly DayKey[]): number[]
+  // Länge der Serie unmittelbar VOR jedem Tag (ergebnis[i] gehört zu days[i], Reihenfolge beliebig) – Grundlage
+  // des Streak-Bonus, siehe „Phase 2a → Streak-Bonus“. Ein Durchlauf ab createdDay bis zum spätesten Tag.
 ```
 - `doneDays`: Tage, an denen die Quest erledigt war. Betrachtet wird nur `[max(habit.createdDay, from), asOf]`.
 - Die Einheit folgt dem **aktuellen** Rhythmus (`habit.schedule`). Pausierte Tage werden übersprungen (zählen nicht, brechen nichts).
@@ -150,20 +156,23 @@ export interface ChapterContext {
 ### `engine.ts`
 ```ts
 export function getDayState(data: GameData, day: DayKey): DayState
-export function deriveGameState(data: GameData, today: DayKey): GameState
+export function deriveGameState(data: GameData, today: DayKey, options?: DeriveOptions): GameState
+export interface DeriveOptions { achievements?: readonly AchievementDefinition[] }   // nur für Tests; Standard: ACHIEVEMENTS
 export function evaluateMainQuests(data: GameData, today: DayKey): MainQuestState[]
   // alle Kampagnen (aktive + archivierte, gespeicherte Reihenfolge), exakt wie in deriveGameState ausgewertet
 ```
 XP-Regeln:
-1. Jede erledigte Completion (`value ≥ target`) mit `day ≤ today` gibt `questXp(c.difficulty)` → Charakter-XP **und** dieselbe Menge Attribut-XP für `c.attribute`. Teilfortschritt gibt 0 XP. Zu Completions gelöschter Quests: werden ignoriert.
-2. Perfekter Tag: für jeden Tag `d` von (frühester Tag mit Completion oder `profile.createdDay`) bis `today`: Pflicht-Quests = `isRequiredOn(h, d)` über alle Quests **und** alle Grabsteine (`deletedHabits`, nie erledigt). Perfekt ⇔ ≥ 1 Pflicht-Quest und alle erledigt. Bonus = `round(perfectDayBonus × Quest-XP dieses Tages)` (Quest-XP umfasst alle an `d` erledigten Quests, auch Wochenquests). Nur Charakter-XP.
+1. Jede erledigte Completion (`value ≥ target`) mit `day ≤ today` gibt `xpWithStreakBonus(questXp(c.difficulty), bonus)` = `round(questXp × (1 + bonus))` → Charakter-XP **und** dieselbe Menge Attribut-XP für `c.attribute`; `bonus` ist der Streak-Bonus des Tages (siehe „Phase 2a → Streak-Bonus“). Teilfortschritt gibt 0 XP. Zu Completions gelöschter Quests: werden ignoriert. `totals.xpFromQuests` enthält den Bonus, `totals.xpFromStreakBonus` weist ihn aus.
+2. Perfekter Tag: für jeden Tag `d` von (frühester Tag mit Completion oder `profile.createdDay`) bis `today`: Pflicht-Quests = `isRequiredOn(h, d)` über alle Quests **und** alle Grabsteine (`deletedHabits`, nie erledigt). Perfekt ⇔ ≥ 1 Pflicht-Quest und alle erledigt. Bonus = `round(perfectDayBonus × Quest-XP dieses Tages)` (Quest-XP inklusive Streak-Bonus, umfasst alle an `d` erledigten Quests, auch Wochenquests; **ohne** Nebenquests). Nur Charakter-XP.
 3. Kapitel: `chapterXp` pro abgeschlossenem Kapitel, `mainQuestXp` pro komplett abgeschlossener Kampagne (auch archivierte). Nur Charakter-XP. Nicht archivierte Kampagnen stehen in `GameState.mainQuests`, archivierte (gleich ausgewertet) in `GameState.archivedMainQuests`.
 4. `adventureDay = diffDays(profile.createdDay, today) + 1` (ohne Profil: 1).
-5. `getDayState` sortiert sichtbare Quests nach `order` (dann `title`); Streaks werden **zum Stichtag `day`** berechnet. `HabitStatus.xp` = `questXp(completion.difficulty)`, wenn erledigt (die gutgeschriebenen XP), sonst `questXp(habit.difficulty)`. `requiredCount` zählt Grabsteine mit (an früheren Tagen also ggf. mehr als die sichtbaren Pflicht-Quests). `HabitStatus.week` gibt es, wenn `scheduleOn(habit, day)` eine Wochenquest ist (frühere Tage zeigen den damals gültigen Rhythmus). `week.target` ist dasselbe Wochenziel wie bei der Wochen-Serie: das vom **Montag** der Woche (ein mitten in der Woche geändertes Ziel gilt ab dem nächsten Montag); war die Quest am Montag keine Wochenquest, das des Tages.
+5. `getDayState` sortiert sichtbare Quests nach `order` (dann `title`); Streaks werden **zum Stichtag `day`** berechnet. `HabitStatus.baseXp` = `questXp(completion.difficulty)`, wenn erledigt, sonst `questXp(habit.difficulty)`; `HabitStatus.streakBonus` = Streak-Bonus des Tages (offen: den eine Erledigung jetzt bekäme; erledigt: den gutgeschriebenen – derselbe Wert); `HabitStatus.xp` = `xpWithStreakBonus(baseXp, streakBonus)` (erledigt: genau die gutgeschriebenen XP). `DayState.questXp` = Summe der an dem Tag gutgeschriebenen Quest-XP inklusive Bonus, ohne Nebenquests; `perfectBonusXp` = Perfekter-Tag-Bonus daraus. `requiredCount` zählt Grabsteine mit (an früheren Tagen also ggf. mehr als die sichtbaren Pflicht-Quests). `HabitStatus.week` gibt es, wenn `scheduleOn(habit, day)` eine Wochenquest ist (frühere Tage zeigen den damals gültigen Rhythmus). `week.target` ist dasselbe Wochenziel wie bei der Wochen-Serie: das vom **Montag** der Woche (ein mitten in der Woche geändertes Ziel gilt ab dem nächsten Montag); war die Quest am Montag keine Wochenquest, das des Tages.
 
 6. **Hauptfarbe einer Kampagne** – `MainQuestState.dominantAttribute` (für `mainQuests` und `archivedMainQuests`, jeweils zum Stichtag `today`): Von den Quests in `linkedHabitIds` zählen die am Tag `today` aktiven (`isActiveOn`: angelegt, nicht archiviert, nicht pausiert). Jede gibt ihrem Attribut das Gewicht `questXp(habit.difficulty)` × Termine pro Woche laut `scheduleOn(habit, today)` (daily 7, weekdays Anzahl der Tage, weekly `times`; `plannedWeeklyXp` in `training.ts`). Das Attribut mit der größten Summe gewinnt (`dominantAttribute`); bei Gleichstand das der zuerst sortierten beteiligten Quest (Reihenfolge von `linkedHabitIds`: `order`, dann Titel). Ist **keine** Quest aktiv (alle archiviert oder pausiert – z. B. nach „Kampagne beenden“ mit ihren Quests), zählen ersatzweise alle bereits angelegten Quests mit ihrem zuletzt gültigen Rhythmus: Die Kampagne behält ihre Farbe. Ohne angelegte Quest fehlt das Feld (die UI fällt auf die Vorlage bzw. Gold zurück, siehe „Kampagnenfarben“). Nur der Plan zählt, nicht die Erledigungen; geteilte Quests zählen für jede Kampagne, die sie führt; Quests mit unbekanntem Attribut oder ohne XP zählen nicht. Beispiel: 1 schwere Quest 3× pro Woche (40 × 3 = 120) verliert gegen 3 leichte tägliche (3 × 10 × 7 = 210).
 
-Weil Pflicht/Sichtbarkeit über `scheduleOn` und Pausen laufen, ändern Rhythmus-Änderungen und das Zurückholen archivierter Quests keine vergangenen Perfekten Tage, XP, Level oder Streaks. `GameTotals.bestDayStreak`/`bestWeekStreak` berücksichtigen über `bestStreakIn` beide Einheiten. Invariante (per Zufallstest im Repository geprüft): Bearbeiten, Archivieren und Zurückholen am Tag `today` ändern `deriveGameState(…, today − 1)` (Level, XP, Attribute, Gesamtwerte, abgeschlossene Kapitel) nicht. Nur der laufende Tag darf sich ändern (z. B. wird eine heute auf „täglich“ umgestellte Quest sofort Pflicht). Löschen erhöht nie Level-XP, Perfekte Tage oder deren Bonus-XP (Zufallstest in `deletion.test.ts`; für `today` verglichen mit dem Stand „heute archiviert“).
+7. Phase 2a – Nebenquests, Gold, Erfolge: siehe „Phase 2a“ unten (`GameState.sideQuests`, `gold`, `achievements`; `totals.xpFromSideQuests`, `totals.sideQuestsCompleted`). Level-XP = Quest-XP (inkl. Streak-Bonus) + Perfekte-Tage-Bonus + Kapitel-/Kampagnen-XP + Nebenquest-XP.
+
+Weil Pflicht/Sichtbarkeit über `scheduleOn` und Pausen laufen, ändern Rhythmus-Änderungen und das Zurückholen archivierter Quests keine vergangenen Perfekten Tage, XP, Level oder Streaks – der Streak-Bonus eines Tages hängt nur von den Tagen davor und dem Rhythmus **dieses** Tages ab, bleibt also ebenfalls unverändert. `GameTotals.bestDayStreak`/`bestWeekStreak` berücksichtigen über `bestStreakIn` beide Einheiten. Invariante (per Zufallstest im Repository geprüft): Bearbeiten, Archivieren und Zurückholen am Tag `today` ändern `deriveGameState(…, today − 1)` (Level, XP, Attribute, Gesamtwerte, abgeschlossene Kapitel) nicht. Nur der laufende Tag darf sich ändern (z. B. wird eine heute auf „täglich“ umgestellte Quest sofort Pflicht). Löschen erhöht nie Level-XP, Perfekte Tage oder deren Bonus-XP (Zufallstest in `deletion.test.ts`; für `today` verglichen mit dem Stand „heute archiviert“).
 
 ### `deletion.ts`
 ```ts
@@ -171,8 +180,10 @@ export function habitTombstone(habit: Habit, today: DayKey): DeletedHabit
 export function applyHabitDeletion(data: GameData, habitId: string, today: DayKey): GameData
   // genau die Bedeutung von repository.deleteHabit: Quest + Completions weg, Grabstein angehängt; unbekannte ID → data
 export function deletionImpact(data: GameData, habitId: string, today: DayKey): DeletionImpact
-  // { xpLost, levelBefore, levelAfter, campaigns: [{ quest, lostChapters, openChapters, losesCompletion }] }
-  // exakt deriveGameState vorher − nachher (auch archivierte Kampagnen) – für die Rückfrage vor dem Löschen
+  // { xpLost, levelBefore, levelAfter, goldLost, goldAfter, campaigns: [{ quest, lostChapters, openChapters, losesCompletion }] }
+  // exakt deriveGameState vorher − nachher (auch archivierte Kampagnen) – für die Rückfrage vor dem Löschen.
+  // goldLost = Guthaben vorher − nachher (≥ 0: ½ Gold je verlorenem XP plus Gold noch nicht gespeicherter Erfolge,
+  // die danach nicht mehr erreicht sind); goldAfter = Guthaben danach (kann negativ werden → Einlösen gesperrt).
 ```
 
 ## Daten-API (`src/data`)
@@ -180,21 +191,35 @@ export function deletionImpact(data: GameData, habitId: string, today: DayKey): 
 ### `db.ts`
 ```ts
 export class QuestlogDB extends Dexie {
+  constructor(name = DEFAULT_DB_NAME)       // Tests: eigener Name pro Test
   habits!: Table<Habit, string>             // '&id, order, mainQuestId'
   completions!: Table<Completion, string>   // '&id, habitId, day'
   mainQuests!: Table<MainQuest, string>     // '&id'
-  kv!: Table<{ key: string; value: unknown }, string>  // '&key'  – Schlüssel 'profile', 'settings', 'deletedHabits'
+  kv!: Table<{ key: string; value: unknown }, string>  // '&key'  – Schlüssel 'profile', 'settings', 'deletedHabits' (KV_KEYS)
+  rewards!: Table<Reward, string>           // '&id, order'   (ab Version 3)
+  purchases!: Table<Purchase, string>       // '&id, day'     (ab Version 3)
+  sideQuests!: Table<SideQuest, string>     // '&id, order'   (ab Version 3)
+  achievementUnlocks!: Table<AchievementUnlock, string>  // '&id' (ab Version 3)
 }
-export const db: QuestlogDB   // Datenbankname 'questlog'
+export const DEFAULT_DB_NAME = 'questlog'
+export const db: QuestlogDB
 export function legacyBlueprintRef(quest): BlueprintRef | undefined
+export function allTables(database: QuestlogDB): Table[]
+  // alle Tabellen – für jede Transaktion, die loadGameData aufruft (installBlueprint, startAdventure, createMainQuest,
+  // updateMainQuest, archive/restore/deleteMainQuest, purchaseReward) oder alles ersetzt (Reset, Backup).
+  // Eine neue Tabelle gehört hier hinein, sonst scheitern diese Transaktionen.
 ```
 Version 2 (Indizes unverändert): Eine vorhandene Kampagne „Der Weg des Gelehrten“ ohne `blueprint` (aus dem früheren Onboarding) bekommt beim Upgrade `blueprint: { id: 'scholar', level: 'beginner' }` – sie gilt damit in der Bibliothek als laufend.
+Version 3 (Phase 2a): nur neue, leere Tabellen; vorhandene Daten bleiben unverändert. Streak-Bonus, Gold und Erfolge gelten danach sofort rückwirkend für den gespeicherten Verlauf (alles wird abgeleitet, nichts migriert).
 
 ### `repository.ts`
 Alle Funktionen `async`, nutzen `db` (ein optionaler letzter Parameter `database = db` ist erlaubt, damit Tests eine eigene Instanz verwenden können).
 ```ts
 export async function loadGameData(): Promise<GameData>
-  // settings mit DEFAULT_SETTINGS gemergt; deletedHabits geprüft/normalisiert (fehlt, wenn leer)
+  // eine Lese-Transaktion über allTables. settings mit DEFAULT_SETTINGS gemergt; habits nach order (dann Titel),
+  // mainQuests nach createdAt; deletedHabits geprüft/normalisiert (fehlt, wenn leer). Phase 2a: rewards nach order
+  // (dann createdAt, ID), purchases nach createdAt (Chronik), sideQuests nach order (dann Titel), achievementUnlocks
+  // nach Tag – jede Liste fehlt, wenn sie leer ist („fehlt = keine“).
 export async function saveProfile(profile: CharacterProfile): Promise<void>
 export async function updateSettings(patch: Partial<Settings>): Promise<void>
 
@@ -243,7 +268,8 @@ export async function setChapterManual(questId: string, chapterId: string, done:
 export async function setChapterCounter(questId: string, chapterId: string, value: number, today: DayKey): Promise<void>
   // value wird auf ≥ 0 begrenzt; completedDay wird gesetzt, wenn das Ziel erreicht wird, und entfernt, wenn nicht mehr.
 
-export async function resetAllData(): Promise<void>
+export async function resetAllData(): Promise<void>   // leert alle Tabellen (allTables) in einer Transaktion
+// Phase-2a-Funktionen (Schatzkammer, Nebenquests, Erfolge): siehe „Phase 2a → Daten“
 ```
 
 ### `backup.ts`
@@ -257,7 +283,7 @@ export function parseBackup(json: unknown): { ok: true; backup: BackupFile } | {
 export async function restoreBackup(backup: BackupFile): Promise<void>   // ersetzt ALLE Daten in einer Transaktion
 export function backupFileName(now: Date): string                      // "questlog-backup-2026-11-03.json"
 ```
-Neue **optionale** Felder (`Habit.scheduleHistory`, `Habit.pauses`, `GameData.deletedHabits`, `MainQuest.blueprint` – `id` nicht leer, `level` `'beginner' | 'advanced'`, `pathId` optional nicht leer –, `MainQuest.sharedHabitIds` – nicht leere IDs) erhöhen `BACKUP_SCHEMA_VERSION` nicht – ältere Backups ohne sie bleiben gültig. Geprüft wird: `scheduleHistory` streng aufsteigend nach `until` mit gültigen Rhythmen, Pausen mit `from < until`, Grabsteine mit eindeutigen IDs (gleiche Regeln für ihren Verlauf und ihre Pausen). `restoreBackup` schreibt `deletedHabits` in den kv-Speicher.
+Neue **optionale** Felder (`Habit.scheduleHistory`, `Habit.pauses`, `GameData.deletedHabits`, `MainQuest.blueprint` – `id` nicht leer, `level` `'beginner' | 'advanced'`, `pathId` optional nicht leer –, `MainQuest.sharedHabitIds` – nicht leere IDs, Phase 2a: `GameData.rewards`, `purchases`, `sideQuests`, `achievementUnlocks`) erhöhen `BACKUP_SCHEMA_VERSION` nicht – ältere Backups ohne sie bleiben gültig. Geprüft wird: `scheduleHistory` streng aufsteigend nach `until` mit gültigen Rhythmen, Pausen mit `from < until`, Grabsteine mit eindeutigen IDs (gleiche Regeln für ihren Verlauf und ihre Pausen). Phase 2a: eindeutige IDs je Liste; Belohnungen mit ganzzahligem Preis 1 … `MAX_REWARD_PRICE` (wie im Repository, sonst ließe sich eine importierte Belohnung nicht mehr bearbeiten); Einlösungen mit `kind: 'reward'`, ganzzahligem Preis ≥ 1 und gültigem `day`; Nebenquests mit gültigem Attribut, Schwierigkeit und gültigen Tagen (`createdDay`, optional `dueDay`, `doneDay`); Freischaltungen mit nicht leerer ID und gültigem Tag. `restoreBackup` schreibt `deletedHabits` in den kv-Speicher und die Phase-2a-Listen in ihre Tabellen – alles in einer Transaktion über `allTables`; ein Backup ohne sie hinterlässt diese Tabellen leer.
 
 ### `seed.ts`
 Siehe „Kampagnen-Bibliothek“ unten: `createCampaignFromBlueprint`, `installBlueprint`, `startAdventure` sowie die Gelehrten-Wrapper `createScholarCampaign(today, createdAt?)` / `installScholarCampaign(today)` (Einsteiger-Stufe der Vorlage `'scholar'`).
@@ -277,22 +303,22 @@ export function useGame(): { data: GameData; today: DayKey; state: GameState } |
 - Mobile first: funktioniert ab 360 px Breite, untere Navigationsleiste auf dem Handy, Seitenleiste/obere Leiste auf dem Desktop.
 - `MotionConfig reducedMotion="user"`; Effekte zusätzlich über `settings.effects` abschaltbar.
 
-Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten (`/quests?neu=1&kampagne=<questId>` öffnet „Neue Quest“, vorbelegt mit der Kampagne) · `/kampagne` Kampagne (`/kampagne?id=<questId>` wählt eine bestimmte Kampagne; ohne `id` die zuletzt gewählte der Sitzung bzw. die erste laufende; `/kampagne?neu=1` zeigt die Bibliothek, um eine weitere Kampagne zu beginnen) · `/held` Charakter · `/einstellungen` Einstellungen. Ohne Profil wird das Onboarding angezeigt.
+Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten (`/quests?neu=1&kampagne=<questId>` öffnet „Neue Quest“, vorbelegt mit der Kampagne; `/quests?tab=nebenquests` zeigt den Reiter „Nebenquests“, mit `&neu=1` öffnet er „Neue Nebenquest“) · `/kampagne` Kampagne (`/kampagne?id=<questId>` wählt eine bestimmte Kampagne; ohne `id` die zuletzt gewählte der Sitzung bzw. die erste laufende; `/kampagne?neu=1` zeigt die Bibliothek, um eine weitere Kampagne zu beginnen) · `/schatzkammer` Schatzkammer · `/held` Charakter (`/held?tab=erfolge` öffnet den Reiter „Erfolge“) · `/einstellungen` Einstellungen (nicht in der Leiste, über das Zahnrad der Held-Seite; die Leiste hebt dort „Held“ hervor). Ohne Profil wird das Onboarding angezeigt.
 
 ## App-Ebene (`src/app`) – Spielzustand & Gate
 
-- `App.tsx`: `AppErrorBoundary` → `ToastProvider` → `GameProvider` → `EffectsConfig` (setzt `settings.effects` um) → `ProfileGate` (ohne Profil: `OnboardingPage`, sonst Router + `GameFeedback`).
-  Heute wird direkt geladen; `quests`, `kampagne`, `held`, `einstellungen` sind `lazy`-Routen, das Onboarding `React.lazy` in `Suspense` – Platzhalter jeweils `AppLoading` aus `GameProvider.tsx`. Mit Profil fordert der Router einmal `requestPersistentStorage()` (`src/app/persistentStorage.ts`, wirft nie; `isStoragePersisted()` für die Anzeige in den Einstellungen) an.
+- `App.tsx`: `AppErrorBoundary` → `ToastProvider` → `GameProvider` → (`AchievementRecorder` + `EffectsConfig` (setzt `settings.effects` um) → `ProfileGate` (ohne Profil: `OnboardingPage`, sonst Router + `GameFeedback`)). `AchievementRecorder` (Phase 2a) zeigt nichts und speichert neu erreichte Erfolge dauerhaft (siehe „Phase 2a → Erfolge“).
+  Heute wird direkt geladen; `quests`, `kampagne`, `schatzkammer`, `held`, `einstellungen` sind `lazy`-Routen, das Onboarding `React.lazy` in `Suspense` – Platzhalter jeweils `AppLoading` aus `GameProvider.tsx`. Mit Profil fordert der Router einmal `requestPersistentStorage()` (`src/app/persistentStorage.ts`, wirft nie; `isStoragePersisted()` für die Anzeige in den Einstellungen) an.
 - `main.tsx`: nur im Produktions-Build `registerSW` (`virtual:pwa-register`) mit stündlicher Update-Prüfung und bei Rückkehr in den Vordergrund; das Neuladen wartet, solange ein Dialog offen ist. Bei `vite:preloadError` (veralteter Chunk) wird höchstens einmal pro 10 s neu geladen.
 - **Seiten und Features holen Daten ausschließlich über `useGameContext()`** aus `src/app/gameContext.ts` → `{ data, today, state }`. Nie selbst `useGame()`/`useGameData()` aufrufen (sonst mehrfache Berechnung).
 - Schreiben ausschließlich über `src/data/repository.ts` (bzw. `seed.ts`/`backup.ts`). Die Funktionen werfen deutsche `Error`s → abfangen und per `useToast()` mit `tone: 'error'` anzeigen. Nach dem Schreiben aktualisiert sich der Zustand automatisch (Live-Query) – kein manuelles Neuladen.
-- `GameFeedback` (`src/features/feedback`) sitzt **außerhalb** des RouterProviders: dort keine Router-Hooks verwenden. Es erkennt Änderungen am Spielzustand (XP, Level-Up, Perfekter Tag, Kapitel) und zeigt die Rückmeldungen zentral – Seiten zeigen dafür **keine eigenen** XP-Toasts, höchstens lokale Mikro-Animationen.
+- `GameFeedback` (`src/features/feedback`) sitzt **außerhalb** des RouterProviders: dort keine Router-Hooks verwenden. Es erkennt Änderungen am Spielzustand (XP samt Gold, Level-Up, Attribut-Aufstieg, Perfekter Tag, Kapitel, Kampagne, Erfolge) und zeigt die Rückmeldungen zentral – Seiten zeigen dafür **keine eigenen** XP-Toasts, höchstens lokale Mikro-Animationen.
 - Router-Hooks/Komponenten immer aus `'react-router'` importieren (nicht `'react-router/dom'`).
 
 ## Tests & Entwicklung
 
 - Komponenten-Tests: `// @vitest-environment jsdom`, `import 'fake-indexeddb/auto'`, `afterEach(cleanup)` (keine Vitest-Globals), Animationen per `MotionGlobalConfig.skipAnimations = true` aus. Seiten mit `renderWithGame(<Seite />, { route })` aus `src/test/renderWithGame.tsx` rendern; Daten vorher mit `resetAllData()` + Repository-Funktionen anlegen.
-- Im Dev-Server (`npm run dev`) gibt es `window.questlog` (`src/dev/devtools.ts`): `await questlog.seedDemo(30)` legt einen Demo-Helden mit 30 Tagen Verlauf an, `await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })` startet eine weitere Kampagne aus der Bibliothek (heutiger Spieltag, gleiche Prüfungen wie in der App), `await questlog.reset()` löscht alles. Ideal für Screenshots mit Playwright.
+- Im Dev-Server (`npm run dev`) gibt es `window.questlog` (`src/dev/devtools.ts`): `await questlog.seedDemo(30)` legt einen Demo-Helden mit 30 Tagen Verlauf an – dazu drei Belohnungen (🍕 Pizza bestellen 400 und 🎬 Kinoabend 250, wiederholbar; 🎧 Neue Kopfhörer 2.500, einmalig), eine Kinoabend-Einlösung vor zwei Tagen (nur, wenn das Gold reicht; `seedDemo(30, { purchase: false })` lässt sie weg) und zwei Nebenquests (🧾 vor vier Tagen erledigt, 🦷 offen mit Termin übermorgen). `questlog.repository.*` bietet alle Repository-Funktionen (z. B. `createReward`, `createSideQuest(draft, await questlog.today())`), `questlog.today()` den heutigen Spieltag, `await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })` startet eine weitere Kampagne aus der Bibliothek (heutiger Spieltag, gleiche Prüfungen wie in der App), `await questlog.reset()` löscht alles. Ideal für Screenshots mit Playwright.
 
 ## Kampagnen-Bibliothek (Blueprints) & mehrere Kampagnen
 
@@ -450,55 +476,106 @@ Darin per Tailwind-Arbitrary-Werten: `border-(--accent-35)`, `bg-(--accent-10)`,
 
 ## Phase 2a – Gold, Schatzkammer, Streak-Bonus, Erfolge, Nebenquests (Vertrag)
 
-Typen: `src/domain/types.ts` (Abschnitte „Phase 2a“), Zahlen: `BALANCING.goldPerXp`, `streakBonusPerStep`, `streakBonusMax`, `achievementGold`.
+Typen: `src/domain/types.ts` (Abschnitte „Phase 2a“), Zahlen: `BALANCING.goldPerXp` (0,5), `streakBonusPerStep` (0,05), `streakBonusMax` (0,5), `achievementGold` (25/75/200). Nicht in 2a (Phase 2b): Lebenspunkte, Niederlage, Gegenstände (Streak-Schutz, Heiltrank), Urlaub, Statistik. Einen XP-Trank gibt es nicht.
 
-### Streak-Bonus (Engine)
-- Jede erledigte Quest-Erledigung bringt `round(questXp(c.difficulty) × (1 + bonus))` XP (Charakter **und** Attribut).
-- `bonus = min(streakBonusPerStep × n, streakBonusMax)`; `n` = Länge der Serie **unmittelbar vor** dem Tag (Tages-Einheit: aufeinanderfolgende erledigte Plantage direkt davor, gleiche Regeln wie `computeStreak` – Nicht-Plantage und Pausen werden übersprungen, ein verpasster Plantag setzt auf 0) bzw. **vor** der Woche (Wochen-Einheit: aufeinanderfolgende erfüllte Wochen direkt vor der Woche des Tages; alle Erledigungen einer Woche bekommen denselben Bonus).
-- Tag 1 einer Serie: +0 %, Tag 2: +5 %, …, ab Tag 11: +50 %. Gilt rückwirkend für den ganzen Verlauf.
-- Perfekter-Tag-Bonus = 25 % der Quest-XP des Tages **inklusive** Streak-Bonus. `HabitStatus.xp/baseXp/streakBonus` zeigen ihn an.
-- Muss effizient bleiben: pro Quest ein linearer Durchlauf über die Tage.
+### Streak-Bonus (`streakBonus.ts`, `streaks.ts`, Engine)
+```ts
+export function streakBonusForRun(run: number): number          // min(0,05 × run, 0,5); ungültig/negativ → 0
+export function xpWithStreakBonus(baseXp: number, bonus: number): number   // round(baseXp × (1 + bonus))
+export function streakBonusesOn(habit: Habit, doneDays: ReadonlySet<DayKey>, days: readonly DayKey[]): number[]
+export function streakRunsBefore(habit, doneDays, days): number[]  // streaks.ts, Serienlänge vor jedem Tag
+```
+- Jede erledigte Quest-Erledigung bringt `xpWithStreakBonus(questXp(c.difficulty), bonus)` XP (Charakter **und** Attribut). Gerechnet wird in Basispunkten: 10 × 1,15 = 11,5 → 12, 10 × 1,05 = 10,5 → 11 (kaufmännisch, stabil ohne Gleitkomma-Rauschen).
+- `bonus = streakBonusForRun(n)`; `n` = Länge der Serie **unmittelbar vor** dem Tag (`streakRunsBefore`). Tag 1 einer Serie: +0 %, Tag 2: +5 %, …, ab Tag 11: +50 %. Gilt rückwirkend für den ganzen Verlauf.
+- Die Einheit folgt dem Rhythmus **dieses Tages** (`scheduleOn(habit, day)`), nicht dem aktuellen – so ändert eine Umstellung nie die XP vergangener Tage:
+  - Tages-Einheit (daily/weekdays): aufeinanderfolgende erledigte Plantage direkt davor, gleiche Regeln wie `computeStreak` – Nicht-Plantage (auch Tage, an denen die Quest damals eine Wochenquest war) und Pausen werden übersprungen, ein verpasster Plantag (auch Teilfortschritt) setzt auf 0. Erledigungen an Nicht-Plantagen bekommen den Bonus der laufenden Serie, zählen aber nicht mit.
+  - Wochen-Einheit (weekly): aufeinanderfolgende erfüllte Wochen direkt vor der Woche des Tages, gleiche Regeln wie die Wochen-Serie (Ziel vom Montag; Wochen, deren Montag keine Wochenquest war, zählen nicht und brechen nichts; Wochen mit Pausen brechen nichts). Alle Erledigungen einer Woche bekommen denselben Bonus, auch die über dem Wochenziel.
+  - Eine Umstellung am Tag `today` kann den Bonus von heute ändern (täglich → wöchentlich: die Wochen-Serie beginnt bei 0; die frühere Tages-Serie ruht und gilt wieder, wenn zurückgestellt wird).
+- Vor `createdDay` gibt es keine Serie (Bonus 0). Ab `archivedDay` ruht die Serie wie in einer Pause: Eine Erledigung am Archivierungstag behält ihren Bonus, auch nach dem Zurückholen (die archivierte Zeit wird zur Pause).
+- Perfekter-Tag-Bonus = 25 % der Quest-XP des Tages **inklusive** Streak-Bonus. `HabitStatus.xp/baseXp/streakBonus` zeigen ihn an, `DayState.questXp` enthält ihn, `GameTotals.xpFromQuests` enthält ihn, `GameTotals.xpFromStreakBonus` weist ihn aus.
+- Laufzeit: pro Quest ein linearer Durchlauf über ihre Tage (gemessen: 3 Jahre × 12 Quests + 200 Nebenquests + 100 Einlösungen ≈ 50 ms für `deriveGameState`).
 
 ### Gold (Engine)
-- `gold.fromXp = floor(level.totalXp × goldPerXp)` (alle XP-Quellen inkl. Nebenquests, Bonus, Kapitel).
-- `gold.fromAchievements` = Summe `goldReward` aller freigeschalteten Erfolge.
-- `gold.spent` = Summe `purchases[].price`; `balance = earned − spent` (kann nach nachträglichen Änderungen negativ sein – Kaufen ist dann gesperrt).
+- `gold.fromXp = floor(level.totalXp × goldPerXp)` (alle XP-Quellen: Quest-XP inkl. Streak-Bonus, Perfekter-Tag-Bonus, Kapitel, Kampagnen, Nebenquests; rückwirkend aus dem ganzen Verlauf). Dieselbe Formel nutzt `goldForTotalXp` in `features/feedback`.
+- `gold.fromAchievements` = Summe `goldReward` aller freigeschalteten Erfolge (gespeichert oder jetzt erreicht).
+- `gold.spent` = Summe `purchases[].price` (alle, auch mit `day` nach heute; ungültige/negative Preise zählen nicht); `earned = fromXp + fromAchievements`; `balance = earned − spent` – kann nach nachträglichen Änderungen (gelöschte Quest, wieder geöffnete Nebenquest) negativ sein, Einlösen ist dann gesperrt. `deletionImpact` nennt `goldLost`/`goldAfter` für die Rückfrage vor dem Löschen.
 
 ### Nebenquests (Engine)
-- Erledigte Nebenquest (`doneDay ≤ today`) bringt `questXp(difficulty)` (ohne Streak-Bonus) an Charakter + `attribute`. Zählt nie für den Perfekten Tag.
-- `GameState.sideQuests`: offene (sortiert: überfällige/mit Termin zuerst nach Termin, dann `order`) und die **heute** erledigten.
+- Erledigt = gültiger `doneDay ≤ today` (ein späterer – zurückgestellte Uhr – zählt noch nicht). Bringt `questXp(difficulty)` (ohne Streak-Bonus, aktuelle Schwierigkeit – kein Snapshot) an Charakter + `attribute` (unbekanntes Attribut: nur Charakter-XP). Zählt nie für den Perfekten Tag und nicht in `DayState.questXp`; `totals.xpFromSideQuests`, `totals.sideQuestsCompleted`.
+- `GameState.sideQuests` (`SideQuestState`: `done`, `overdue` = offen und Termin vor heute, `dueToday` = Termin heute, `xp`): zuerst die offenen – mit Termin nach Termin (Überfällige damit vorn), dann ohne Termin, jeweils dann nach `order`, Titel, ID –, danach die **heute** erledigten nach `order`. Früher erledigte fehlen (die Quests-Seite zeigt sie unter „Erledigt“ aus `data.sideQuests`).
 
-### Erfolge
-- Definitionen: `src/domain/achievements/definitions.ts` → `export const ACHIEVEMENTS: AchievementDefinition[]` (~30, reine Daten + `progress(stats)`).
-- Engine berechnet `AchievementStats` und `GameState.achievements`: `unlocked` = gespeicherter `AchievementUnlock` **oder** `current ≥ target` jetzt. Einmal freigeschaltet bleibt freigeschaltet (auch wenn ein Wert später sinkt) – dafür speichert die App neue Freischaltungen dauerhaft:
-- `AchievementRecorder` (in `src/app`, innerhalb des `GameProvider`) ruft bei neu erreichten, noch nicht gespeicherten Erfolgen `recordAchievementUnlocks([{ id, day: today }])` auf (idempotent, überschreibt nie einen vorhandenen Tag).
-- Gold aus Erfolgen zählt nicht in `AchievementStats.goldFromXp` (keine Kreisbezüge).
+### Erfolge (`src/domain/achievements/`)
+```ts
+// definitions.ts
+export const ACHIEVEMENTS: AchievementDefinition[]        // 38, nach Kategorie, dann Stufe
+export const ACHIEVEMENT_CATEGORY_ORDER: AchievementCategory[]
+export const ACHIEVEMENT_CATEGORY_LABELS: Record<AchievementCategory, string>  // Beständigkeit, Fleiß, Perfektion, Kampagnen, Wachstum, Schatzkammer, Besondere Momente
+export const ACHIEVEMENT_TIER_LABELS: Record<AchievementTier, string>          // Bronze, Silber, Gold
+export function getAchievement(id: string): AchievementDefinition | undefined
+// evaluate.ts
+export const COMEBACK_GAP_DAYS = 7
+export function evaluateAchievements(definitions, stats: AchievementStats, unlocks: AchievementUnlock[], today): AchievementState[]
+export function achievementGold(achievements: AchievementState[]): number
+export function countComebacks(activeDays: Iterable<DayKey>): number
+```
+- Definitionen: reine Daten + `progress(stats)` → `{ current, target }` (current auf `target` begrenzt). Gold je Stufe 25/75/200 (zwei besondere Gold-Erfolge 300, die geheime „Glückszahl“ `lucky-7777` 77). Geheim (`secret`, die ganze Kategorie „Besondere Momente“): `phoenix`, `lucky-7777` (7.777 Gesamt-XP), `adventure-days-365`. IDs sind stabil (gespeichert in `AchievementUnlock`).
+- Kennzahlen (`AchievementStats`, Engine, alles bis einschließlich `today`): Gesamtwerte wie `GameTotals` (Quests, Perfekte Tage, beste Tages-/Wochen-Serie, aktive Tage), `adventureDay`, Level, Gesamt-XP, Attribut-Level; `chaptersCompleted` und `campaignsCompleted` **inklusive archivierter** Kampagnen; `activeCampaigns` = nicht archiviert und nicht abgeschlossen; `sideQuestsCompleted`; `purchases` = Einlösungen mit `day ≤ today`; `goldFromXp` = `gold.fromXp` (ohne Erfolgs-Gold – keine Kreisbezüge); `comebacks` = `countComebacks(aktive Tage)`: wie oft nach ≥ 7 Tagen ohne erledigte Quest wieder eine erledigt wurde, ab dem ersten aktiven Tag (Nebenquests und Teilfortschritt zählen nicht als Aktivität).
+- `evaluateAchievements`: `unlocked` = gespeicherter `AchievementUnlock` **oder** `current ≥ target` jetzt; `unlockedDay` = gespeicherter Tag (bei doppelten Einträgen der früheste), sonst `today`; `progress` = min(current / target, 1). Gespeicherte Freischaltungen unbekannter IDs werden ignoriert; NaN/∞ schalten nie frei. Einmal freigeschaltet bleibt freigeschaltet – auch wenn ein Wert später sinkt (gelöschte Quest, beendete Kampagne, rückgängig gemachte Einlösung).
+- **`AchievementRecorder`** (`src/app`, im `GameProvider`, ohne Anzeige) macht das dauerhaft: erreichte, noch nicht gespeicherte Erfolge werden gebündelt nach 800 ms per `recordAchievementUnlocks([{ id, day: today }])` gespeichert – nur wenn sich die Menge der offenen Erfolge ändert, jede ID höchstens einmal pro Sitzung (schlägt das Speichern fehl, erst beim nächsten Start wieder), ohne Held nichts. Bei bestehendem Verlauf werden beim ersten Start alle schon erreichten Erfolge mit dem heutigen Tag gespeichert (still, siehe Feedback).
 
 ### Daten (`src/data`)
-- Dexie `version(3)`: neue Tabellen `rewards '&id, order'`, `purchases '&id, day'`, `sideQuests '&id, order'`, `achievementUnlocks '&id'`. `loadGameData` liefert sie (sortiert) mit; `resetAllData` leert sie; Backup enthält sie (im Schema optional → alte Backups bleiben gültig, schemaVersion unverändert).
+- Dexie `version(3)`: neue Tabellen `rewards '&id, order'`, `purchases '&id, day'`, `sideQuests '&id, order'`, `achievementUnlocks '&id'` (siehe `db.ts`). `loadGameData` liefert sie sortiert (leere Listen fehlen); `resetAllData` leert sie; das Backup enthält sie (optional, schemaVersion unverändert, siehe `backup.ts`).
 ```ts
+export const DEFAULT_REWARD_ICON = '🎁'; export const DEFAULT_SIDE_QUEST_ICON = '📜'; export const MAX_REWARD_PRICE = 1_000_000
+export function missingGoldMessage(missing: number): string     // "Dafür fehlen dir noch 1.250 Gold."
+
 // Schatzkammer
 export type RewardDraft = Omit<Reward, 'id' | 'order' | 'createdAt' | 'archived'>
-createReward(draft): Promise<Reward>            // Titel Pflicht, price ganzzahlig 1…1_000_000
+createReward(draft): Promise<Reward>
+  // Titel Pflicht ("Die Belohnung braucht einen Namen."), Icon sonst 🎁, price ganzzahlig 1 … MAX_REWARD_PRICE
+  // ("Der Preis muss eine ganze Zahl zwischen 1 und 1.000.000 Gold sein."), repeatable === true, order = max + 1
 updateReward(id, patch: Partial<RewardDraft>): Promise<void>
-archiveReward(id) / restoreReward(id) / deleteReward(id)   // delete nur ohne Einlösungen, sonst archivieren
-moveReward(id, 'up' | 'down')
+  // nur die Felder im Patch (undefined = unverändert), description: undefined/leer entfernt sie; gleiche Prüfung;
+  // archived, order, createdAt bleiben; frühere Einlösungen behalten ihre Momentaufnahme
+archiveReward(id) / restoreReward(id)                         // ausblenden / an den bisherigen Platz zurück
+deleteReward(id): Promise<'deleted' | 'archived'>
+  // nie eingelöst → endgültig gelöscht; mit Einlösungen → stattdessen ausgeblendet; unbekannt → 'deleted' (nichts passiert)
+moveReward(id, 'up' | 'down')                                 // Tausch mit dem Nachbarn unter den nicht ausgeblendeten
 purchaseReward(rewardId, today): Promise<Purchase>
-  // in einer Transaktion: prüft Guthaben über deriveGameState(loadGameData(), today).gold.balance ≥ price
-  // ("Dafür fehlen dir noch N Gold."), einmalige Belohnung nur einmal ("Diese Belohnung hast du schon eingelöst."),
-  // archivierte nicht ("Diese Belohnung ist nicht mehr verfügbar.")
-undoPurchase(purchaseId): Promise<void>          // Rückgängig (z. B. versehentlich): Gold zurück
+  // EINE Transaktion über allTables: unbekannt → "Diese Belohnung gibt es nicht (mehr).", ausgeblendet → "Diese Belohnung
+  // ist nicht mehr verfügbar.", einmalig und schon eingelöst → "Diese Belohnung hast du schon eingelöst.",
+  // deriveGameState(loadGameData(), today).gold.balance < price → missingGoldMessage(price − balance).
+  // Speichert { kind: 'reward', rewardId, title, icon, price (Momentaufnahmen), day: today, createdAt }.
+  // Gleichzeitige Einlösungen laufen nacheinander – nie mehr ausgegeben als da ist.
+undoPurchase(purchaseId): Promise<void>
+  // Einlösung weg, Gold zurück, einmalige Belohnung wieder einlösbar; unbekannte ID → nichts. Schon gespeicherte
+  // Erfolge (z. B. „Beim Händler“) bleiben samt Gold.
+
 // Nebenquests
 export type SideQuestDraft = Omit<SideQuest, 'id' | 'order' | 'createdDay' | 'doneDay'>
-createSideQuest(draft, today) · updateSideQuest(id, patch) · completeSideQuest(id, day) · reopenSideQuest(id) · deleteSideQuest(id)
+createSideQuest(draft, today): Promise<SideQuest>
+  // Titel Pflicht ("Die Nebenquest braucht einen Namen."), Icon sonst 📜, Attribut/Schwierigkeit geprüft,
+  // dueDay optional (leer = ohne Termin, Vergangenheit erlaubt → überfällig), createdDay = today, order = max + 1
+updateSideQuest(id, patch)       // wie updateReward; dueDay und description entfernbar; createdDay, order, doneDay bleiben
+completeSideQuest(id, day)       // doneDay = day; schon erledigt mit doneDay ≤ day → unverändert, späterer doneDay → auf day
+reopenSideQuest(id)              // doneDay entfällt (samt XP); offen → nichts
+deleteSideQuest(id)              // endgültig (eine erledigte samt XP); unbekannt → nichts
+// unbekannte IDs sonst: "Diese Nebenquest gibt es nicht (mehr)." bzw. "Diese Belohnung gibt es nicht (mehr)."
+
 // Erfolge
 recordAchievementUnlocks(unlocks: AchievementUnlock[]): Promise<void>
+  // idempotent, überschreibt nie einen gespeicherten Tag; doppelte IDs im Aufruf → frühester Tag;
+  // ungültige Einträge (leere ID, ungültiger Tag) → Fehler, nichts gespeichert; leere Liste → nichts
 ```
+- Bekannte Grenze: Nebenquests speichern keine Schwierigkeits-Momentaufnahme – ändert man die Schwierigkeit einer erledigten Nebenquest, ändern sich ihre XP (und das Gold) rückwirkend; der Dialog weist darauf hin.
 
 ### UI
-- **Navigation:** Heute · Quests · Kampagne · **Schatzkammer** (`/schatzkammer`, Icon z. B. `Gem`/`Coins`) · Held. `/einstellungen` bleibt als Route, ist aber nicht mehr in der Leiste: erreichbar über ein ⚙️-Symbol im Kopf der Held-Seite (Einstellungen-Seite bekommt „Zurück zum Helden“).
-- **Held-Seite** mit Reitern (URL `?tab=`): Übersicht (bisheriger Inhalt) · Erfolge (`?tab=erfolge`). Phase 2b ergänzt „Statistik“.
-- **Schatzkammer:** Gold-Guthaben groß, Belohnungen (Raster, Einlösen mit Bestätigung + kleine Szene), eigene Belohnungen anlegen/bearbeiten/sortieren/archivieren, Vorschläge mit einem Tipp übernehmen (`src/pages/treasury/rewardSuggestions.ts`), Chronik der Einlösungen (mit „Rückgängig“), Hinweis zum Gold-Verdienst (≈ ½ Gold pro XP). Platz für die Gegenstände aus 2b vorsehen.
-- **Dashboard:** Gold-Guthaben im Helden-Kopf (Tipp → Schatzkammer); Quest-Zeilen zeigen den Streak-Bonus (z. B. „+24 XP · 🔥 +20 %“); Bereich **Nebenquests** (offene + heute erledigte, schnell anlegen, abhaken).
-- **Quests-Seite:** Reiter „Gewohnheiten“ / „Nebenquests“ (Nebenquests verwalten: anlegen, bearbeiten, löschen, erledigte einblenden).
-- **Feedback:** XP-Meldung nennt auch Gold („+24 XP · +12 Gold“); neuer Erfolg → eigene Meldung mit Stufe (Bronze/Silber/Gold) und Gold-Belohnung; keine Meldungen für die stille Erst-Freischaltung beim ersten Laden.
+- **Navigation:** Heute · Quests · Kampagne · **Schatzkammer** (`/schatzkammer`, Icon `Gem`; in der unteren Leiste kurz „Schätze“, in der Seitenleiste „Schatzkammer“) · Held. `/einstellungen` bleibt als Route, ist aber nicht in der Leiste: erreichbar über das Zahnrad im Kopf der Held-Seite; dort ist „Held“ hervorgehoben (`NavItem.alsoActiveOn`). Die Einstellungen-Seite hat „Zurück zum Helden“.
+- **Held-Seite** mit Reitern (URL `?tab=`, `pages/hero/heroTabs.ts`): Übersicht (bisheriger Inhalt; XP-Aufschlüsselung mit Streak-Bonus- und Nebenquest-Zeile) · Erfolge (`?tab=erfolge`: Zusammenfassung, Kategorien in fester Reihenfolge, Karten mit Stufe, Fortschritt bzw. Freischalttag, geheime als „???“). Phase 2b ergänzt „Statistik“.
+- **Schatzkammer** (`pages/TreasuryPage.tsx`, `pages/treasury/`): Gold-Guthaben groß (mit „½ Gold pro XP“, aus XP / aus Erfolgen / ausgegeben), Belohnungen im Raster (zu teure gesperrt mit Sparbalken „Noch N Gold“, einmalige nach dem Einlösen „Eingelöst am …“), Einlösen mit Bestätigung + kleine Münz-Szene, eigene Belohnungen anlegen/bearbeiten/sortieren/ausblenden, Vorschläge (`rewardSuggestions.ts`), Chronik mit „Rückgängig“, Platzhalter „Gegenstände – bald verfügbar“ für 2b.
+- **Dashboard:** Gold-Chip im Helden-Kopf (→ Schatzkammer, negatives Guthaben rot); Quest-Zeilen zeigen XP inklusive Bonus und bei Bonus > 0 „🔥 N · +20 %“; Bereich **Nebenquests** (offene + heute erledigte, Fälligkeit, schnell anlegen, abhaken für heute; ab 5 Einträgen auf 3 gekürzt mit „N weitere anzeigen“ und „Verwalten“ → `/quests?tab=nebenquests`).
+- **Quests-Seite:** Reiter „Gewohnheiten“ / „Nebenquests“ (`?tab=nebenquests`, `&neu=1` öffnet den Anlege-Dialog); `SideQuestFormDialog` (`pages/quests/SideQuestFormDialog.tsx`) ist der gemeinsame Anlege-/Bearbeiten-Dialog für Dashboard und Quests-Seite; „Erledigt“ zeigt früher erledigte.
+- **Feedback** (`features/feedback`): Die XP-Meldung nennt Gold („+24 XP · +12 Gold“, `XpGainedEvent.gold` = Zuwachs von `goldForTotalXp`); Nebenquests sind XP-Quellen (`XpQuest.sideQuest`, `creditedSideQuests`); neuer Erfolg → `AchievementUnlockedEvent` (Stufe, Gold, Konfetti in der Stufenfarbe, `ACHIEVEMENT_TIER_COLORS` in `achievementTier.ts`). Still bleiben: alles beim ersten Laden (Vergleichsbasis), Tageswechsel/ersetztes Profil sowie mehr als `BULK_CHANGE_LIMIT` (3) Erledigungen, Perfekte Tage, erledigte Nebenquests, Kapitel oder neue Erfolge auf einmal. Folge: ein Erfolg, den erst der Tageswechsel freischaltet (`adventure-days-365`), erscheint ohne Meldung.
+- **Stufenfarben:** eine Quelle, `ACHIEVEMENT_TIER_COLORS` in `features/feedback/achievementTier.ts` (Meldung, Konfetti); die Erfolge-Seite übernimmt sie als `TIER_COLORS` (`pages/hero/achievementView.ts`).
+- **Fokus & Hinweise:** Verschwindet nach einer Aktion der fokussierte Button (Einlösen, Ausblenden, Rückgängig, abgehakte Nebenquest in der gekürzten Liste), springt der Fokus auf ein sinnvolles Nachbarziel (`pages/treasury/focus.ts`: `usePendingFocus`, `focusIsLost`; `ArchivedRewards` bleibt dafür immer eingehängt). Verschieben von Belohnungen wird per Live-Region angesagt. Reiter setzen `aria-controls` nur am gewählten Reiter. Ist auf dem Dashboard „Gestern“ gewählt, zeigt der Nebenquest-Bereich „Nebenquests zählen immer für heute.“ (`otherDaySelected`).
+- Offen: Der Lösch-Dialog von Quests nennt bisher nur XP; `deletionImpact.goldLost`/`goldAfter` stehen bereit.

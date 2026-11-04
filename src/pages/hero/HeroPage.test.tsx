@@ -54,8 +54,8 @@ describe('Heldenseite', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Held' })).toBeInTheDocument()
     const sheet = screen.getByRole('region', { name: 'Aria' })
     expect(within(sheet).getByText('Novize')).toBeInTheDocument()
-    // 2 × 20 XP + 2 perfekte Tage à 5 XP = 50 XP → Level 1 mit 50 / 100 XP.
-    expect(within(sheet).getByRole('progressbar', { name: 'Erfahrung' })).toHaveAttribute('aria-valuenow', '50')
+    // 20 XP + 21 XP (Tag 2 der Serie: +5 % Streak-Bonus) + 2 perfekte Tage à 5 XP = 51 XP → Level 1 mit 51 / 100 XP.
+    expect(within(sheet).getByRole('progressbar', { name: 'Erfahrung' })).toHaveAttribute('aria-valuenow', '51')
     expect(within(sheet).getByText(adventureDayText(34))).toBeInTheDocument()
     expect(within(sheet).getByText(/Nächster Rang:/)).toHaveTextContent('Nächster Rang: Lehrling ab Level 3 · noch 2 Level')
   })
@@ -67,10 +67,10 @@ describe('Heldenseite', () => {
     expect(cards).toHaveLength(6)
     const intellect = cards.find((card) => within(card).queryByRole('heading', { name: 'Intelligenz' }))
     expect(intellect).toBeDefined()
-    // Zwei mittlere Quests à 20 XP → 40 XP → Level 2 mit 0 / 95 XP (round(40 × 2^1,25)).
+    // Zwei mittlere Quests: 20 + 21 XP (Streak-Bonus) = 41 XP → Level 2 mit 1 / 95 XP (round(40 × 2^1,25)).
     expect(within(intellect as HTMLElement).getByText('Lesen, Lernen, Sprachen, Wissen')).toBeInTheDocument()
     expect(intellect).toHaveTextContent('Level2')
-    expect(intellect).toHaveTextContent('0 / 95 XP')
+    expect(intellect).toHaveTextContent('1 / 95 XP')
     expect(within(intellect as HTMLElement).getByRole('progressbar')).toHaveAccessibleName(
       'Intelligenz: Fortschritt zu Level 3',
     )
@@ -88,16 +88,18 @@ describe('Heldenseite', () => {
     expect(tile('Aktive Tage')).toHaveTextContent('Aktive Tage2')
     expect(tile('Bester Streak')).toHaveTextContent('Bester Streak2Tage')
     expect(tile('Bester Wochen-Streak')).toHaveTextContent('Bester Wochen-Streak0Wochen')
-    expect(tile('Gesamt-XP')).toHaveTextContent('Gesamt-XP50')
+    expect(tile('Gesamt-XP')).toHaveTextContent('Gesamt-XP51')
 
     const breakdown = screen.getByRole('region', { name: 'Herkunft deiner XP' })
-    expect(breakdown).toHaveTextContent('50 XP insgesamt')
+    expect(breakdown).toHaveTextContent('51 XP insgesamt')
+    expect(breakdown).toHaveTextContent('Davon Streak-Bonus bei den Quests: 1 XP')
     expect(within(breakdown).getByRole('progressbar', { name: 'Quests' })).toHaveAttribute('aria-valuenow', '80')
     expect(within(breakdown).getByRole('progressbar', { name: 'Perfekte Tage' })).toHaveAttribute('aria-valuenow', '20')
     expect(within(breakdown).getByRole('progressbar', { name: 'Kapitel & Kampagnen' })).toHaveAttribute(
       'aria-valuenow',
       '0',
     )
+    expect(within(breakdown).getByRole('progressbar', { name: 'Nebenquests' })).toHaveAttribute('aria-valuenow', '0')
   })
 
   it('zeigt die Rangleiter mit dem aktuellen Rang', async () => {

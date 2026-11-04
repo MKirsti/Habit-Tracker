@@ -11,6 +11,8 @@ export interface CheckButtonProps {
   label: string
   onToggle: () => void
   ref?: Ref<HTMLButtonElement>
+  /** DOM-ID, z. B. als Fokusziel, nachdem die Zeile in der Liste gewandert ist. */
+  id?: string
 }
 
 /** Ringradius im 48er-Koordinatensystem des SVG. */
@@ -20,12 +22,13 @@ const RADIUS = 21.5
  * Großer runder Abhak-Knopf (48 px) mit Fortschrittsring. Semantik: Kontrollkästchen.
  * Erledigt: goldene Scheibe mit Haken, der kurz „aufploppt“.
  */
-export function CheckButton({ checked, progress, label, onToggle, ref }: CheckButtonProps) {
+export function CheckButton({ checked, progress, label, onToggle, ref, id }: CheckButtonProps) {
   const ring = checked ? 1 : clamp(progress, 0, 1)
 
   return (
     <button
       ref={ref}
+      id={id}
       type="button"
       role="checkbox"
       aria-checked={checked}

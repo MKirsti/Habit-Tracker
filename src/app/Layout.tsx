@@ -5,7 +5,7 @@ import { NavLink, Outlet, ScrollRestoration, useLocation } from 'react-router'
 import { cn } from '../ui/cn'
 import { Divider } from '../ui/Ornament'
 import { AppLogo } from './AppLogo'
-import { NAV_ITEMS } from './navigation'
+import { NAV_ITEMS, isAlsoActive } from './navigation'
 
 export interface LayoutProps {
   /** Optionaler Bereich über dem Seiteninhalt (z. B. die Charakter-Kopfzeile). */
@@ -85,6 +85,7 @@ function MobileTopBar() {
 }
 
 function Sidebar() {
+  const { pathname } = useLocation()
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-(--sidebar-width) flex-col border-r border-border/80 bg-bg-deep/75 pt-safe backdrop-blur-md md:flex">
       {/* Goldene Lichtkante rechts */}
@@ -99,52 +100,62 @@ function Sidebar() {
 
       <nav aria-label="Hauptnavigation" className="flex-1 overflow-y-auto px-3 py-5">
         <ul className="flex flex-col gap-1">
-          {NAV_ITEMS.map(({ to, sidebarLabel, icon: Icon, end }) => (
-            <li key={to}>
-              <NavLink
-                to={to}
-                end={end}
-                className={({ isActive }) =>
-                  cn(
-                    'group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-[0.9375rem] font-medium transition-colors duration-150',
-                    isActive ? 'text-gold-bright' : 'text-muted hover:bg-surface/80 hover:text-parchment',
-                  )
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    {isActive && (
-                      <motion.span
-                        layoutId="sidebar-active"
-                        aria-hidden="true"
-                        className="absolute inset-0 rounded-xl bg-linear-to-r from-gold/16 to-gold/4 ring-1 ring-gold/30 ring-inset"
-                        transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                      >
-                        <span className="absolute top-2 bottom-2 left-0 w-0.5 rounded-full bg-gold-bright shadow-glow-sm" />
-                      </motion.span>
-                    )}
-                    <Icon
-                      aria-hidden
-                      className={cn('relative size-5 shrink-0', isActive && 'drop-shadow-[0_0_6px_rgb(240_201_106/0.55)]')}
-                      strokeWidth={isActive ? 2.1 : 1.8}
-                    />
-                    <span className="relative">{sidebarLabel}</span>
-                  </>
-                )}
-              </NavLink>
-            </li>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const { to, sidebarLabel, icon: Icon, end } = item
+            // Unterseiten ohne eigenen Eintrag (Einstellungen) heben ihren Eintrag (Held) mit hervor.
+            const sub = isAlsoActive(item, pathname)
+            return (
+              <li key={to}>
+                <NavLink
+                  to={to}
+                  end={end}
+                  className={({ isActive }) =>
+                    cn(
+                      'group relative flex h-11 items-center gap-3 rounded-xl px-3.5 text-[0.9375rem] font-medium transition-colors duration-150',
+                      isActive || sub ? 'text-gold-bright' : 'text-muted hover:bg-surface/80 hover:text-parchment',
+                    )
+                  }
+                >
+                  {({ isActive: exact }) => {
+                    const isActive = exact || sub
+                    return (
+                      <>
+                        {isActive && (
+                          <motion.span
+                            layoutId="sidebar-active"
+                            aria-hidden="true"
+                            className="absolute inset-0 rounded-xl bg-linear-to-r from-gold/16 to-gold/4 ring-1 ring-gold/30 ring-inset"
+                            transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                          >
+                            <span className="absolute top-2 bottom-2 left-0 w-0.5 rounded-full bg-gold-bright shadow-glow-sm" />
+                          </motion.span>
+                        )}
+                        <Icon
+                          aria-hidden
+                          className={cn(
+                            'relative size-5 shrink-0',
+                            isActive && 'drop-shadow-[0_0_6px_rgb(240_201_106/0.55)]',
+                          )}
+                          strokeWidth={isActive ? 2.1 : 1.8}
+                        />
+                        <span className="relative">{sidebarLabel}</span>
+                      </>
+                    )
+                  }}
+                </NavLink>
+              </li>
+            )
+          })}
         </ul>
       </nav>
 
-      <p className="px-6 pb-6 text-xs leading-relaxed text-muted">
-        Jeder Tag ist ein neues Kapitel deines Abenteuers.
-      </p>
+      <p className="px-6 pb-6 text-xs leading-relaxed text-muted">Jeder Tag ist ein neues Kapitel deines Abenteuers.</p>
     </aside>
   )
 }
 
 function BottomNav() {
+  const { pathname } = useLocation()
   return (
     <nav
       aria-label="Hauptnavigation"
@@ -155,47 +166,54 @@ function BottomNav() {
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-linear-to-r from-transparent via-gold/45 to-transparent"
       />
       <ul className="mx-auto grid h-(--bottom-nav-height) max-w-lg grid-cols-5">
-        {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
-          <li key={to} className="flex">
-            <NavLink
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
-                  'relative flex flex-1 flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium tracking-wide transition-colors duration-150',
-                  'focus-visible:-outline-offset-4',
-                  isActive ? 'text-gold-bright' : 'text-muted active:text-parchment',
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  {isActive && (
-                    <motion.span
-                      layoutId="bottom-nav-active"
-                      aria-hidden="true"
-                      className="absolute top-0 h-0.5 w-9 rounded-full bg-gold-bright shadow-glow-sm"
-                      transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                    />
-                  )}
-                  <span
-                    className={cn(
-                      'grid h-7 w-12 place-items-center rounded-full transition-colors duration-200',
-                      isActive && 'bg-gold/12',
-                    )}
-                  >
-                    <Icon
-                      aria-hidden
-                      className={cn('size-[1.375rem]', isActive && 'drop-shadow-[0_0_6px_rgb(240_201_106/0.6)]')}
-                      strokeWidth={isActive ? 2.1 : 1.8}
-                    />
-                  </span>
-                  <span>{label}</span>
-                </>
-              )}
-            </NavLink>
-          </li>
-        ))}
+        {NAV_ITEMS.map((item) => {
+          const { to, label, icon: Icon, end } = item
+          const sub = isAlsoActive(item, pathname)
+          return (
+            <li key={to} className="flex min-w-0">
+              <NavLink
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  cn(
+                    'relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium tracking-wide transition-colors duration-150',
+                    'focus-visible:-outline-offset-4',
+                    isActive || sub ? 'text-gold-bright' : 'text-muted active:text-parchment',
+                  )
+                }
+              >
+                {({ isActive: exact }) => {
+                  const isActive = exact || sub
+                  return (
+                    <>
+                      {isActive && (
+                        <motion.span
+                          layoutId="bottom-nav-active"
+                          aria-hidden="true"
+                          className="absolute top-0 h-0.5 w-9 rounded-full bg-gold-bright shadow-glow-sm"
+                          transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                        />
+                      )}
+                      <span
+                        className={cn(
+                          'grid h-7 w-12 place-items-center rounded-full transition-colors duration-200',
+                          isActive && 'bg-gold/12',
+                        )}
+                      >
+                        <Icon
+                          aria-hidden
+                          className={cn('size-[1.375rem]', isActive && 'drop-shadow-[0_0_6px_rgb(240_201_106/0.6)]')}
+                          strokeWidth={isActive ? 2.1 : 1.8}
+                        />
+                      </span>
+                      <span className="max-w-full truncate px-0.5">{label}</span>
+                    </>
+                  )
+                }}
+              </NavLink>
+            </li>
+          )
+        })}
       </ul>
     </nav>
   )

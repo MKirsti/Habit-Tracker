@@ -319,7 +319,8 @@ export interface AchievementStats {
   goldFromXp: number
   /**
    * Wie oft der Held nach einer Pause von ≥ 7 Tagen ohne erledigte Quest wieder eine Quest erledigt hat
-   * ("Phönix"-Erfolg).
+   * ("Phönix"-Erfolg). Gezählt über die Tage mit erledigter Completion (Nebenquests zählen nicht), ab dem ersten
+   * aktiven Tag – die Zeit vor der allerersten Erledigung ist keine Pause (`achievements/evaluate.ts`).
    */
   comebacks: number
 }
@@ -441,6 +442,8 @@ export interface HabitStatus {
   /**
    * Streak-Bonus als Anteil (0 … BALANCING.streakBonusMax), siehe ARCHITECTURE.md „Streak-Bonus“:
    * min(streakBonusPerStep × Länge der Serie unmittelbar VOR diesem Tag bzw. dieser Woche, streakBonusMax).
+   * Die Einheit (Tage/Wochen) folgt dem Rhythmus **dieses Tages** (`scheduleOn`), siehe `streakRunsBefore`.
+   * Offen: der Bonus, den eine Erledigung jetzt bekäme; erledigt: der gutgeschriebene (beides derselbe Wert).
    */
   streakBonus: number
 }
@@ -456,9 +459,9 @@ export interface DayState {
   requiredDone: number
   /** requiredCount ≥ 1 und alle Pflicht-Quests erledigt. */
   perfect: boolean
-  /** Summe der Quest-XP, die an diesem Tag verdient wurde. */
+  /** Summe der Quest-XP (inklusive Streak-Bonus), die an diesem Tag verdient wurde. Ohne Nebenquests. */
   questXp: number
-  /** Bonus-XP für den Perfekten Tag (0, wenn nicht perfekt). */
+  /** Bonus-XP für den Perfekten Tag: round(perfectDayBonus × questXp), 0, wenn nicht perfekt. */
   perfectBonusXp: number
 }
 
@@ -552,6 +555,9 @@ export interface GameState {
   gold: GoldState
   /** Alle Erfolge in Definitions-Reihenfolge. */
   achievements: AchievementState[]
-  /** Nebenquests: offene (nach Termin, dann order) und die heute erledigten. */
+  /**
+   * Nebenquests: zuerst die offenen – mit Termin (nach Termin, Überfällige damit vorn) vor denen ohne, jeweils dann
+   * nach `order` und Titel –, danach die heute erledigten (nach `order`). Früher erledigte fehlen.
+   */
   sideQuests: SideQuestState[]
 }

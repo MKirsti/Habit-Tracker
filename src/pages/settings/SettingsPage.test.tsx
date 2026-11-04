@@ -82,6 +82,14 @@ function jsonFile(content: string, name = 'backup.json') {
 }
 
 describe('Einstellungen', () => {
+  it('führt über „Zurück zum Helden“ zur Held-Seite (die Einstellungen stehen nicht mehr in der Navigation)', async () => {
+    const { user, view } = await setup()
+    const back = screen.getByRole('link', { name: 'Zurück zum Helden' })
+    expect(back).toHaveAttribute('href', '/held')
+    await user.click(back)
+    expect(view.router.state.location.pathname).toBe('/held')
+  })
+
   it('ändert den Tageswechsel', async () => {
     const { user } = await setup()
     const select = screen.getByRole('combobox', { name: 'Ein neuer Tag beginnt um' })
