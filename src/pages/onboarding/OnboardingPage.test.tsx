@@ -57,7 +57,7 @@ async function start() {
 
 async function toHeroStep(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Abenteuer beginnen' }))
-  return screen.findByRole('heading', { level: 1, name: 'Erschaffe deinen Helden' })
+  return screen.findByRole('heading', { level: 1, name: 'Erschaffe deinen Charakter' })
 }
 
 async function toCampaignStep(user: ReturnType<typeof userEvent.setup>, name = 'Aria') {
@@ -123,7 +123,7 @@ describe('Onboarding', () => {
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
 
     await waitFor(async () => {
-      expect((await loadGameData()).profile).toEqual({ name: 'Aria Sturmfeder', avatar: '🧝', createdDay: TODAY })
+      expect((await loadGameData()).profile).toEqual({ name: 'Aria Sturmfeder', avatar: '🧝', createdDay: TODAY, form: 'neutral' })
     })
     const data = await loadGameData()
     expect(data.mainQuests).toHaveLength(1)
@@ -176,7 +176,7 @@ describe('Onboarding', () => {
 
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
     await waitFor(async () => {
-      expect((await loadGameData()).profile).toEqual({ name: 'Brakka', avatar: '🧙', createdDay: TODAY })
+      expect((await loadGameData()).profile).toEqual({ name: 'Brakka', avatar: '🧙', createdDay: TODAY, form: 'neutral' })
     })
     const data = await loadGameData()
     expect(data.mainQuests).toHaveLength(1)
@@ -220,11 +220,50 @@ describe('Onboarding', () => {
     await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
 
     await waitFor(async () => {
-      expect((await loadGameData()).profile).toEqual({ name: 'Borin', avatar: '🧙', createdDay: TODAY })
+      expect((await loadGameData()).profile).toEqual({ name: 'Borin', avatar: '🧙', createdDay: TODAY, form: 'neutral' })
     })
     const data = await loadGameData()
     expect(data.habits).toEqual([])
     expect(data.mainQuests).toEqual([])
+  })
+
+  it('wählt die Sprachform für Klassen- und Titelnamen (Standard neutral), behält sie beim Zurückgehen und speichert sie', async () => {
+    const user = await start()
+    await toHeroStep(user)
+    const group = screen.getByRole('radiogroup', { name: 'Sprachform' })
+    expect(group).toHaveAccessibleDescription('Für Klassen- und Titelnamen – du kannst sie jederzeit ändern.')
+    expect(within(group).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Heldin', 'Held', 'Neutral'])
+    expect(within(group).getByRole('radio', { name: 'Neutral' })).toBeChecked()
+    const preview = screen.getByText(/^Zum Beispiel:/)
+    expect(preview).toHaveTextContent('Zum Beispiel: 🔮 Arkane Seele · guten Mutes')
+
+    // Die Überschrift spricht den Helden in der gewählten Form an – neutral ohne „Held“.
+    expect(screen.getByRole('heading', { level: 1, name: 'Erschaffe deinen Charakter' })).toBeInTheDocument()
+    expect(screen.getByText('Dein Charakter')).toBeInTheDocument()
+    await user.click(within(group).getByRole('radio', { name: 'Heldin' }))
+    expect(within(group).getByRole('radio', { name: 'Heldin' })).toBeChecked()
+    expect(preview).toHaveTextContent('Zum Beispiel: 🔮 Magierin · die Wagemutige')
+    expect(screen.getByRole('heading', { level: 1, name: 'Erschaffe deine Heldin' })).toBeInTheDocument()
+    expect(screen.getByText('Deine Heldin')).toBeInTheDocument()
+    await user.click(within(group).getByRole('radio', { name: 'Held' }))
+    expect(preview).toHaveTextContent('Zum Beispiel: 🔮 Magier · der Wagemutige')
+    expect(screen.getByRole('heading', { level: 1, name: 'Erschaffe deinen Helden' })).toBeInTheDocument()
+    await user.click(within(group).getByRole('radio', { name: 'Heldin' }))
+
+    await user.type(screen.getByRole('textbox', { name: /^Name/ }), 'Mira')
+    await user.click(screen.getByRole('button', { name: 'Weiter' }))
+    await screen.findByRole('heading', { level: 1, name: 'Wähle deine erste Kampagne' })
+    await user.click(screen.getByRole('button', { name: 'Zurück' }))
+    await screen.findByRole('heading', { level: 1, name: 'Erschaffe deine Heldin' })
+    expect(screen.getByRole('radio', { name: 'Heldin' })).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: 'Weiter' }))
+    await screen.findByRole('heading', { level: 1, name: 'Wähle deine erste Kampagne' })
+    await user.click(screen.getByRole('button', { name: 'Ohne Vorlage starten' }))
+    await user.click(screen.getByRole('button', { name: 'Los geht’s' }))
+    await waitFor(async () => {
+      expect((await loadGameData()).profile).toEqual({ name: 'Mira', avatar: '🧙', createdDay: TODAY, form: 'female' })
+    })
   })
 
   it('verlangt einen Namen, bevor es weitergeht', async () => {
@@ -234,19 +273,19 @@ describe('Onboarding', () => {
     expect(nameInput).toHaveAttribute('maxlength', '30')
 
     await user.click(screen.getByRole('button', { name: 'Weiter' }))
-    expect(screen.getByText('Bitte gib deinem Helden einen Namen.')).toBeInTheDocument()
+    expect(screen.getByText('Bitte gib einen Namen ein.')).toBeInTheDocument()
     expect(nameInput).toHaveAttribute('aria-invalid', 'true')
     expect(nameInput).toHaveFocus()
-    expect(screen.getByRole('heading', { level: 1, name: 'Erschaffe deinen Helden' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Erschaffe deinen Charakter' })).toBeInTheDocument()
 
     // Nur Leerzeichen zählen nicht als Name.
     await user.type(nameInput, '   ')
     await user.click(screen.getByRole('button', { name: 'Weiter' }))
-    expect(screen.getByText('Bitte gib deinem Helden einen Namen.')).toBeInTheDocument()
+    expect(screen.getByText('Bitte gib einen Namen ein.')).toBeInTheDocument()
 
     // Nach dem Korrigieren verschwindet der Fehler sofort.
     await user.type(nameInput, 'Aria')
-    expect(screen.queryByText('Bitte gib deinem Helden einen Namen.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Bitte gib einen Namen ein.')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Weiter' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Wähle deine erste Kampagne' })).toBeInTheDocument()
     expect((await loadGameData()).profile).toBeUndefined()
@@ -256,7 +295,7 @@ describe('Onboarding', () => {
     const user = await start()
     await toCampaignStep(user, 'Aria')
     await user.click(screen.getByRole('button', { name: 'Zurück' }))
-    expect(await screen.findByRole('heading', { level: 1, name: 'Erschaffe deinen Helden' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Erschaffe deinen Charakter' })).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: /^Name/ })).toHaveValue('Aria')
     await user.click(screen.getByRole('button', { name: 'Zurück' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Willkommen' })).toBeInTheDocument()

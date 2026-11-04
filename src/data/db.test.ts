@@ -1,15 +1,18 @@
 import 'fake-indexeddb/auto'
 import { Dexie } from 'dexie'
 import { afterEach, describe, expect, it } from 'vitest'
-import { makeCompletion, makeHabit, makeMainQuest } from '../domain/testing'
+import { deriveGameState } from '../domain/engine'
+import { makeBossVictory, makeChest, makeCompletion, makeHabit, makeMainQuest } from '../domain/testing'
 import { allTables, KV_KEYS, legacyBlueprintRef, QuestlogDB } from './db'
 import {
   addRestPeriod,
   createReward,
   createSideQuest,
   loadGameData,
+  openChest,
   purchaseReward,
   recordAchievementUnlocks,
+  recordProgress,
   resetAllData,
   settleHpDays,
 } from './repository'
@@ -24,8 +27,10 @@ const SCHEMA_V3 = {
   sideQuests: '&id, order',
   achievementUnlocks: '&id',
 }
+/** Schema der Version 4 (Phase 2b). */
+const SCHEMA_V4 = { ...SCHEMA_V3, hpLedger: '&day', restPeriods: '&id, from' }
 /** Aktuelle Version der Datenbank. */
-const CURRENT_VERSION = 4
+const CURRENT_VERSION = 5
 
 const names: string[] = []
 
@@ -144,7 +149,10 @@ describe('QuestlogDB – Version 3 (Phase 2a)', () => {
     expect(allTables(database).map((table) => table.name).sort()).toEqual(database.tables.map((table) => table.name).sort())
     expect(database.tables.map((table) => table.name).sort()).toEqual([
       'achievementUnlocks',
+      'bossVictories',
+      'chests',
       'completions',
+      'cosmeticUnlocks',
       'habits',
       'hpLedger',
       'kv',
@@ -247,6 +255,111 @@ describe('QuestlogDB – Version 4 (Phase 2b)', () => {
       { id: 'a', from: '2026-10-03', until: '2026-10-03', createdAt: 1 },
     ])
     expect((await database.restPeriods.orderBy('from').toArray()).map((period) => period.id)).toEqual(['a', 'b'])
+    database.close()
+  })
+})
+
+describe('QuestlogDB – Version 5 (Phase 3a)', () => {
+  const START = '2026-10-05' // Montag
+  const TODAY = '2026-10-21' // Mittwoch, drei Wochen später
+
+  it('Upgrade von Version 4 behält alle Daten und den Spielstand; Boss-Siege, Truhen und Freischaltungen starten leer', async () => {
+    const name = 'questlog-test-db-upgrade-v5'
+    names.push(name)
+    // Stand nach Phase 2b (Version 4): Verlauf, Schatzkammer, Erfolg, abgerechnete Tage, Rast.
+    const legacy = new Dexie(name)
+    legacy.version(4).stores(SCHEMA_V4)
+    const habit = makeHabit({ id: 'h1', title: 'Lesen', attribute: 'intellect', createdDay: START })
+    const completions = ['2026-10-05', '2026-10-06', '2026-10-12', '2026-10-19', '2026-10-20'].map((day) => makeCompletion(habit, day))
+    const reward = { id: 'r1', title: 'Pizza', icon: '🍕', price: 5, repeatable: true, order: 0, createdAt: 1 }
+    const purchase = { id: 'p1', kind: 'reward', rewardId: 'r1', title: 'Pizza', icon: '🍕', price: 5, day: '2026-10-08', createdAt: 2 }
+    const ledger = { day: '2026-10-05', score: 'perfect', frozen: false, hpDelta: 0, hpAfter: 50, maxHp: 50, penalties: true }
+    const rest = { id: 'rast', from: '2026-10-10', until: '2026-10-11', createdAt: 3 }
+    await legacy.table('habits').add(habit)
+    await legacy.table('completions').bulkAdd(completions)
+    await legacy.table('rewards').add(reward)
+    await legacy.table('purchases').add(purchase)
+    await legacy.table('achievementUnlocks').add({ id: 'quests-1', day: START })
+    await legacy.table('hpLedger').add(ledger)
+    await legacy.table('restPeriods').add(rest)
+    await legacy.table('kv').bulkAdd([
+      { key: KV_KEYS.profile, value: { name: 'Aria', avatar: '🧙', createdDay: START } },
+      { key: KV_KEYS.settings, value: { dayStartHour: 5, effects: false, penalties: { enabled: true, since: START }, hpIntroSeen: true } },
+    ])
+    legacy.close()
+
+    const upgraded = new QuestlogDB(name)
+    await upgraded.open()
+    expect(upgraded.verno).toBe(CURRENT_VERSION)
+    const data = await loadGameData(upgraded)
+    expect(data).toStrictEqual({
+      profile: { name: 'Aria', avatar: '🧙', createdDay: START },
+      settings: { dayStartHour: 5, effects: false, penalties: { enabled: true, since: START }, hpIntroSeen: true },
+      habits: [habit],
+      completions,
+      mainQuests: [],
+      rewards: [reward],
+      purchases: [purchase],
+      achievementUnlocks: [{ id: 'quests-1', day: START }],
+      hpLedger: [ledger],
+      restPeriods: [rest],
+    })
+    for (const table of [upgraded.bossVictories, upgraded.chests, upgraded.cosmeticUnlocks]) {
+      expect(await table.count()).toBe(0)
+    }
+    // Der Spielstand von Phase 2b bleibt (Level, XP, Gold ohne Truhen, HP) – Kampf und Beute kommen nur dazu.
+    const state = deriveGameState(data, TODAY)
+    expect(state.gold.fromChests).toBe(0)
+    expect(state.gold.balance).toBe(state.gold.fromXp + state.gold.fromAchievements - 5)
+
+    // Die neuen Tabellen sind nutzbar und werden mit allem anderen zurückgesetzt.
+    await recordProgress(
+      {
+        bossVictories: [makeBossVictory('2026-10-12', { day: '2026-10-14' })],
+        chests: [makeChest('boss:2026-10-12', { foundDay: '2026-10-14' })],
+      },
+      upgraded,
+    )
+    expect(await openChest('boss:2026-10-12', TODAY, upgraded)).toStrictEqual({ kind: 'gold', amount: 20 })
+    const after = await loadGameData(upgraded)
+    expect(after.bossVictories).toHaveLength(1)
+    expect(after.chests?.[0].openedAt).toEqual(expect.any(Number))
+    await resetAllData(upgraded)
+    for (const table of allTables(upgraded)) expect(await table.count()).toBe(0)
+    upgraded.close()
+  })
+
+  it('Upgrade direkt von Version 1 durchläuft alle Versionen bis 5', async () => {
+    const name = 'questlog-test-db-upgrade-v1-v5'
+    names.push(name)
+    const legacy = new Dexie(name)
+    legacy.version(1).stores(LEGACY_SCHEMA)
+    const scholar = makeMainQuest({ id: 'scholar-old', title: 'Der Weg des Gelehrten' })
+    await legacy.table('mainQuests').add(scholar)
+    legacy.close()
+
+    const upgraded = new QuestlogDB(name)
+    await upgraded.open()
+    expect(upgraded.verno).toBe(CURRENT_VERSION)
+    expect(await upgraded.mainQuests.get('scholar-old')).toStrictEqual({ ...scholar, blueprint: { id: 'scholar', level: 'beginner' } })
+    expect(await upgraded.chests.count()).toBe(0)
+    upgraded.close()
+  })
+
+  it('höchstens ein Sieg pro Woche (Schlüssel weekStart), Truhen nach Fundtag indiziert, Freischaltungen je ID', async () => {
+    const name = 'questlog-test-db-v5-keys'
+    names.push(name)
+    const database = new QuestlogDB(name)
+    await database.open()
+    await database.bossVictories.add(makeBossVictory('2026-10-12'))
+    await expect(database.bossVictories.add(makeBossVictory('2026-10-12', { bossId: 'other' }))).rejects.toThrow()
+    await database.chests.bulkAdd([
+      makeChest('quest:b', { foundDay: '2026-10-14' }),
+      makeChest('quest:a', { foundDay: '2026-10-13' }),
+    ])
+    expect((await database.chests.where('foundDay').equals('2026-10-14').toArray()).map((chest) => chest.id)).toEqual(['quest:b'])
+    await database.cosmeticUnlocks.add({ id: 'aurora', kind: 'frame', day: '2026-10-14', source: 'chest' })
+    await expect(database.cosmeticUnlocks.add({ id: 'aurora', kind: 'frame', day: '2026-10-15', source: 'chest' })).rejects.toThrow()
     database.close()
   })
 })

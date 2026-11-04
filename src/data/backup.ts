@@ -7,20 +7,41 @@
  *
  * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest, `deletedHabits`, `blueprint` und
  * `sharedHabitIds` einer Kampagne, die Phase-2a-Listen `rewards`, `purchases`, `sideQuests` und
- * `achievementUnlocks`, Phase 2b: `hpLedger`, `restPeriods`, `settings.penalties`, `settings.hpIntroSeen`)
+ * `achievementUnlocks`, Phase 2b: `hpLedger`, `restPeriods`, `settings.penalties`, `settings.hpIntroSeen`, Phase 3a:
+ * `bossVictories`, `chests`, `cosmeticUnlocks`, `settings.combatIntroSeen`, `profile.form/titleId/frameId`)
  * erhöhen die Schema-Version nicht: Ältere Backups ohne sie bleiben gültig.
  */
 import { z } from 'zod'
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { DIFFICULTIES } from '../domain/balancing'
 import { BALANCING } from '../domain/balancing'
-import { addDays, compareDays, diffDays, isValidDayKey, toDayKey } from '../domain/dates'
+import { addDays, compareDays, diffDays, isoWeekday, isValidDayKey, toDayKey } from '../domain/dates'
 import { nextUnsettledDay, sortedLedger } from '../domain/hp'
-import type { BlueprintRef, ChapterMetric, DayKey, DayScore, GameData, ItemId, MainQuest, Settings } from '../domain/types'
+import type {
+  BlueprintRef,
+  ChapterMetric,
+  ChestRarity,
+  ChestSource,
+  DayKey,
+  DayScore,
+  GameData,
+  GrammaticalForm,
+  ItemId,
+  MainQuest,
+  Settings,
+} from '../domain/types'
 import { getBlueprint } from './blueprints'
 import { BLUEPRINT_LEVELS } from './blueprints/types'
 import { allTables, db, KV_KEYS, legacyBlueprintRef, type QuestlogDB } from './db'
-import { completionId, ITEM_IDS, loadGameData, MAX_REST_PERIOD_DAYS, MAX_REWARD_PRICE, resetAllData } from './repository'
+import {
+  completionId,
+  GRAMMATICAL_FORMS,
+  ITEM_IDS,
+  loadGameData,
+  MAX_REST_PERIOD_DAYS,
+  MAX_REWARD_PRICE,
+  resetAllData,
+} from './repository'
 
 export const BACKUP_APP_ID = 'questlog'
 export const BACKUP_SCHEMA_VERSION = 1
@@ -304,10 +325,58 @@ const achievementUnlockSchema = z.object({
   day: dayKeySchema,
 })
 
+/** Besiegter Wochen-Boss (`BossVictory`, Phase 3a): `weekStart` ist der Montag der Woche (eindeutig je Backup). */
+const bossVictorySchema = z.object({
+  weekStart: dayKeySchema.refine((day) => !isValidDayKey(day) || isoWeekday(day) === 1, {
+    error: 'Ein Boss-Sieg gehört zum Montag seiner Woche.',
+  }),
+  bossId: idSchema,
+  day: dayKeySchema,
+  maxHp: z.number().positive(),
+})
+
+/** Fundorte und Seltenheiten von Truhen – `satisfies` hält die Listen vollständig zu den Typen. */
+const CHEST_SOURCE_SET = { boss: true, quest: true, chapter: true } satisfies Record<ChestSource, true>
+const CHEST_SOURCES = Object.keys(CHEST_SOURCE_SET) as [ChestSource, ...ChestSource[]]
+const CHEST_RARITY_SET = { common: true, uncommon: true, rare: true, legendary: true } satisfies Record<ChestRarity, true>
+const CHEST_RARITIES = Object.keys(CHEST_RARITY_SET) as [ChestRarity, ...ChestRarity[]]
+const cosmeticKindSchema = z.enum(['title', 'frame'])
+
+/** Inhalt einer Truhe (`ChestContent`): Gold (ganze Zahl ≥ 1), ein Streak-Schutz oder ein Titel/Rahmen. */
+const chestContentSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('gold'), amount: z.number().int().min(1) }),
+  z.object({ kind: z.literal('item'), itemId: z.literal('streakFreeze') }),
+  z.object({ kind: z.literal('cosmetic'), cosmeticKind: cosmeticKindSchema, cosmeticId: idSchema }),
+])
+
+/** Gefundene Truhe (`Chest`, Phase 3a); `openedAt` fehlt = ungeöffnet. */
+const chestSchema = z.object({
+  id: idSchema,
+  source: z.enum(CHEST_SOURCES),
+  foundDay: dayKeySchema,
+  rarity: z.enum(CHEST_RARITIES),
+  content: chestContentSchema,
+  openedAt: z.number().optional(),
+})
+
+/** Aus einer Truhe freigeschalteter Titel bzw. Rahmen (`CosmeticUnlock`, Phase 3a). */
+const cosmeticUnlockSchema = z.object({
+  id: idSchema,
+  kind: cosmeticKindSchema,
+  day: dayKeySchema,
+  source: z.literal('chest'),
+})
+
 const profileSchema = z.object({
   name: z.string(),
   avatar: z.string(),
   createdDay: dayKeySchema,
+  /** Phase 3a: Sprachform, gewählter Titel und Rahmen (unbekannte IDs zeigt die App einfach nicht an). */
+  form: z.enum(GRAMMATICAL_FORMS as [GrammaticalForm, ...GrammaticalForm[]]).optional(),
+  titleId: idSchema.optional(),
+  frameId: idSchema.optional(),
+  /** Phase 3a: nach einer Umbenennung festgehaltener Helden-Seed (Boss-Wahl, Truhen) – nicht leer. */
+  heroSeed: idSchema.optional(),
 })
 
 const settingsSchema = z.object({
@@ -316,6 +385,8 @@ const settingsSchema = z.object({
   /** Phase 2b: Lebenspunkte an/aus (Sanfter Modus) und Beginn der Abrechnung. */
   penalties: z.object({ enabled: z.boolean(), since: dayKeySchema.optional() }).optional(),
   hpIntroSeen: z.boolean().optional(),
+  /** Phase 3a: Einführung „Neu: Klassen, Bosse & Beute“ gesehen. */
+  combatIntroSeen: z.boolean().optional(),
 })
 
 /** Meldet doppelte IDs innerhalb einer Liste als Fehler am betroffenen Eintrag. */
@@ -326,6 +397,21 @@ function checkUniqueIds(items: { id: string }[], path: PropertyKey[], ctx: z.Ref
       ctx.addIssue({ code: 'custom', path: [...path, index, 'id'], message: `Doppelte ID „${item.id}“.` })
     }
     seen.add(item.id)
+  })
+}
+
+/** Höchstens ein Boss-Sieg pro Woche (Schlüssel der Tabelle `bossVictories`). */
+function checkUniqueWeeks(victories: { weekStart: string }[], ctx: z.RefinementCtx): void {
+  const seen = new Set<string>()
+  victories.forEach((victory, index) => {
+    if (seen.has(victory.weekStart)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['bossVictories', index, 'weekStart'],
+        message: `Für die Woche ab ${victory.weekStart} gibt es schon einen Boss-Sieg.`,
+      })
+    }
+    seen.add(victory.weekStart)
   })
 }
 
@@ -373,6 +459,9 @@ export const gameDataSchema = z
     achievementUnlocks: z.array(achievementUnlockSchema).optional(),
     hpLedger: z.array(hpLedgerEntrySchema).optional(),
     restPeriods: z.array(restPeriodSchema).optional(),
+    bossVictories: z.array(bossVictorySchema).optional(),
+    chests: z.array(chestSchema).optional(),
+    cosmeticUnlocks: z.array(cosmeticUnlockSchema).optional(),
   })
   .superRefine((data, ctx) => {
     checkUniqueIds(data.habits, ['habits'], ctx)
@@ -388,6 +477,9 @@ export const gameDataSchema = z
       checkUniqueIds(data.restPeriods, ['restPeriods'], ctx)
       checkRestOverlaps(data.restPeriods, ctx)
     }
+    if (data.bossVictories) checkUniqueWeeks(data.bossVictories, ctx)
+    if (data.chests) checkUniqueIds(data.chests, ['chests'], ctx)
+    if (data.cosmeticUnlocks) checkUniqueIds(data.cosmeticUnlocks, ['cosmeticUnlocks'], ctx)
     data.mainQuests.forEach((quest, index) => checkUniqueIds(quest.chapters, ['mainQuests', index, 'chapters'], ctx))
     // Pro Quest und Tag darf es nur eine Erledigung geben – die ID muss das widerspiegeln.
     data.completions.forEach((completion, index) => {
@@ -461,8 +553,8 @@ export function parseBackup(json: unknown): ParseBackupResult {
  * Backups aus der Zeit vor der Kampagnen-Bibliothek bekommen beim Import die Herkunft ihrer früheren
  * Onboarding-Kampagne (siehe `legacyOnboardingRef`) – sonst ließe sich der Gelehrte danach ein zweites Mal
  * starten. Alle anderen Daten kommen unverändert zurück. Backups ohne die Phase-2a-Listen (Belohnungen,
- * Einlösungen, Nebenquests, Erfolge) bzw. ohne die Phase-2b-Listen (abgerechnete Tage, Rast & Urlaub)
- * hinterlassen diese Tabellen leer. Ein Backup ohne `settings.penalties` startet wie nach dem Update auf Phase 2b:
+ * Einlösungen, Nebenquests, Erfolge) bzw. ohne die Phase-2b-Listen (abgerechnete Tage, Rast & Urlaub) und
+ * Phase-3a-Listen (Boss-Siege, Truhen, Titel & Rahmen aus Truhen) hinterlassen diese Tabellen leer. Ein Backup ohne `settings.penalties` startet wie nach dem Update auf Phase 2b:
  * abgerechnet wird erst ab dem nächsten `settleHpDays` – nie rückwirkend.
  *
  * Lebenspunkte: Tage nach dem Export kennt das Backup nicht (vielleicht wurde auf dem alten Gerät weitergespielt).
@@ -497,6 +589,9 @@ export async function restoreBackup(backup: BackupFile, database: QuestlogDB = d
     if (data.achievementUnlocks) await database.achievementUnlocks.bulkAdd(data.achievementUnlocks)
     if (data.hpLedger) await database.hpLedger.bulkAdd(data.hpLedger)
     if (data.restPeriods) await database.restPeriods.bulkAdd(data.restPeriods)
+    if (data.bossVictories) await database.bossVictories.bulkAdd(data.bossVictories)
+    if (data.chests) await database.chests.bulkAdd(data.chests)
+    if (data.cosmeticUnlocks) await database.cosmeticUnlocks.bulkAdd(data.cosmeticUnlocks)
   })
 }
 

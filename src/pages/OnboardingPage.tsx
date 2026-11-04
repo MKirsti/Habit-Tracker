@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { useGameContext } from '../app/gameContext'
 import { startAdventure } from '../data/seed'
+import type { GrammaticalForm } from '../domain/types'
 import { Button, useToast } from '../ui'
 import { DEFAULT_HERO_AVATAR, validateHeroName } from './hero/heroProfile'
 import { CampaignStep } from './onboarding/CampaignStep'
@@ -37,6 +38,8 @@ export function OnboardingPage() {
   const [navigated, setNavigated] = useState(false)
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState(DEFAULT_HERO_AVATAR)
+  // Sprachform für Klassen- und Titelnamen; ohne Wahl neutral.
+  const [form, setForm] = useState<GrammaticalForm>('neutral')
   // `undefined` = noch nichts gewählt; `null` = ohne Vorlage starten.
   const [campaign, setCampaign] = useState<CampaignChoice | undefined>(undefined)
   const [saving, setSaving] = useState(false)
@@ -59,7 +62,7 @@ export function OnboardingPage() {
       // Eine Transaktion: Vorlage und Profil werden gemeinsam gespeichert oder gar nicht. Schlägt etwas fehl,
       // bleibt nichts zurück – ein neuer Versuch (auch nach einem Neuladen oder mit anderer Wahl) ist sauber.
       // Das gespeicherte Profil schaltet die App danach vom Onboarding in den Spielmodus.
-      await startAdventure({ name: name.trim(), avatar, createdDay: today }, campaign, today)
+      await startAdventure({ name: name.trim(), avatar, createdDay: today, form }, campaign, today)
     } catch (error) {
       toast({ tone: 'error', title: 'Dein Abenteuer konnte nicht beginnen', description: errorMessage(error) })
     } finally {
@@ -109,8 +112,10 @@ export function OnboardingPage() {
               <HeroStep
                 name={name}
                 avatar={avatar}
+                form={form}
                 onNameChange={setName}
                 onAvatarChange={setAvatar}
+                onFormChange={setForm}
                 onNext={() => goTo(2)}
                 focusOnMount={navigated}
               />

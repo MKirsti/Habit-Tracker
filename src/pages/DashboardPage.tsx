@@ -2,12 +2,16 @@ import { Archive, Plus, ScrollText } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useGameContext } from '../app/gameContext'
+import { bossById } from '../domain/combat/boss'
 import { addDays, formatDay } from '../domain/dates'
 import { getDayState } from '../domain/engine'
 import { restPeriodOn } from '../domain/hp'
 import { Button, EmptyState, PageHeader, buttonClassName } from '../ui'
 import { AttributesCard } from './dashboard/AttributesCard'
+import { BossCard } from './dashboard/BossCard'
 import { CampaignSection } from './dashboard/CampaignCard'
+import { CombatIntroCard } from './dashboard/CombatIntroCard'
+import { lastWeekNote } from './dashboard/combatText'
 import {
   dayOffsetWord,
   hasActiveHabits,
@@ -39,6 +43,11 @@ import { usePendingFocus } from './treasury/focus'
  * offenen Vortag (nur, wenn er HP kosten bzw. einen Streak-Schutz brauchen würde – mit „Nachtragen“ und „Ruhetag“ für
  * gestern), das Zwischenziel „guter Tag“ in der Tagesbilanz, „Heute Ruhetag“ (mit Rückfrage) und das Ruhetag-Banner –
  * an Ruhetagen bleiben die Quests erledigbar.
+ *
+ * Klassen & Kampf (Phase 3a): Klasse, Titel und Rahmen im Helden-Kopf; direkt darunter die Boss-Karte mit Treffer-
+ * Anzeige beim Abhaken, Link zu ungeöffneten Truhen und – am Montag – dem Hinweis zum Boss der Vorwoche; einmalige
+ * Einführung „Neu: Klassen, Bosse & Beute“ mit Wahl der Sprachform. Es steht immer höchstens eine Einführungskarte da
+ * (die Lebenspunkte zuerst).
  */
 export function DashboardPage() {
   const { data, today, state } = useGameContext()
@@ -127,6 +136,17 @@ export function DashboardPage() {
     setSelectedOffset(1)
   }
 
+  // Montag: Boss der Vorwoche – besiegt oder (mit Gnadenfrist fürs Nachtragen) entkommen.
+  const lastWeek = lastWeekNote({
+    today,
+    previous: state.bosses.previous,
+    victories: data.bossVictories,
+    bossById,
+    canBackfill: offset === 0 && offsets.includes(1),
+  })
+  const showHpIntro = hp.enabled && data.settings.hpIntroSeen !== true
+  const showCombatIntro = !showHpIntro && data.settings.combatIntroSeen !== true
+
   return (
     <>
       {/* Unter md nur für Screenreader (h1 + Datum); das Datum steht dort sichtbar in der Heldenleiste. */}
@@ -141,7 +161,18 @@ export function DashboardPage() {
           hpLedger={data.hpLedger}
         />
       )}
-      {hp.enabled && data.settings.hpIntroSeen !== true && <HpIntroCard />}
+      <BossCard
+        boss={state.bosses.current}
+        unopenedChests={state.inventory.unopenedChests}
+        hasQuests={showQuests}
+        lastWeek={lastWeek}
+        onBackfill={backfillYesterday}
+        effects={data.settings.effects}
+      />
+      {showHpIntro && <HpIntroCard />}
+      {showCombatIntro && data.profile && (
+        <CombatIntroCard form={data.profile.form} heroClass={state.heroClass.definition} />
+      )}
 
       <div className="grid gap-5 md:gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(17.5rem,0.65fr)] lg:items-start lg:gap-8">
         <div className="flex min-w-0 flex-col gap-5 md:gap-6">

@@ -25,6 +25,8 @@ import type {
   MainQuestState,
   SideQuest,
 } from '../../domain/types'
+import { combatFeedbackStillHolds } from './combatFeedback'
+import type { CombatFeedbackEvent } from './combatFeedback'
 import type { HpFeedbackEvent } from './hpFeedback'
 
 /**
@@ -155,7 +157,8 @@ export interface AchievementUnlockedEvent {
 
 /**
  * Alle Rückmeldungen. Die Lebenspunkte-Ereignisse (Niederlage, Streak-Schutz, Heiltrank) erkennt `hpFeedbackEvents`
- * (`hpFeedback.ts`) aus Ledger und Käufen – nicht `diffGameStates`.
+ * (`hpFeedback.ts`) aus Ledger und Käufen, die Kampf-Ereignisse (Boss besiegt, Truhe gefunden, Klassenwechsel)
+ * `combatFeedback.ts` – nicht `diffGameStates`.
  */
 export type FeedbackEvent =
   | XpGainedEvent
@@ -166,6 +169,7 @@ export type FeedbackEvent =
   | CampaignCompletedEvent
   | AchievementUnlockedEvent
   | HpFeedbackEvent
+  | CombatFeedbackEvent
 
 /**
  * Massenänderung? Dann gibt es keine Rückmeldung, nur der neue Zustand wird zur Vergleichsbasis.
@@ -522,5 +526,9 @@ export function feedbackStillHolds(event: FeedbackEvent, state: GameState): bool
     case 'freeze-used':
     case 'potion-healed':
       return true
+    case 'boss-defeated':
+    case 'chest-found':
+    case 'class-changed':
+      return combatFeedbackStillHolds(event, state)
   }
 }

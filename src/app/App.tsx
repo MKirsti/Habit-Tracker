@@ -8,13 +8,13 @@ import { GameFeedback } from '../features/feedback/GameFeedback'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LoadingState } from '../ui/Spinner'
 import { ToastProvider } from '../ui/Toast'
-import { AchievementRecorder } from './AchievementRecorder'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { useGameContext } from './gameContext'
 import { AppLoading, GameProvider } from './GameProvider'
 import { HpSettler } from './HpSettler'
 import { Layout } from './Layout'
 import { requestPersistentStorage } from './persistentStorage'
+import { ProgressRecorder } from './ProgressRecorder'
 import { RouteError } from './RouteError'
 
 /*
@@ -65,15 +65,15 @@ const routes: RouteObject[] = [
 
 /**
  * Aufbau: Fehlergrenze → Toasts → Spieldaten (einmal geladen) → Effekte → Onboarding oder Router.
- * Daneben speichert `AchievementRecorder` still jeden neu erreichten Erfolg dauerhaft, und `HpSettler` rechnet die
- * Lebenspunkte ab (beim Start, beim Tageswechsel, bei der Rückkehr in die App).
+ * Daneben speichert `ProgressRecorder` still jeden neu erreichten Fortschritt dauerhaft (Erfolge, Boss-Siege, gefundene
+ * Truhen), und `HpSettler` rechnet die Lebenspunkte ab (beim Start, beim Tageswechsel, bei der Rückkehr in die App).
  */
 export function App() {
   return (
     <AppErrorBoundary>
       <ToastProvider>
         <GameProvider>
-          <AchievementRecorder />
+          <ProgressRecorder />
           <HpSettler />
           <EffectsConfig>
             <ProfileGate />

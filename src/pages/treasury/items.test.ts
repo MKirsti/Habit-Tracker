@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BALANCING } from '../../domain/balancing'
-import { makeGameData, makeItemPurchase, makeLedgerEntry, makePurchase } from '../../domain/testing'
+import { makeChest, makeGameData, makeItemPurchase, makeLedgerEntry, makePurchase } from '../../domain/testing'
 import type { HpState } from '../../domain/types'
 import {
   FREEZE_MAX,
@@ -25,7 +25,7 @@ function hp(overrides: Partial<HpState> = {}): HpState {
 function shop(overrides: { balance?: number; freezes?: number; hp?: Partial<HpState> } = {}): ItemShopState {
   return {
     hp: hp(overrides.hp),
-    inventory: { streakFreezes: overrides.freezes ?? 0 },
+    inventory: { streakFreezes: overrides.freezes ?? 0, unopenedChests: 0 },
     gold: { balance: overrides.balance ?? 1_000 },
   }
 }
@@ -102,6 +102,33 @@ describe('Gegenstände in der Chronik', () => {
     })
     const outcomes = itemOutcomes(data)
     expect(Object.fromEntries(outcomes)).toEqual({ f1: 'used', f2: 'stocked', f3: 'stocked', p1: 'drunk' })
+  })
+
+  it('zählt Streak-Schutz aus Truhen mit: ein älterer aus einer Truhe wird zuerst eingesetzt (wie in der Abrechnung)', () => {
+    // Truhe am 20.10. geöffnet (Spieltag des Öffnens), Kauf am 25.10., ein aufgefangener Tag am 28.10.:
+    // eingesetzt ist der ältere aus der Truhe – der gekaufte liegt noch im Beutel (Vorrat 1).
+    const openedAt = new Date('2026-10-20T12:00:00').getTime()
+    const freezeChest = makeChest('chapter:q1:c1', {
+      foundDay: '2026-10-20',
+      rarity: 'rare',
+      content: { kind: 'item', itemId: 'streakFreeze' },
+      openedAt,
+    })
+    const unopened = makeChest('quest:x', { foundDay: '2026-10-19', rarity: 'rare', content: { kind: 'item', itemId: 'streakFreeze' } })
+    const data = makeGameData({
+      purchases: [makeItemPurchase('f1', 'streakFreeze', '2026-10-25', { createdAt: 10 })],
+      chests: [freezeChest, unopened],
+      hpLedger: [makeLedgerEntry('2026-10-28', { score: 'missed', frozen: true })],
+    })
+    expect(Object.fromEntries(itemOutcomes(data))).toEqual({ f1: 'stocked' })
+
+    // Zwei aufgefangene Tage: Truhe und Kauf sind beide eingesetzt.
+    const both = { ...data, hpLedger: [...(data.hpLedger ?? []), makeLedgerEntry('2026-10-29', { score: 'missed', frozen: true })] }
+    expect(Object.fromEntries(itemOutcomes(both))).toEqual({ f1: 'used' })
+
+    // Eine erst nach dem Kauf geöffnete Truhe ist jünger: der Kauf wird zuerst eingesetzt.
+    const later = { ...data, chests: [{ ...freezeChest, openedAt: new Date('2026-10-26T12:00:00').getTime() }] }
+    expect(Object.fromEntries(itemOutcomes(later))).toEqual({ f1: 'used' })
   })
 
   it('Belohnungen lassen sich immer zurückgeben, Gegenstände nur am Kauftag vor der Abrechnung', () => {

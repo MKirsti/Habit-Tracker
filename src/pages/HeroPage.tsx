@@ -1,4 +1,4 @@
-import { ChartNoAxesCombined, LayoutGrid, Settings, Trophy, UserRound } from 'lucide-react'
+import { ChartNoAxesCombined, LayoutGrid, Library, Settings, Trophy, UserRound } from 'lucide-react'
 import { useId } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
@@ -6,6 +6,9 @@ import { SETTINGS_PATH } from '../app/navigation'
 import { EmptyState, PageHeader, buttonClassName, formatNumber } from '../ui'
 import { AchievementsTab } from './hero/AchievementsTab'
 import { AttributeGrid } from './hero/AttributeGrid'
+import { ClassCard } from './hero/ClassCard'
+import { CollectionTab } from './hero/CollectionTab'
+import { unopenedChests, unopenedCountText } from './hero/collectionView'
 import { HeroSheet } from './hero/HeroSheet'
 import { HeroStats, XpBreakdown } from './hero/HeroStats'
 import { HeroTabs } from './hero/HeroTabs'
@@ -16,9 +19,10 @@ import { RankLadder } from './hero/RankLadder'
 import { StatisticsTab } from './hero/stats/StatisticsTab'
 
 /**
- * „Held“ – der Charakterbogen mit Reitern (`?tab=`): Übersicht (Avatar, Rang, Level, Attribute, Statistik,
- * XP-Herkunft, Rangleiter), Erfolge (`?tab=erfolge`) und Statistik (`?tab=statistik`: Kennzahlen, Heatmap,
- * Diagramme). Das Zahnrad im Kopf führt zu den Einstellungen.
+ * „Held“ – der Charakterbogen mit Reitern (`?tab=`): Übersicht (Avatar, Titel, Rang, Level, Klasse, Attribute,
+ * Statistik, XP-Herkunft, Rangleiter), Erfolge (`?tab=erfolge`), Statistik (`?tab=statistik`: Kennzahlen, Heatmap,
+ * Diagramme) und Sammlung (`?tab=sammlung`: Truhen, Titel & Rahmen, Bestiarium). Das Zahnrad im Kopf führt zu den
+ * Einstellungen.
  */
 export function HeroPage() {
   const { data, state } = useGameContext()
@@ -28,6 +32,7 @@ export function HeroPage() {
   const idBase = `hero${useId().replace(/:/g, '')}`
 
   const unlocked = state.achievements.filter((achievement) => achievement.unlocked).length
+  const unopened = unopenedChests(state.chests).length
   const tabs: HeroTab<HeroTabId>[] = [
     { id: 'uebersicht', label: 'Übersicht', icon: <LayoutGrid aria-hidden /> },
     {
@@ -46,6 +51,20 @@ export function HeroPage() {
       ),
     },
     { id: 'statistik', label: 'Statistik', icon: <ChartNoAxesCombined aria-hidden /> },
+    {
+      id: 'sammlung',
+      label: 'Sammlung',
+      icon: <Library aria-hidden />,
+      // Ungeöffnete Truhen als kleiner Hinweis (auf dem Handy nur als Punkt).
+      meta:
+        unopened > 0 ? (
+          <>
+            <span aria-hidden="true">🎁 {formatNumber(unopened)}</span>
+            <span className="sr-only">, {unopenedCountText(unopened)}</span>
+          </>
+        ) : undefined,
+      metaDot: unopened > 0,
+    },
   ]
 
   function selectTab(next: HeroTabId) {
@@ -67,7 +86,7 @@ export function HeroPage() {
         <PageHeader
           eyebrow="Charakterbogen"
           title="Held"
-          subtitle="Level, Attribute, Erfolge und alle Taten deines bisherigen Abenteuers."
+          subtitle="Level, Klasse, Attribute, Erfolge und deine Sammlung – alle Taten deines bisherigen Abenteuers."
           className="pr-14"
         />
         {/* Eigener Rahmen fürs Positionieren: Buttons bringen selbst `relative` mit. */}
@@ -103,6 +122,8 @@ export function HeroPage() {
           <AchievementsTab achievements={state.achievements} goldFromAchievements={state.gold.fromAchievements} />
         ) : tab === 'statistik' ? (
           <StatisticsTab />
+        ) : tab === 'sammlung' ? (
+          <CollectionTab />
         ) : (
           <>
             {profile ? (
@@ -110,6 +131,10 @@ export function HeroPage() {
             ) : (
               <EmptyState icon={<UserRound />} title="Noch kein Held" text="Erschaffe zuerst deinen Helden." />
             )}
+
+            <div className="mt-6">
+              <ClassCard heroClass={state.heroClass} attributes={state.attributes} form={profile?.form} />
+            </div>
 
             <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,20rem)] lg:items-start">
               <div className="flex min-w-0 flex-col gap-8">

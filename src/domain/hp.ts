@@ -12,6 +12,7 @@ import { BALANCING } from './balancing'
 import { addDays, compareDays, isValidDayKey } from './dates'
 import { dayFactsOf, deriveGameState, totalXpTimeline } from './engine'
 import {
+  chestFreezeDays,
   countItemPurchases,
   hpDeltaForScore,
   maxHpForLevel,
@@ -51,7 +52,8 @@ function defeatGoldLoss(data: GameData, ledgerSoFar: HpLedgerEntry[], day: DayKe
  * 1. Wertung (`scoreDays`, `classifyDay`): rest / none / perfect / good / weak / missed – oder `absent` („Pause“),
  *    wenn unmittelbar davor schon 3 schadende Tage in Folge liegen (Durchhänger-Pause, Zähler aus dem Ledger und
  *    den gerade gewerteten Tagen, `slumpCountOf`) und der Tag schwach oder verpasst wäre.
- * 2. Streak-Schutz bei weak/missed (nie in der Pause), wenn ein vorher (Kauftag ≤ Tag) gekaufter noch da ist →
+ * 2. Streak-Schutz bei weak/missed (nie in der Pause), wenn ein vorher (Kauftag ≤ Tag) gekaufter oder – Phase 3a – aus
+ *    einer Truhe (Spieltag des Öffnens ≤ Tag, `chestFreezeDays`) noch da ist →
  *    `frozen`, keine HP-Wirkung; der Tag ist für alle Streaks ein Schontag. Auch im Sanften Modus (schützt Streaks).
  * 3. HP: Start = `hpAfter` des vorigen Eintrags (Max-HP ohne Eintrag oder nach einem Tag im Sanften Modus);
  *    Änderung = Wertung (0, wenn frozen) + `healingPotion.heal` je Heiltrank mit Kauftag = Tag; ein Level-Up an dem
@@ -85,6 +87,8 @@ export function settleDays(data: GameData, today: DayKey): HpLedgerEntry[] {
     factsOf: dayFactsOf(data, today, restDays),
     restDays,
     purchases: data.purchases,
+    // Phase 3a: Streak-Schutz aus geöffneten Truhen – derselbe Vorrat wie in der Vorschau für gestern (`hpCalendar`).
+    chestFreezeDays: chestFreezeDays(data.chests, data.settings.dayStartHour),
     ledger,
   })
 

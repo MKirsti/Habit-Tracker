@@ -1,5 +1,6 @@
 import { ChevronsUp, Crown, Pencil } from 'lucide-react'
 import { useId, useState } from 'react'
+import { activeFrame, activeTitle, titleNameFor } from '../../domain/combat/cosmetics'
 import { formatDay } from '../../domain/dates'
 import type { CharacterProfile, GameState } from '../../domain/types'
 import { Button, Card, XpBar, formatNumber } from '../../ui'
@@ -14,7 +15,11 @@ export interface HeroSheetProps {
   shimmer: boolean
 }
 
-/** Kopf des Charakterbogens: Avatar, Name, Rang, Level, XP, Abenteuertag, nächster Rang, Bearbeiten. */
+/**
+ * Kopf des Charakterbogens: Avatar (im gewählten Rahmen), Name, gewählter Titel (in der Sprachform des Helden), Rang,
+ * Level, XP, Abenteuertag, nächster Rang, Bearbeiten. Gesperrte (nicht mehr freigeschaltete) Titel und Rahmen
+ * erscheinen nicht (`activeTitle`/`activeFrame`).
+ */
 export function HeroSheet({ profile, state, shimmer }: HeroSheetProps) {
   const nameId = useId()
   const [editOpen, setEditOpen] = useState(false)
@@ -22,6 +27,8 @@ export function HeroSheet({ profile, state, shimmer }: HeroSheetProps) {
   const [editKey, setEditKey] = useState(0)
   const { level, rank, adventureDay } = state
   const upcoming = nextRank(level.level)
+  const title = activeTitle(profile, state.cosmetics)
+  const frame = activeFrame(profile, state.cosmetics)
 
   return (
     <Card tone="gold" ornate padding="none" aria-labelledby={nameId}>
@@ -42,7 +49,7 @@ export function HeroSheet({ profile, state, shimmer }: HeroSheetProps) {
         </div>
 
         <div className="flex flex-col items-center gap-5 text-center sm:flex-row sm:items-center sm:gap-7 sm:text-left">
-          <AvatarMedallion avatar={profile.avatar} size="xl" className="mt-6 sm:mt-0" />
+          <AvatarMedallion avatar={profile.avatar} size="xl" frame={frame} className="mt-6 sm:mt-0" />
           <div className="w-full min-w-0 sm:flex-1 sm:pr-28">
             <h2
               id={nameId}
@@ -50,6 +57,12 @@ export function HeroSheet({ profile, state, shimmer }: HeroSheetProps) {
             >
               {profile.name}
             </h2>
+            {title && (
+              <p data-hero-title={title.id} className="mt-0.5 font-display text-[0.9375rem] tracking-wide text-gold/90 italic">
+                <span className="sr-only">Titel: </span>
+                {titleNameFor(title, profile.form)}
+              </p>
+            )}
             <p className="mt-1.5 inline-flex items-center gap-2 font-display text-base font-semibold tracking-[0.08em] text-gold-bright">
               <span aria-hidden="true" className="text-[0.625rem] text-gold-dim">
                 ◆
@@ -94,7 +107,14 @@ export function HeroSheet({ profile, state, shimmer }: HeroSheetProps) {
         </p>
       </div>
 
-      <EditHeroDialog key={editKey} open={editOpen} onClose={() => setEditOpen(false)} profile={profile} />
+      <EditHeroDialog
+        key={editKey}
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        profile={profile}
+        formExamples={title ? [state.heroClass.definition, title] : [state.heroClass.definition]}
+        frame={frame}
+      />
     </Card>
   )
 }

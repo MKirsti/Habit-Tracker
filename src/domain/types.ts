@@ -191,9 +191,15 @@ export interface CharacterProfile {
   titleId?: string
   /** Gewählter Avatar-Rahmen (Phase 3a, `FrameDefinition.id`). */
   frameId?: string
+  /**
+   * Festgehaltener Helden-Seed (Phase 3a, Grundlage von Boss-Wahl, Schwäche und Truhen – `heroSeedOf`). Fehlt =
+   * `createdDay + name`. Vom Repository gepflegt: Benennt sich der Held um, bleibt der bisherige Seed hier stehen, damit
+   * Umbenennen weder den Boss der Woche noch offene Truhen-Funde neu auswürfelt. Für Seiten nur lesend.
+   */
+  heroSeed?: string
 }
 
-/** Sprachform für Klassen- und Titelnamen: Magierin / Magier / neutral (z. B. "Magie-Kundige"). */
+/** Sprachform für Klassen- und Titelnamen: Magierin / Magier / neutral (z. B. „Arkane Seele“). */
 export type GrammaticalForm = 'female' | 'male' | 'neutral'
 
 export interface Settings {
@@ -451,7 +457,7 @@ export interface GoldState {
   fromAchievements: number
   /** Gold aus geöffneten Truhen (Phase 3a). */
   fromChests: number
-  /** fromXp + fromAchievements. */
+  /** fromXp + fromAchievements + fromChests (Phase 3a). */
   earned: number
   /** Summe aller Purchases. */
   spent: number
@@ -726,7 +732,7 @@ export type HeroClassId =
 
 export interface HeroClassDefinition {
   id: HeroClassId
-  /** Name je Sprachform, z. B. { female: 'Magierin', male: 'Magier', neutral: 'Magiekundige Person' }. */
+  /** Name je Sprachform, z. B. { female: 'Magierin', male: 'Magier', neutral: 'Arkane Seele' }. */
   names: Record<GrammaticalForm, string>
   icon: string
   /** 0 (Abenteurer), 1 (Grundklasse) oder 2 (Hybrid) Attribute. */

@@ -4,10 +4,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useGameContext } from '../../app/gameContext'
 import { ATTRIBUTES } from '../../domain/attributes'
-import type { CharacterProfile, Completion, GameState, HpLedgerEntry, Purchase, SideQuest } from '../../domain/types'
+import { heroSeedOf } from '../../domain/combat/boss'
+import type {
+  CharacterProfile,
+  ChestRarity,
+  Completion,
+  GameData,
+  GameState,
+  HpLedgerEntry,
+  Purchase,
+  SideQuest,
+} from '../../domain/types'
 import { useMediaQuery, useToast } from '../../ui'
 import type { ToastApi, ToastOptions } from '../../ui'
-import { accentVars } from '../campaignTheme'
+import { accentVars, attributeColor } from '../campaignTheme'
+import { ChestGraphic } from '../combat/ChestGraphic'
+import { ChestOpenDialog } from '../combat/ChestOpenDialog'
+import { chestSourceLine } from '../combat/chestText'
+import { chestTheme } from '../combat/chestTheme'
 import { achievementConfetti, ACHIEVEMENT_TIER_COLORS } from './achievementTier'
 import { campaignAccentById } from './campaignAccent'
 import { CelebrationOverlay } from './CelebrationOverlay'
@@ -21,9 +35,13 @@ import {
   withoutCelebrated,
 } from './celebrations'
 import type { Celebration } from './celebrations'
+import { browserClassSceneStore, classChangeOf, classSceneSeen, combatFeedbackEvents } from './combatFeedback'
+import type { ChestFoundEvent, ClassSceneStore } from './combatFeedback'
+import { chestFoundToastText } from './combatSceneText'
 import { Confetti } from './Confetti'
 import type { ConfettiBurstSpec } from './Confetti'
 import {
+  BULK_CHANGE_LIMIT,
   creditedCompletions,
   creditedSideQuests,
   diffGameStates,
@@ -86,8 +104,13 @@ type ConfettiChoice = Pick<ConfettiBurstSpec, 'intensity' | 'accent'>
  * - Lebenspunkte (`hpFeedback.ts`): Eine neu abgerechnete Niederlage zeigt eine ruhige, würdevolle Szene (ohne
  *   Konfetti) mit verlorenem Gold und vollen HP; ein eingesetzter Streak-Schutz und ein getrunkener Heiltrank je
  *   eine kleine Meldung. Der übliche Tagesschaden der Abrechnung bleibt still (er steht im Helden-Kopf).
+ * - Kampf & Beute (`combatFeedback.ts`, Phase 3a): Ein besiegter Wochen-Boss zeigt die Siegesszene mit seiner Truhe
+ *   („Öffnen“ öffnet den Truhen-Dialog über der Szene), neue Quest- und Kapitel-Truhen die Meldung „Truhe gefunden“.
+ *   Der Klassenwechsel zu Wochenbeginn erscheint als Szene, sobald die App in der neuen Woche läuft – einmal je Held
+ *   und Woche (gemerkt auf diesem Gerät, `ClassSceneStore`), erst nach der Einführung „Neu: Klassen, Bosse & Beute“
+ *   (vorher gilt die Woche still als gesehen: Die Einführung stellt die Klasse ja gerade vor).
  */
-export function GameFeedback() {
+export function GameFeedback({ classScenes = browserClassSceneStore }: { classScenes?: ClassSceneStore } = {}) {
   const { data, state } = useGameContext()
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const fancy = data.settings.effects && !prefersReducedMotion
@@ -164,7 +187,13 @@ export function GameFeedback() {
       { ledger: previous.hpLedger, purchases: previous.purchases, state: previous.state },
       { ledger: data.hpLedger, purchases: data.purchases, state },
     )
-    const events = withoutCelebrated([...diffGameStates(previous.state, state, credits), ...hpEvents], memory.current)
+    const combatEvents = combatFeedbackEvents(previous.state, state, BULK_CHANGE_LIMIT).map((event) =>
+      event.type === 'chest-found' ? withChestSources(event, data, state) : event,
+    )
+    const events = withoutCelebrated(
+      [...diffGameStates(previous.state, state, credits), ...hpEvents, ...combatEvents],
+      memory.current,
+    )
     if (events.length === 0) return
 
     const celebrate = hasCelebration(events)
@@ -181,6 +210,7 @@ export function GameFeedback() {
     if (confetti && fancy) addBurst({ ...confetti, ...toastOrigin() })
   }, [
     state,
+    data,
     data.profile,
     data.completions,
     data.habits,
@@ -195,6 +225,29 @@ export function GameFeedback() {
     addBurst,
     setQueue,
   ])
+
+  // Klassenwechsel zu Wochenbeginn: einmal je Held und Woche – auch beim Öffnen der App (dann beginnt die Woche ja).
+  const introSeen = data.settings.combatIntroSeen === true
+  useEffect(() => {
+    const profile = data.profile
+    if (profile === undefined) return
+    const change = classChangeOf(state)
+    if (change === undefined) return
+    const hero = heroSeedOf(profile)
+    if (classSceneSeen(classScenes, hero, change.weekStart)) return
+    classScenes.set(hero, change.weekStart)
+    // Vor der Einführung still: Sie stellt die Klasse gerade vor.
+    if (!introSeen) return
+    setQueue(enqueueCelebrations(queueRef.current, [change], () => ++nextCelebrationId.current))
+  }, [state, data.profile, introSeen, classScenes, setQueue])
+
+  // Truhen-Dialog über der Siegesszene.
+  const [chestDialog, setChestDialog] = useState<{ chestId: string; open: boolean } | undefined>(undefined)
+  const openChestDialog = useCallback((chestId: string) => setChestDialog({ chestId, open: true }), [])
+  const closeChestDialog = useCallback(
+    () => setChestDialog((current) => (current ? { ...current, open: false } : current)),
+    [],
+  )
 
   // Nach der letzten Szene: die zurückgehaltenen Toasts zeigen (soweit sie noch stimmen).
   useEffect(() => {
@@ -227,8 +280,16 @@ export function GameFeedback() {
   )
 
   const current = queue[0]
-  // Kampagne gemeistert: in der Hauptfarbe der Kampagne (Level-Up und Kampagnen ohne Attribut bleiben golden).
-  const accent = current?.kind === 'campaign' ? campaignAccentById(state, current.event.campaignId) : undefined
+  // Kampagne gemeistert: in der Hauptfarbe der Kampagne, Klassenwechsel: in der Farbe des (ersten) Klassen-Attributs.
+  // Level-Up, Boss-Sieg und Kampagnen ohne Attribut bleiben golden.
+  const accent =
+    current?.kind === 'campaign'
+      ? campaignAccentById(state, current.event.campaignId)
+      : current?.kind === 'class' && current.event.to.attributes.length > 0
+        ? attributeColor(current.event.to.attributes[0])
+        : undefined
+  const bossChestId = current?.kind === 'boss' ? (current.event.chestId ?? `boss:${current.event.weekStart}`) : undefined
+  const bossChest = bossChestId !== undefined ? state.chests.find((chest) => chest.id === bossChestId) : undefined
   return (
     <>
       {typeof document !== 'undefined' &&
@@ -243,14 +304,41 @@ export function GameFeedback() {
                 onReveal={(origin) => reveal(current.id, origin, accent)}
                 accent={accent}
                 today={state.today}
+                form={data.profile?.form}
+                bossChest={bossChest}
+                onOpenChest={openChestDialog}
               />
             )}
           </AnimatePresence>,
           document.body,
         )}
+      {chestDialog !== undefined && (
+        <ChestOpenDialog
+          chestId={chestDialog.chestId}
+          open={chestDialog.open}
+          onClose={closeChestDialog}
+          returnFocus={sceneContinueButton}
+        />
+      )}
       <Confetti bursts={bursts} onBurstEnd={removeBurst} />
     </>
   )
+}
+
+/** „Weiter“ der sichtbaren Szene – Fokusziel, wenn „Öffnen“ nach dem Öffnen der Truhe verschwunden ist. */
+function sceneContinueButton(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-scene-continue]')
+}
+
+/** Ergänzt die gefundenen Truhen um ihren Fundort in Worten („📖 Lesen“). */
+function withChestSources(event: ChestFoundEvent, data: GameData, state: GameState): ChestFoundEvent {
+  const context = {
+    habits: data.habits,
+    mainQuests: data.mainQuests,
+    victories: data.bossVictories,
+    bosses: [state.bosses.current, state.bosses.previous],
+  }
+  return { ...event, chests: event.chests.map((chest) => ({ ...chest, sourceLine: chestSourceLine(chest, context) })) }
 }
 
 function profileKey(profile: CharacterProfile | undefined): string {
@@ -500,9 +588,19 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
           case 'potion-healed':
             claim(toast({ tone: 'success', icon: '🧪', duration: HP_TOAST_MS, ...potionToastText(event) }), [event])
             break
+          case 'chest-found': {
+            const text = chestFoundToastText(
+              event.chests.map((chest) => ({ rarity: chest.rarity, sourceLine: chest.sourceLine ?? 'Ein Glücksfund' })),
+            )
+            const best = bestRarity(event.chests.map((chest) => chest.rarity))
+            claim(toast({ tone: 'xp', icon: <ChestToastIcon rarity={best} />, duration: HIGHLIGHT_TOAST_MS, ...text }), [event])
+            break
+          }
           case 'level-up':
           case 'campaign-completed':
           case 'defeat':
+          case 'boss-defeated':
+          case 'class-changed':
             break
         }
       }
@@ -583,6 +681,28 @@ function AchievementToastIcon({ event }: { event: AchievementUnlockedEvent }) {
       className="grid size-9 place-items-center rounded-full bg-[radial-gradient(circle_at_50%_30%,var(--accent-35),color-mix(in_srgb,var(--accent)_12%,var(--color-surface-raised))_72%)] shadow-[0_0_16px_-3px_var(--accent-60)] ring-2 ring-(--accent-60) ring-inset"
     >
       {event.icon}
+    </span>
+  )
+}
+
+/** Die wertvollste Seltenheit unter mehreren gefundenen Truhen (für das Toast-Symbol). */
+function bestRarity(rarities: readonly ChestRarity[]): ChestRarity {
+  const order: ChestRarity[] = ['common', 'uncommon', 'rare', 'legendary']
+  return rarities.reduce<ChestRarity>((best, rarity) => (order.indexOf(rarity) > order.indexOf(best) ? rarity : best), 'common')
+}
+
+/**
+ * Icon der Meldung „Truhe gefunden“: eine kleine Truhe in einem Ring in der Farbe ihrer Seltenheit (Bronze, Silber,
+ * Blau-Violett, Gold). Deckt wie beim Kapitel-Toast den goldenen Icon-Kreis ab.
+ */
+function ChestToastIcon({ rarity }: { rarity: ChestRarity }) {
+  return (
+    <span
+      data-chest-toast={rarity}
+      style={accentVars(chestTheme(rarity).color)}
+      className="grid size-9 place-items-center rounded-full bg-[radial-gradient(circle_at_50%_35%,var(--accent-20),color-mix(in_srgb,var(--accent)_10%,var(--color-surface-raised))_72%)] shadow-[0_0_14px_-3px_var(--accent-60)] ring-2 ring-(--accent-60) ring-inset"
+    >
+      <ChestGraphic rarity={rarity} phase="closed" fancy={false} className="w-7" />
     </span>
   )
 }

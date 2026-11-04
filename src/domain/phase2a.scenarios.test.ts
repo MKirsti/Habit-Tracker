@@ -185,7 +185,7 @@ describe('Gold & Nebenquests – von Hand gerechnet', () => {
       makeAchievement('gold', (s) => s.goldFromXp, 99, { goldReward: 75 }), // 98 < 99: Erfolgs-Gold zählt nicht
     ]
     const state = deriveGameState(data, '2026-10-16', { achievements })
-    expect(state.gold).toEqual({ fromXp: 98, fromAchievements: 25, earned: 123, spent: 50, lostToDefeats: 0, balance: 73 })
+    expect(state.gold).toEqual({ fromXp: 98, fromAchievements: 25, fromChests: 0, earned: 123, spent: 50, lostToDefeats: 0, balance: 73 })
     expect(state.achievements.map((a) => a.unlocked)).toEqual([true, false])
   })
 

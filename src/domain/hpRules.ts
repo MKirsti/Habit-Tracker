@@ -11,9 +11,10 @@
  * ein Durchhänger kostet höchstens 3 schadende Tage (danach „Pause“ bis zum nächsten guten Tag), Ruhetage nie.
  * Etwas zu tun ist so nie schlechter als nichts zu tun.
  */
-import { BALANCING } from './balancing'
-import { addDays, compareDays, fromEpochDay, isValidDayKey, toEpochDay } from './dates'
+import { BALANCING, DEFAULT_SETTINGS } from './balancing'
+import { addDays, compareDays, fromEpochDay, isValidDayKey, toDayKey, toEpochDay } from './dates'
 import type {
+  Chest,
   DayKey,
   DayScore,
   GameData,
@@ -148,6 +149,41 @@ export function countItemPurchases(
   return count
 }
 
+/**
+ * Phase 3a: Tage, ab denen Streak-Schutz-Gegenstände aus geöffneten Truhen im Vorrat liegen (aufsteigend, einer je
+ * Truhe). Ein Streak-Schutz aus einer Truhe zählt wie ein gekaufter ab dem **Spieltag des Öffnens** (`openedAt` laut
+ * Tageswechsel, nie vor dem Fundtag) – ein heute geöffneter rettet gestern also nicht, genau wie ein heute gekaufter.
+ * Maßgeblich ist der gespeicherte Inhalt: War der Vorrat beim Öffnen voll, steht dort schon das Ersatz-Gold.
+ */
+export function chestFreezeDays(chests: readonly Chest[] | undefined, dayStartHour?: number): DayKey[] {
+  const hour = dayStartHour !== undefined && Number.isFinite(dayStartHour) ? dayStartHour : DEFAULT_SETTINGS.dayStartHour
+  const days: DayKey[] = []
+  for (const chest of chests ?? []) {
+    if (chest.content?.kind !== 'item' || chest.content.itemId !== 'streakFreeze') continue
+    if (typeof chest.openedAt !== 'number' || !Number.isFinite(chest.openedAt)) continue
+    const opened = new Date(chest.openedAt)
+    if (Number.isNaN(opened.getTime())) continue
+    const openedDay = toDayKey(opened, hour)
+    days.push(isValidDayKey(chest.foundDay) && compareDays(chest.foundDay, openedDay) > 0 ? chest.foundDay : openedDay)
+  }
+  return days.sort(compareDays)
+}
+
+/** Alle Tage, an denen ein Streak-Schutz in den Vorrat kam: Käufe plus geöffnete Truhen (aufsteigend). */
+function freezeArrivalDays(purchases: readonly Purchase[] | undefined, chestDays: readonly DayKey[] | undefined): DayKey[] {
+  const bought = itemPurchaseDays(purchases, 'streakFreeze')
+  if (chestDays === undefined || chestDays.length === 0) return bought
+  return [...bought, ...chestDays.filter(isValidDayKey)].sort(compareDays)
+}
+
+/** Streak-Schutz-Gegenstände, die bis einschließlich `through` in den Vorrat kamen (Käufe + geöffnete Truhen). */
+function freezesArrivedThrough(data: Pick<GameData, 'purchases' | 'chests' | 'settings'>, through: DayKey): number {
+  const fromChests = chestFreezeDays(data.chests, data.settings?.dayStartHour).filter(
+    (day) => compareDays(day, through) <= 0,
+  ).length
+  return countItemPurchases(data.purchases, 'streakFreeze', through) + fromChests
+}
+
 /** Verbrauchte Streak-Schutz-Gegenstände: abgerechnete Tage mit `frozen`. */
 export function freezesUsedIn(ledger: readonly HpLedgerEntry[]): number {
   return ledger.reduce((count, entry) => count + (entry.frozen === true ? 1 : 0), 0)
@@ -268,6 +304,11 @@ export interface ScoreDaysInput {
   restDays: ReadonlySet<DayKey>
   purchases: readonly Purchase[] | undefined
   /**
+   * Phase 3a: Tage, an denen ein Streak-Schutz aus einer geöffneten Truhe in den Vorrat kam (`chestFreezeDays`) –
+   * zählen wie Käufe an diesem Tag. Fehlt = keine.
+   */
+  chestFreezeDays?: readonly DayKey[]
+  /**
    * Schon abgerechnete Einträge, nach Tag sortiert (`sortedLedger`); zählen nur die vor `from`: Daraus ergeben
    * sich die verbrauchten Streak-Schutz-Gegenstände (`frozen`) und der Durchhänger-Zähler (`slumpCountOf`).
    */
@@ -289,7 +330,7 @@ export function scoreDays(input: ScoreDaysInput): ScoredDay[] {
   const result: ScoredDay[] = []
   if (!isValidDayKey(input.from) || !isValidDayKey(input.to) || compareDays(input.from, input.to) > 0) return result
   const before = input.ledger.filter((entry) => compareDays(entry.day, input.from) < 0)
-  const freezeDays = itemPurchaseDays(input.purchases, 'streakFreeze')
+  const freezeDays = freezeArrivalDays(input.purchases, input.chestFreezeDays)
   let bought = 0
   let next = 0
   let used = freezesUsedIn(before)
@@ -381,6 +422,7 @@ export function hpCalendar(
           factsOf,
           restDays,
           purchases: data.purchases,
+          chestFreezeDays: chestFreezeDays(data.chests, data.settings.dayStartHour),
           ledger,
         })
   const frozen = [...ledger, ...pending].filter((entry) => entry.frozen === true)
@@ -447,10 +489,23 @@ export function hpStateOf(data: GameData, calendar: HpCalendar, today: DayKey, l
   return state
 }
 
-/** `GameState.inventory`: gekaufte Streak-Schutz-Gegenstände (Kauftag ≤ heute) minus verbrauchte (abgerechnet). */
-export function inventoryOf(data: GameData, calendar: HpCalendar, today: DayKey): InventoryState {
-  const bought = countItemPurchases(data.purchases, 'streakFreeze', today)
-  return { streakFreezes: Math.max(0, bought - freezesUsedIn(calendar.ledger)) }
+/**
+ * `GameState.inventory`: Streak-Schutz-Gegenstände – gekaufte (Kauftag ≤ heute) plus die aus geöffneten Truhen
+ * (Phase 3a, `chestFreezeDays`, geöffnet bis heute) minus verbrauchte (abgerechnet) – und die ungeöffneten Truhen.
+ * @param chests Alle Truhen (`GameState.chests`: gespeicherte plus neu gefundene); Standard: die gespeicherten.
+ */
+export function inventoryOf(
+  data: GameData,
+  calendar: HpCalendar,
+  today: DayKey,
+  chests: readonly Chest[] = data.chests ?? [],
+): InventoryState {
+  const arrived = freezesArrivedThrough(data, today)
+  let unopenedChests = 0
+  for (const chest of chests) {
+    if (typeof chest.openedAt !== 'number' || !Number.isFinite(chest.openedAt)) unopenedChests++
+  }
+  return { streakFreezes: Math.max(0, arrived - freezesUsedIn(calendar.ledger)), unopenedChests }
 }
 
 /** Erster Tag mit Niederlage im Ledger (für „Perfekte Tage nach der ersten Niederlage“). */
@@ -470,7 +525,8 @@ export function canUndoItemPurchase(data: GameData, purchase: Purchase, today: D
   const last = ledger.at(-1)
   if (last !== undefined && compareDays(last.day, purchase.day) >= 0) return false
   if (purchase.itemId === 'streakFreeze') {
-    return countItemPurchases(data.purchases, 'streakFreeze', today) - 1 - freezesUsedIn(ledger) >= 0
+    // Vorrat ohne diesen Kauf (Truhen-Gegenstände zählen mit) darf nicht negativ werden.
+    return freezesArrivedThrough(data, today) - 1 - freezesUsedIn(ledger) >= 0
   }
   return true
 }

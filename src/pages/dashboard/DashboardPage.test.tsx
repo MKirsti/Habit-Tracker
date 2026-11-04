@@ -106,8 +106,10 @@ describe('DashboardPage', () => {
 
     expect(screen.getByText('Dienstag, 3. November 2026')).toBeInTheDocument()
     const hero = screen.getByRole('region', { name: 'Aria' })
-    expect(hero).toHaveTextContent('Level 1 · Novize')
-    expect(hero).toHaveTextContent('Tag 6 deines Abenteuers')
+    // Phase 3a: Level und Klasse („Lvl 1 · 🧭 Wanderseele“), der Rang steht beim Abenteuertag.
+    expect(hero).toHaveTextContent('Lvl 1 · 🧭 Wanderseele')
+    expect(within(hero).getByText('Level 1, Klasse Wanderseele')).toBeInTheDocument()
+    expect(hero).toHaveTextContent('Novize · Tag 6 deines Abenteuers')
     expect(within(hero).getByRole('progressbar', { name: 'Erfahrung' })).toBeInTheDocument()
     expect(within(hero).getByRole('link', { name: 'Heldenprofil von Aria öffnen' })).toHaveAttribute('href', '/held')
 

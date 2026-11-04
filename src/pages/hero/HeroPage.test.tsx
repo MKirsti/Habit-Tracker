@@ -126,7 +126,15 @@ describe('Heldenseite', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
 
     await waitFor(async () => {
-      expect((await loadGameData()).profile).toEqual({ name: 'Borin', avatar: '🐺', createdDay: CREATED })
+      // Ohne andere Wahl wird die Sprachform „neutral“ gespeichert (die Vorgabe für fehlende Angaben). Der Helden-Seed
+      // bleibt beim Umbenennen der alte – Boss, Schwäche und Truhen der Woche würfeln nicht neu.
+      expect((await loadGameData()).profile).toEqual({
+        name: 'Borin',
+        avatar: '🐺',
+        createdDay: CREATED,
+        form: 'neutral',
+        heroSeed: `${CREATED}Aria`,
+      })
     })
     expect(await screen.findByRole('heading', { level: 2, name: 'Borin' })).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -140,7 +148,7 @@ describe('Heldenseite', () => {
     let dialog = await screen.findByRole('dialog', { name: 'Held bearbeiten' })
     await user.clear(within(dialog).getByRole('textbox', { name: /^Name/ }))
     await user.click(within(dialog).getByRole('button', { name: 'Speichern' }))
-    expect(within(dialog).getByText('Bitte gib deinem Helden einen Namen.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Bitte gib einen Namen ein.')).toBeInTheDocument()
     expect((await loadGameData()).profile?.name).toBe('Aria')
 
     await user.click(within(dialog).getByRole('button', { name: 'Abbrechen' }))
@@ -153,8 +161,8 @@ describe('Heldenseite', () => {
 
 describe('heroProfile', () => {
   it('prüft den Heldennamen', () => {
-    expect(validateHeroName('')).toBe('Bitte gib deinem Helden einen Namen.')
-    expect(validateHeroName('   ')).toBe('Bitte gib deinem Helden einen Namen.')
+    expect(validateHeroName('')).toBe('Bitte gib einen Namen ein.')
+    expect(validateHeroName('   ')).toBe('Bitte gib einen Namen ein.')
     expect(validateHeroName('Aria')).toBeUndefined()
     expect(validateHeroName('x'.repeat(31))).toMatch(/höchstens 30 Zeichen/)
   })

@@ -7,7 +7,7 @@
  */
 import { ITEMS, ITEM_IDS } from '../../data/repository'
 import { BALANCING } from '../../domain/balancing'
-import { canUndoItemPurchase, freezesUsedIn, sortedLedger } from '../../domain/hp'
+import { canUndoItemPurchase, chestFreezeDays, freezesUsedIn, sortedLedger } from '../../domain/hp'
 import type { DayKey, GameData, GameState, ItemId, Purchase } from '../../domain/types'
 import { formatNumber } from '../../ui/format'
 import { goldText, missingGoldLabel } from './treasuryState'
@@ -140,21 +140,29 @@ export const ITEM_OUTCOME_LABELS: Record<ItemOutcome, string> = {
 }
 
 /**
- * Verbleib jedes gekauften Gegenstands (nach Kauf-ID): Heiltränke sind getrunken; von den Streak-Schutz-Käufen gelten
- * die ältesten als eingesetzt (so viele, wie abgerechnete Tage aufgefangen wurden), die übrigen liegen im Beutel.
+ * Verbleib jedes gekauften Gegenstands (nach Kauf-ID): Heiltränke sind getrunken; von allen Streak-Schutz-Gegenständen
+ * – Käufe und (Phase 3a) in geöffneten Truhen gefundene, ab dem Spieltag des Öffnens (`chestFreezeDays`) – gelten die
+ * ältesten als eingesetzt (so viele, wie abgerechnete Tage aufgefangen wurden; wie in Abrechnung und Vorrat), die
+ * übrigen liegen im Beutel. Am selben Tag entscheidet der Zeitpunkt (Kauf bzw. Öffnen).
  */
-export function itemOutcomes(data: Pick<GameData, 'purchases' | 'hpLedger'>): Map<string, ItemOutcome> {
+export function itemOutcomes(
+  data: Pick<GameData, 'purchases' | 'hpLedger'> & Partial<Pick<GameData, 'chests' | 'settings'>>,
+): Map<string, ItemOutcome> {
   const result = new Map<string, ItemOutcome>()
-  const freezes: Purchase[] = []
+  const arrivals: { day: DayKey; at: number; purchaseId?: string }[] = []
   for (const purchase of data.purchases ?? []) {
     if (purchase.kind !== 'item') continue
     if (purchase.itemId === 'healingPotion') result.set(purchase.id, 'drunk')
-    else if (purchase.itemId === 'streakFreeze') freezes.push(purchase)
+    else if (purchase.itemId === 'streakFreeze') arrivals.push({ day: purchase.day, at: purchase.createdAt, purchaseId: purchase.id })
+  }
+  for (const chest of data.chests ?? []) {
+    const day = chestFreezeDays([chest], data.settings?.dayStartHour)[0]
+    if (day !== undefined) arrivals.push({ day, at: chest.openedAt ?? 0 })
   }
   let used = freezesUsedIn(sortedLedger(data.hpLedger))
-  freezes.sort((a, b) => a.day.localeCompare(b.day) || a.createdAt - b.createdAt)
-  for (const purchase of freezes) {
-    result.set(purchase.id, used > 0 ? 'used' : 'stocked')
+  arrivals.sort((a, b) => a.day.localeCompare(b.day) || a.at - b.at)
+  for (const arrival of arrivals) {
+    if (arrival.purchaseId !== undefined) result.set(arrival.purchaseId, used > 0 ? 'used' : 'stocked')
     used--
   }
   return result

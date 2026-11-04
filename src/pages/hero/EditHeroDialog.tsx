@@ -2,29 +2,37 @@ import { Check, UserPen } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { saveProfile } from '../../data/repository'
-import type { CharacterProfile } from '../../domain/types'
+import type { CharacterProfile, FrameDefinition, GrammaticalForm } from '../../domain/types'
 import { Button, Dialog, TextField, useToast } from '../../ui'
 import { errorMessage } from '../settings/errorMessage'
 import { AvatarMedallion } from './AvatarMedallion'
 import { AvatarPicker } from './AvatarPicker'
-import { HERO_NAME_MAX, validateHeroName } from './heroProfile'
+import { FormChoice } from './FormChoice'
+import type { FormExample } from './FormChoice'
+import { HERO_NAME_MAX, formOrDefault, validateHeroName } from './heroProfile'
 
 export interface EditHeroDialogProps {
   open: boolean
   onClose: () => void
   profile: CharacterProfile
+  /** Namen, an denen die Sprachform live gezeigt wird – z. B. die aktuelle Klasse und der gewählte Titel. */
+  formExamples?: readonly FormExample[]
+  /** Gewählter (freigeschalteter) Avatar-Rahmen – die Vorschau zeigt ihn mit. */
+  frame?: FrameDefinition
 }
 
 /**
- * Name und Avatar des Helden ändern. Der Beginn des Abenteuers (`createdDay`) bleibt unverändert.
+ * Name, Avatar und Sprachform (für Klassen- und Titelnamen) des Helden ändern. Der Beginn des Abenteuers
+ * (`createdDay`) sowie Titel und Rahmen bleiben unverändert.
  * Tipp: Mit wechselndem `key` öffnen, damit das Formular jedes Mal mit dem aktuellen Profil startet.
  */
-export function EditHeroDialog({ open, onClose, profile }: EditHeroDialogProps) {
+export function EditHeroDialog({ open, onClose, profile, formExamples, frame }: EditHeroDialogProps) {
   const { toast } = useToast()
   const formId = useId()
   const nameRef = useRef<HTMLInputElement>(null)
   const [name, setName] = useState(profile.name)
   const [avatar, setAvatar] = useState(profile.avatar)
+  const [form, setForm] = useState<GrammaticalForm>(formOrDefault(profile.form))
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
   const error = submitted ? validateHeroName(name) : undefined
@@ -39,7 +47,8 @@ export function EditHeroDialog({ open, onClose, profile }: EditHeroDialogProps) 
     }
     setSaving(true)
     try {
-      await saveProfile({ name: name.trim(), avatar, createdDay: profile.createdDay })
+      // Titel und Rahmen fehlen im Objekt und bleiben so, wie sie gespeichert sind.
+      await saveProfile({ name: name.trim(), avatar, createdDay: profile.createdDay, form })
       toast({ tone: 'success', title: 'Held gespeichert' })
       onClose()
     } catch (saveError) {
@@ -69,7 +78,7 @@ export function EditHeroDialog({ open, onClose, profile }: EditHeroDialogProps) 
     >
       <form id={formId} noValidate onSubmit={handleSubmit} className="flex flex-col gap-5">
         <div className="flex items-end gap-4">
-          <AvatarMedallion avatar={avatar} size="md" className="mb-0.5" />
+          <AvatarMedallion avatar={avatar} size="md" frame={frame} className="mb-0.5" />
           <TextField
             ref={nameRef}
             label="Name"
@@ -86,6 +95,7 @@ export function EditHeroDialog({ open, onClose, profile }: EditHeroDialogProps) 
           />
         </div>
         <AvatarPicker value={avatar} onChange={setAvatar} />
+        <FormChoice value={form} onChange={setForm} examples={formExamples} examplePrefix="So heißt du dann" />
       </form>
     </Dialog>
   )

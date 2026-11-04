@@ -9,11 +9,20 @@ import type {
   AchievementDefinition,
   AchievementStats,
   AttributeId,
+  BossDefinition,
+  BossVictory,
   Chapter,
+  Chest,
+  ChestSource,
   Completion,
+  CosmeticCondition,
+  CosmeticUnlock,
   DayKey,
+  FrameDefinition,
   GameData,
   Habit,
+  HeroClassDefinition,
+  HeroClassId,
   HpLedgerEntry,
   ItemId,
   MainQuest,
@@ -21,6 +30,7 @@ import type {
   RestPeriod,
   Reward,
   SideQuest,
+  TitleDefinition,
 } from './types'
 
 export function makeHabit(overrides: Partial<Habit> & Pick<Habit, 'id'>): Habit {
@@ -226,4 +236,93 @@ export function makeRestPeriod(id: string, from: DayKey, until: DayKey = from, o
 /** Abgerechneter Tag (Standard: Wertung `none`, volle HP auf Level 1, Lebenspunkte aktiv). */
 export function makeLedgerEntry(day: DayKey, overrides: Partial<HpLedgerEntry> = {}): HpLedgerEntry {
   return { day, score: 'none', frozen: false, hpDelta: 0, hpAfter: 50, maxHp: 50, penalties: true, ...overrides }
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 3a: Klassen, Bosse, Truhen, Titel & Rahmen
+// ---------------------------------------------------------------------------
+
+const TEST_CLASS_IDS: HeroClassId[] = [
+  'adventurer',
+  'warrior', 'mage', 'druid', 'bard', 'paladin', 'warden',
+  'battlemage', 'monk', 'bannerbearer', 'berserker', 'knight',
+  'archmage', 'illusionist', 'healer', 'runesmith',
+  'seer', 'shaman', 'templar',
+  'troubadour', 'warlord',
+  'sentinel',
+]
+
+/**
+ * Klassen-Definitionen für Tests (unabhängig vom echten Inhalt): Namen `<id>-f`/`<id>-m`/`<id>-n`, Attribute leer –
+ * welche Attribute eine Klasse hat, entscheidet ohnehin `combat/classes.ts`.
+ */
+export function makeClassDefinitions(): Record<HeroClassId, HeroClassDefinition> {
+  const definitions = {} as Record<HeroClassId, HeroClassDefinition>
+  for (const id of TEST_CLASS_IDS) {
+    definitions[id] = {
+      id,
+      names: { female: `${id}-f`, male: `${id}-m`, neutral: `${id}-n` },
+      icon: '⚔️',
+      attributes: [],
+      description: `Klasse ${id}.`,
+    }
+  }
+  return definitions
+}
+
+/** Angriffsnamen für Tests: `Angriff <attribut>`. */
+export const TEST_ATTACK_NAMES: Record<AttributeId, string> = Object.fromEntries(
+  ATTRIBUTE_IDS.map((id) => [id, `Angriff ${id}`]),
+) as Record<AttributeId, string>
+
+/** Boss für Tests (Standard-Thema Stärke). */
+export function makeBoss(id: string, theme: AttributeId = 'strength', overrides: Partial<BossDefinition> = {}): BossDefinition {
+  return {
+    id,
+    name: `Boss ${id}`,
+    icon: '👹',
+    theme,
+    description: 'Ein Boss für Tests.',
+    defeatLine: 'Besiegt!',
+    escapeLine: 'Entkommen!',
+    ...overrides,
+  }
+}
+
+/** Drei Bosse je Attribut (`<attribut>-1` … `<attribut>-3`) – wie der echte Inhalt. */
+export function makeBossRoster(): BossDefinition[] {
+  return ATTRIBUTE_IDS.flatMap((theme) => [1, 2, 3].map((n) => makeBoss(`${theme}-${n}`, theme)))
+}
+
+/** Gespeicherter Boss-Sieg (Standard: am Montag selbst, 60 HP). */
+export function makeBossVictory(weekStart: DayKey, overrides: Partial<BossVictory> = {}): BossVictory {
+  return { weekStart, bossId: 'strength-1', day: weekStart, maxHp: 60, ...overrides }
+}
+
+/** Gespeicherte Truhe (Standard: ungeöffnet, common, 20 Gold; Quelle aus dem ID-Präfix). */
+export function makeChest(id: string, overrides: Partial<Chest> = {}): Chest {
+  const prefix = id.split(':')[0]
+  const source: ChestSource = prefix === 'boss' || prefix === 'chapter' ? prefix : 'quest'
+  return { id, source, foundDay: '2026-01-01', rarity: 'common', content: { kind: 'gold', amount: 20 }, ...overrides }
+}
+
+/** Freischaltung eines Titels/Rahmens aus einer Truhe. */
+export function makeCosmeticUnlock(id: string, kind: CosmeticUnlock['kind'] = 'title', day: DayKey = '2026-01-01'): CosmeticUnlock {
+  return { id, kind, day, source: 'chest' }
+}
+
+export function makeTitle(id: string, condition: CosmeticCondition, overrides: Partial<TitleDefinition> = {}): TitleDefinition {
+  return {
+    id,
+    names: { female: `die ${id}`, male: `der ${id}`, neutral: id },
+    condition,
+    hint: `So bekommst du ${id}.`,
+    rarity: 'common',
+    ...overrides,
+  }
+}
+
+export function makeFrame(id: string, condition: CosmeticCondition, overrides: Partial<FrameDefinition> = {}): FrameDefinition {
+  return { id, name: `Rahmen ${id}`, condition, hint: `So bekommst du ${id}.`, rarity: 'common', colors: ['#d4a548'], ...overrides }
 }

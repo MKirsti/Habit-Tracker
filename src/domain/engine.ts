@@ -36,6 +36,14 @@
  *   Ledger; Kennzahlen `defeats`, `perfectDaysAfterDefeat`, `freezesUsed`.
  * - Für die Abrechnung exportiert: `dayFactsOf` (Tagesfakten) und `totalXpTimeline` (Gesamt-XP am Ende jedes Tages).
  *
+ * Phase 3a (ARCHITECTURE.md „Phase 3a … (Vertrag)“, Regeln in `combat/`):
+ * - `heroClass`: Klasse der Woche aus den Attribut-Leveln am Ende des Sonntags davor (`combat/classes.ts`).
+ * - `bosses`: Boss der laufenden Woche und – solange gestern zur Vorwoche gehört und ihr Sieg nicht gespeichert ist –
+ *   der Vorwoche (`combat/boss.ts`). Wird er durch Nachtragen besiegt, steht er mit `defeated: true` da, bis der
+ *   Recorder den Sieg speichert (`unrecordedVictories`).
+ * - `chests`: gespeicherte plus neu gefundene Truhen (`combat/chests.ts`), `cosmetics` (`combat/cosmetics.ts`),
+ *   `gold.fromChests` (Gold geöffneter Truhen), `inventory` (Streak-Schutz auch aus Truhen, ungeöffnete Truhen).
+ *
  * Pflicht/Sichtbarkeit eines Tages richten sich nach dem an diesem Tag gültigen Rhythmus (`scheduleOn`)
  * und berücksichtigen Pausen. Bearbeiten, Archivieren und Zurückholen einer Quest ändern so nie
  * nachträglich die Vergangenheit – verdiente XP und Perfekte Tage bleiben erhalten.
@@ -50,7 +58,21 @@ import { ATTRIBUTE_IDS } from './attributes'
 import { BALANCING } from './balancing'
 import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
-import { compareDays, diffDays, isValidDayKey, startOfWeek } from './dates'
+import { heroSeedOf, plannedWeekAttacks, unrecordedVictories, victoriesByWeek, weekDays, weeklyBossState } from './combat/boss'
+import type { AttackSource, CombatStats } from './combat/boss'
+import { chestGold, chestWindowStart, findChests } from './combat/chests'
+import type { CompletedChapter } from './combat/chests'
+import {
+  attributeLevelsFromXp,
+  attributeXpThrough,
+  classBonusFor,
+  classLevelsDay,
+  heroClassIdFor,
+  heroClassState,
+} from './combat/classes'
+import type { AttributeXpEntry } from './combat/classes'
+import { unlockedCosmetics } from './combat/cosmetics'
+import { addDays, compareDays, dayRange, diffDays, isValidDayKey, startOfWeek } from './dates'
 import {
   firstDefeatDay,
   freezesUsedIn,
@@ -81,19 +103,25 @@ import type {
   AchievementStats,
   AttributeId,
   AttributeState,
+  BossDefinition,
   Completion,
   DayKey,
   DayState,
   GameData,
   GameState,
+  FrameDefinition,
   GoldState,
   Habit,
   HabitStatus,
+  HeroClassDefinition,
+  HeroClassId,
   MainQuest,
   MainQuestState,
   SideQuest,
   SideQuestState,
   Streak,
+  TitleDefinition,
+  WeeklyBossState,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -583,6 +611,61 @@ export function evaluateMainQuests(data: GameData, today: DayKey): MainQuestStat
 export interface DeriveOptions {
   /** Erfolgs-Definitionen; Standard: `ACHIEVEMENTS` aus `achievements/definitions.ts`. */
   achievements?: readonly AchievementDefinition[]
+  /** Kampf-Inhalte (Phase 3a); Standard: die Definitionen aus `combat/classDefinitions.ts`, `bosses.ts`, `cosmeticDefinitions.ts`. */
+  combat?: {
+    classes?: Readonly<Partial<Record<HeroClassId, HeroClassDefinition>>>
+    attackNames?: Readonly<Record<AttributeId, string>>
+    bosses?: readonly BossDefinition[]
+    titles?: readonly TitleDefinition[]
+    frames?: readonly FrameDefinition[]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Kampf (Phase 3a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Angriffe einer Woche (bis `today`): erledigte Quest-Erledigungen (Momentaufnahme von Attribut und Schwierigkeit,
+ * sortiert nach `updatedAt`) und erledigte Nebenquests (Erledigungstag in der Woche).
+ */
+function weekAttackSources(
+  index: GameIndex,
+  sideQuests: readonly SideQuest[] | undefined,
+  weekStart: DayKey,
+  today: DayKey,
+): AttackSource[] {
+  const sources: AttackSource[] = []
+  const days = weekDays(weekStart).filter((day) => compareDays(day, today) <= 0)
+  for (const day of days) {
+    for (const completion of index.completionsByDay.get(day)?.values() ?? []) {
+      if (!isDone(completion)) continue
+      sources.push({
+        day,
+        source: 'quest',
+        sourceId: completion.habitId,
+        attribute: completion.attribute,
+        difficulty: completion.difficulty,
+        order: completion.updatedAt,
+      })
+    }
+  }
+  if (days.length > 0) {
+    const last = days[days.length - 1]
+    for (const quest of sideQuests ?? []) {
+      if (!isSideQuestDone(quest, today) || quest.doneDay === undefined) continue
+      if (compareDays(quest.doneDay, weekStart) < 0 || compareDays(quest.doneDay, last) > 0) continue
+      sources.push({
+        day: quest.doneDay,
+        source: 'sideQuest',
+        sourceId: quest.id,
+        attribute: quest.attribute,
+        difficulty: quest.difficulty,
+        order: quest.order,
+      })
+    }
+  }
+  return sources
 }
 
 /**
@@ -613,6 +696,8 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   let questsCompleted = 0
   const perfectDayList: DayKey[] = []
   const activeDays: DayKey[] = []
+  /** Phase 3a: Attribut-XP mit Tag – für die Klassen-Level am Ende früherer Sonntage. */
+  const attributeXpEntries: AttributeXpEntry[] = []
   for (const [day, dayCompletions] of index.completionsByDay) {
     let anyDone = false
     for (const completion of dayCompletions.values()) {
@@ -623,6 +708,7 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
       xpFromQuests += xp
       xpFromStreakBonus += xp - questXp(completion.difficulty)
       addAttributeXp(completion.attribute, xp)
+      attributeXpEntries.push({ day, attribute: completion.attribute, xp })
     }
     if (anyDone) activeDays.push(day)
 
@@ -644,6 +730,7 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
       sideQuestsCompleted++
       xpFromSideQuests += state.xp
       addAttributeXp(quest.attribute, state.xp)
+      if (quest.doneDay !== undefined) attributeXpEntries.push({ day: quest.doneDay, attribute: quest.attribute, xp: state.xp })
     }
     // Liste: offene und die heute erledigten.
     if (!state.done || quest.doneDay === today) sideQuests.push(state)
@@ -674,7 +761,14 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   let activeCampaigns = 0
   const mainQuests: MainQuestState[] = []
   const archivedMainQuests: MainQuestState[] = []
+  /** Phase 3a: abgeschlossene Kapitel mit Abschlusstag – Fundorte der Kapitel-Truhen. */
+  const completedChapters: CompletedChapter[] = []
   for (const state of buildMainQuestStates(data, index, today, freeDays)) {
+    for (const chapter of state.chapters) {
+      if (chapter.done && chapter.doneDay !== undefined) {
+        completedChapters.push({ questId: state.quest.id, chapterId: chapter.chapter.id, doneDay: chapter.doneDay })
+      }
+    }
     const doneChapters = state.chapters.filter((chapter) => chapter.done).length
     chaptersCompleted += doneChapters
     xpFromChapters += doneChapters * BALANCING.chapterXp
@@ -713,9 +807,8 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     sideQuestsCompleted,
   }
 
-  // --- Phase 2b: Lebenspunkte, Vorrat, Niederlagen -------------------------------------------
+  // --- Phase 2b: Lebenspunkte, Niederlagen ---------------------------------------------------
   const hp = hpStateOf(data, calendar, today, level.level)
-  const inventory = inventoryOf(data, calendar, today)
   const firstDefeat = firstDefeatDay(calendar.ledger)
   const perfectDaysAfterDefeat =
     firstDefeat === undefined ? 0 : perfectDayList.filter((day) => compareDays(day, firstDefeat) > 0).length
@@ -755,15 +848,96 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     today,
   )
   const fromAchievements = achievementGold(achievements)
+
+  // --- Phase 3a: Klasse, Wochen-Boss, Truhen, Titel & Rahmen ------------------------------------
+  const combat = options.combat ?? {}
+  const heroSeed = heroSeedOf(data.profile)
+  const weekStart = startOfWeek(today)
+  // Gnadenfrist: Gehört gestern (bzw. der früheste nachtragbare Tag) noch zur Vorwoche, kämpft die Vorwoche weiter.
+  const graceWeekStart = startOfWeek(addDays(today, -BALANCING.backfillDays))
+  const classDay = classLevelsDay(weekStart)
+  const [classXp, previousClassXp, graceClassXp] = attributeXpThrough(attributeXpEntries, [
+    classDay,
+    addDays(classDay, -7),
+    classLevelsDay(graceWeekStart),
+  ])
+  const heroClass = heroClassState({
+    weekStart,
+    attributeLevels: attributeLevelsFromXp(classXp),
+    previousLevels: attributeLevelsFromXp(previousClassXp),
+    definitions: combat.classes,
+  })
+  const storedVictories = victoriesByWeek(data.bossVictories)
+  const bossOf = (week: DayKey, stats: CombatStats): WeeklyBossState | undefined =>
+    weeklyBossState({
+      weekStart: week,
+      today,
+      heroSeed,
+      planned: plannedWeekAttacks(index.habits, week, restDays),
+      sources: weekAttackSources(index, data.sideQuests, week, today),
+      stats,
+      victory: storedVictories.get(week),
+      bosses: combat.bosses,
+      attackNames: combat.attackNames,
+    })
+  const bosses: GameState['bosses'] = {}
+  const currentBoss = bossOf(weekStart, heroClass)
+  if (currentBoss !== undefined) bosses.current = currentBoss
+  if (compareDays(graceWeekStart, weekStart) < 0 && !storedVictories.has(graceWeekStart)) {
+    const graceLevels = attributeLevelsFromXp(graceClassXp)
+    const previousBoss = bossOf(graceWeekStart, {
+      attributeLevels: graceLevels,
+      classBonus: classBonusFor(heroClassIdFor(graceLevels)),
+    })
+    if (previousBoss !== undefined) bosses.previous = previousBoss
+  }
+  const victories = [...storedVictories.values(), ...unrecordedVictories([bosses.current, bosses.previous], data.bossVictories)]
+
+  const cosmetics = unlockedCosmetics(
+    {
+      achievements: achievements.filter((achievement) => achievement.unlocked).map((achievement) => achievement.definition.id),
+      victories,
+      campaignsMastered: campaignsCompleted,
+      level: level.level,
+      unlocks: data.cosmeticUnlocks,
+      chests: data.chests,
+    },
+    combat.titles,
+    combat.frames,
+  )
+  const windowStart = chestWindowStart(today)
+  const windowCompletions: Completion[] = []
+  if (compareDays(windowStart, today) <= 0) {
+    for (const day of dayRange(windowStart, today)) {
+      for (const completion of index.completionsByDay.get(day)?.values() ?? []) windowCompletions.push(completion)
+    }
+  }
+  const chests = findChests({
+    heroSeed,
+    today,
+    from: windowStart,
+    completions: windowCompletions,
+    victories,
+    chapters: completedChapters,
+    stored: data.chests,
+    unlocked: cosmetics,
+    titles: combat.titles,
+    frames: combat.frames,
+  })
+  const inventory = inventoryOf(data, calendar, today, chests)
+
+  const fromChests = chestGold(chests)
   const spent = goldSpent(data)
   const lostToDefeats = goldLostToDefeats(calendar.ledger)
+  const earned = fromXp + fromAchievements + fromChests
   const gold: GoldState = {
     fromXp,
     fromAchievements,
-    earned: fromXp + fromAchievements,
+    fromChests,
+    earned,
     spent,
     lostToDefeats,
-    balance: fromXp + fromAchievements - spent - lostToDefeats,
+    balance: earned - spent - lostToDefeats,
   }
 
   const todayState = buildDayState(
@@ -790,6 +964,10 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     hp,
     inventory,
     restToday: restDays.has(today),
+    heroClass,
+    bosses,
+    chests,
+    cosmetics,
   }
 }
 

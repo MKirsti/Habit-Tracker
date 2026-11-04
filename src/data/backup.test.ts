@@ -1,7 +1,8 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { z } from 'zod'
-import { makeItemPurchase } from '../domain/testing'
+import { FRAMES, TITLES } from '../domain/combat/cosmeticDefinitions'
+import { makeBossVictory, makeChest, makeItemPurchase } from '../domain/testing'
 import type { GameData } from '../domain/types'
 import {
   BACKUP_APP_ID,
@@ -25,9 +26,12 @@ import {
   createSideQuest,
   deleteHabit,
   loadGameData,
+  markCombatIntroSeen,
   markHpIntroSeen,
+  openChest,
   purchaseReward,
   recordAchievementUnlocks,
+  recordProgress,
   saveProfile,
   settleHpDays,
   setChapterCounter,
@@ -36,6 +40,7 @@ import {
   setCompletionValue,
   toggleCompletion,
   updateHabit,
+  updateProfile,
   updateSettings,
 } from './repository'
 
@@ -192,6 +197,56 @@ async function fillWithRichData(database: QuestlogDB): Promise<void> {
   await addRestPeriod({ from: '2026-10-19', until: '2026-10-21', note: 'Krank' }, '2026-10-20', database)
   await addRestPeriod({ from: '2026-12-24', until: '2026-12-26' }, '2026-10-20', database)
   await markHpIntroSeen(database)
+
+  // Phase 3a: Sprachform, Titel, Rahmen; Boss-Siege; Truhen (ungeöffnet, geöffnet, mit Kosmetik); Einführung gesehen
+  await updateProfile({ form: 'female', titleId: TITLES[0].id, frameId: FRAMES[0].id }, database)
+  await markCombatIntroSeen(database)
+  await recordProgress(
+    {
+      bossVictories: [
+        makeBossVictory('2026-10-05', { bossId: 'strength-1', day: '2026-10-09', maxHp: 84 }),
+        makeBossVictory('2026-10-12', { bossId: 'intellect-2', day: '2026-10-17', maxHp: 91 }),
+      ],
+      chests: [
+        makeChest('boss:2026-10-05', { foundDay: '2026-10-09', rarity: 'uncommon', content: { kind: 'gold', amount: 77 } }),
+        makeChest('boss:2026-10-12', { foundDay: '2026-10-17', rarity: 'rare', content: { kind: 'item', itemId: 'streakFreeze' } }),
+        makeChest(`quest:${reading.id}:2026-10-02`, { foundDay: '2026-10-02' }),
+        makeChest(`chapter:${quest.id}:c1`, {
+          foundDay: '2026-10-15',
+          rarity: 'legendary',
+          content: { kind: 'cosmetic', cosmeticKind: 'frame', cosmeticId: FRAMES[1].id },
+        }),
+      ],
+    },
+    database,
+  )
+  await openChest('boss:2026-10-05', '2026-10-20', database, Date.UTC(2026, 9, 20, 12))
+  await openChest(`chapter:${quest.id}:c1`, '2026-10-20', database, Date.UTC(2026, 9, 20, 13))
+}
+
+/** Einträge der Phase-3a-Listen, des Profils und der Einstellungen, wie sie ein Backup enthalten kann. */
+function phase3aEntries() {
+  return {
+    profile: { name: 'Aria', avatar: '🧝', createdDay: '2026-10-01', form: 'neutral', titleId: TITLES[0].id, frameId: FRAMES[0].id },
+    settings: { dayStartHour: 4, effects: true, combatIntroSeen: true },
+    bossVictories: [
+      { weekStart: '2026-10-05', bossId: 'strength-1', day: '2026-10-09', maxHp: 84 },
+      { weekStart: '2026-10-12', bossId: 'vitality-3', day: '2026-10-18', maxHp: 60 },
+    ],
+    chests: [
+      { id: 'boss:2026-10-05', source: 'boss', foundDay: '2026-10-09', rarity: 'common', content: { kind: 'gold', amount: 33 }, openedAt: 5 },
+      { id: 'quest:h1:2026-10-10', source: 'quest', foundDay: '2026-10-10', rarity: 'rare', content: { kind: 'item', itemId: 'streakFreeze' } },
+      {
+        id: 'chapter:q:c',
+        source: 'chapter',
+        foundDay: '2026-10-11',
+        rarity: 'legendary',
+        content: { kind: 'cosmetic', cosmeticKind: 'title', cosmeticId: TITLES[1].id },
+        openedAt: 6,
+      },
+    ],
+    cosmeticUnlocks: [{ id: TITLES[1].id, kind: 'title', day: '2026-10-12', source: 'chest' }],
+  }
 }
 
 /** Einträge der Phase-2b-Listen und -Einstellungen, wie sie ein Backup enthalten kann. */
@@ -314,6 +369,12 @@ describe('Backup-Roundtrip', () => {
     expect(original.sideQuests?.some((q) => q.doneDay && q.dueDay && q.description)).toBe(true)
     expect(original.sideQuests?.some((q) => q.doneDay === undefined)).toBe(true)
     expect(original.achievementUnlocks).toHaveLength(2)
+    expect(original.profile).toMatchObject({ form: 'female', titleId: TITLES[0].id, frameId: FRAMES[0].id })
+    expect(original.settings.combatIntroSeen).toBe(true)
+    expect(original.bossVictories).toHaveLength(2)
+    expect(original.chests?.some((chest) => chest.openedAt !== undefined && chest.content.kind === 'cosmetic')).toBe(true)
+    expect(original.chests?.some((chest) => chest.openedAt === undefined && chest.content.kind === 'item')).toBe(true)
+    expect(original.cosmeticUnlocks).toStrictEqual([{ id: FRAMES[1].id, kind: 'frame', day: '2026-10-20', source: 'chest' }])
 
     const json = JSON.stringify(await createBackup(EXPORT_TIME, source))
     const parsed = parseBackup(JSON.parse(json))
@@ -406,6 +467,39 @@ describe('Backup-Roundtrip', () => {
     vi.restoreAllMocks()
 
     expect(await loadGameData(target)).toStrictEqual(before)
+  })
+
+  it('lässt bei einem Fehler in den Phase-3a-Tabellen den alten Stand unangetastet', async () => {
+    await fillWithRichData(source)
+    const backup = await createBackup(EXPORT_TIME, source)
+
+    const target = freshDatabase()
+    await fillWithRichData(target)
+    await recordProgress({ bossVictories: [makeBossVictory('2026-10-19')] }, target)
+    const before = await loadGameData(target)
+
+    vi.spyOn(target.cosmeticUnlocks, 'bulkAdd').mockRejectedValue(new Error('Festplatte voll'))
+    await expect(restoreBackup(backup, target)).rejects.toThrow('Festplatte voll')
+    vi.restoreAllMocks()
+
+    expect(await loadGameData(target)).toStrictEqual(before)
+  })
+
+  it('ein älteres Backup ohne Phase-3a-Daten leert Boss-Siege, Truhen und Freischaltungen', async () => {
+    const target = freshDatabase()
+    await fillWithRichData(target)
+    const input = validBackup()
+    input.data.profile = { name: 'Aria', avatar: '🧝', createdDay: '2026-10-01' }
+    const parsed = parseBackup(input)
+    if (!parsed.ok) throw new Error(parsed.error)
+
+    await restoreBackup(parsed.backup, target)
+
+    const restored = await loadGameData(target)
+    for (const key of ['bossVictories', 'chests', 'cosmeticUnlocks']) expect(key in restored).toBe(false)
+    for (const table of [target.bossVictories, target.chests, target.cosmeticUnlocks]) expect(await table.count()).toBe(0)
+    expect(restored.profile).toStrictEqual({ name: 'Aria', avatar: '🧝', createdDay: '2026-10-01' })
+    expect(restored.settings).toStrictEqual({ dayStartHour: 4, effects: true })
   })
 
   it('ein Backup ohne Phase-2b-Daten leert Ledger und Rast; abgerechnet wird danach nie rückwirkend', async () => {
@@ -589,6 +683,68 @@ describe('parseBackup', () => {
     if (!legacy.ok) throw new Error(legacy.error)
     for (const key of ['hpLedger', 'restPeriods']) expect(key in legacy.backup.data).toBe(false)
     expect(legacy.backup.data.settings).toStrictEqual({ dayStartHour: 4, effects: true })
+  })
+
+  it('übernimmt Boss-Siege, Truhen, Freischaltungen, Sprachform, Titel, Rahmen; ältere Backups ohne sie bleiben gültig', async () => {
+    const input = validBackup()
+    Object.assign(input.data, phase3aEntries())
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    const { profile, settings, bossVictories, chests, cosmeticUnlocks } = result.backup.data
+    expect({ profile, settings, bossVictories, chests, cosmeticUnlocks }).toStrictEqual(phase3aEntries())
+
+    // Restore → Export ergibt dieselben Daten.
+    const target = freshDatabase()
+    await restoreBackup(result.backup, target, EXPORT_TIME)
+    const exported = await createBackup(EXPORT_TIME, target)
+    expect(exported.data).toStrictEqual(await loadGameData(target))
+    expect({ ...exported.data, completions: [], habits: [] }).toMatchObject({ ...phase3aEntries(), completions: [], habits: [] })
+
+    const legacy = parseBackup(validBackup())
+    if (!legacy.ok) throw new Error(legacy.error)
+    for (const key of ['bossVictories', 'chests', 'cosmeticUnlocks']) expect(key in legacy.backup.data).toBe(false)
+  })
+
+  it('übernimmt Titel- und Rahmen-IDs, die (noch) nicht bekannt sind – die App zeigt sie nur nicht an', () => {
+    const input = validBackup()
+    input.data.profile = { name: 'Aria', avatar: '🧝', createdDay: DAY, titleId: 'aus-der-zukunft', frameId: 'ebenso' }
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.backup.data.profile).toStrictEqual(input.data.profile)
+  })
+
+  it.each([
+    ['unbekannte Sprachform', (e: Phase3a) => (e.profile.form = 'divers'), 'data.profile.form'],
+    ['leerer Titel', (e: Phase3a) => (e.profile.titleId = ''), 'data.profile.titleId'],
+    ['leerer Rahmen', (e: Phase3a) => (e.profile.frameId = ''), 'data.profile.frameId'],
+    ['Einführung kein Wahrheitswert', (e: Phase3a) => Object.assign(e.settings, { combatIntroSeen: 1 }), 'data.settings.combatIntroSeen'],
+    ['Sieg nicht am Montag', (e: Phase3a) => (e.bossVictories[0].weekStart = '2026-10-06'), 'data.bossVictories.0.weekStart'],
+    ['Sieg an ungültigem Tag', (e: Phase3a) => (e.bossVictories[1].day = '2026-10-32'), 'data.bossVictories.1.day'],
+    ['Sieg ohne Boss', (e: Phase3a) => (e.bossVictories[0].bossId = ''), 'data.bossVictories.0.bossId'],
+    ['Sieg ohne Lebenspunkte', (e: Phase3a) => (e.bossVictories[0].maxHp = 0), 'data.bossVictories.0.maxHp'],
+    ['zwei Siege in einer Woche', (e: Phase3a) => (e.bossVictories[1].weekStart = '2026-10-05'), 'data.bossVictories.1.weekStart'],
+    ['doppelte Truhe', (e: Phase3a) => (e.chests[1].id = 'boss:2026-10-05'), 'data.chests.1.id'],
+    ['Truhe ohne ID', (e: Phase3a) => (e.chests[0].id = ''), 'data.chests.0.id'],
+    ['unbekannter Fundort', (e: Phase3a) => (e.chests[0].source = 'shop'), 'data.chests.0.source'],
+    ['unbekannte Seltenheit', (e: Phase3a) => (e.chests[1].rarity = 'epic'), 'data.chests.1.rarity'],
+    ['Truhe an ungültigem Tag', (e: Phase3a) => (e.chests[1].foundDay = 'gestern'), 'data.chests.1.foundDay'],
+    ['Gold 0', (e: Phase3a) => (e.chests[0].content = { kind: 'gold', amount: 0 }), 'data.chests.0.content.amount'],
+    ['Gold mit Nachkommastellen', (e: Phase3a) => (e.chests[0].content = { kind: 'gold', amount: 2.5 }), 'data.chests.0.content.amount'],
+    ['fremder Gegenstand', (e: Phase3a) => (e.chests[1].content = { kind: 'item', itemId: 'healingPotion' }), 'data.chests.1.content.itemId'],
+    ['unbekannter Inhalt', (e: Phase3a) => (e.chests[1].content = { kind: 'pet' } as never), 'data.chests.1.content.kind'],
+    ['Kosmetik ohne ID', (e: Phase3a) => (e.chests[2].content = { kind: 'cosmetic', cosmeticKind: 'title', cosmeticId: '' }), 'data.chests.2.content.cosmeticId'],
+    ['Kosmetik unbekannter Art', (e: Phase3a) => (e.chests[2].content = { kind: 'cosmetic', cosmeticKind: 'hat', cosmeticId: 'x' }), 'data.chests.2.content.cosmeticKind'],
+    ['Öffnungszeit kein Zeitpunkt', (e: Phase3a) => Object.assign(e.chests[0], { openedAt: 'gestern' }), 'data.chests.0.openedAt'],
+    ['Freischaltung ohne ID', (e: Phase3a) => (e.cosmeticUnlocks[0].id = ''), 'data.cosmeticUnlocks.0.id'],
+    ['Freischaltung unbekannter Art', (e: Phase3a) => (e.cosmeticUnlocks[0].kind = 'hat'), 'data.cosmeticUnlocks.0.kind'],
+    ['Freischaltung unbekannter Herkunft', (e: Phase3a) => (e.cosmeticUnlocks[0].source = 'shop'), 'data.cosmeticUnlocks.0.source'],
+    ['doppelte Freischaltung', (e: Phase3a) => e.cosmeticUnlocks.push({ ...e.cosmeticUnlocks[0] }), 'data.cosmeticUnlocks.1.id'],
+  ])('lehnt ungültige Phase-3a-Daten ab: %s', (_label, breakIt, path) => {
+    const entries = phase3aEntries() as Phase3a
+    breakIt(entries)
+    const input = validBackup()
+    Object.assign(input.data, entries)
+    expect(expectError(input)).toContain(`Ungültige Daten: ${path} – `)
   })
 
   it('übernimmt die Kapitel-Messgröße „Bestwert“', () => {
@@ -775,6 +931,10 @@ describe('Schema-Typen', () => {
 type Phase2a = ReturnType<typeof phase2aEntries>
 /** Phase-2b-Einträge – ebenso. */
 type Phase2b = ReturnType<typeof phase2bEntries>
+/** Phase-3a-Einträge – ebenso (Inhalte frei, damit Tests sie gezielt kaputt machen können). */
+type Phase3a = Omit<ReturnType<typeof phase3aEntries>, 'chests'> & {
+  chests: (Omit<ReturnType<typeof phase3aEntries>['chests'][number], 'content'> & { content: Record<string, unknown> })[]
+}
 
 function habitOf(backup: ReturnType<typeof validBackup>): Record<string, unknown> {
   return (backup.data.habits as Record<string, unknown>[])[0]

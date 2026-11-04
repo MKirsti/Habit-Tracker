@@ -1,18 +1,22 @@
-import { Coins, Crown, ScrollText, Sunrise, Trophy } from 'lucide-react'
+import { ArrowRight, Coins, Crown, Gift, ScrollText, Sunrise, Swords, Trophy } from 'lucide-react'
 import { motion } from 'motion/react'
-import { useEffect, useId, useRef } from 'react'
+import { useEffect, useId, useMemo, useRef } from 'react'
 import type { ReactNode, RefObject } from 'react'
-import type { DayKey } from '../../domain/types'
+import type { Chest, DayKey, GrammaticalForm } from '../../domain/types'
 import { Badge, Button, Ornament, ProgressBar, XpBar, cn, formatNumber } from '../../ui'
-// Die Modal-Hilfen (Dialog-Stapel, Scroll-Sperre, Fokusfalle) teilt sich die Szene mit `Dialog`, damit
-// Esc/Tab auch bei einem darunter offenen Dialog nur die oberste Ebene betreffen.
-import { isTopModal, lockBodyScroll, makeAppInert, pushModal, trapTabKey } from '../../ui/modal'
 import { accentVars } from '../campaignTheme'
+import { ChestGraphic } from '../combat/ChestGraphic'
+import { chestReveal } from '../combat/chestText'
+import { chestTheme } from '../combat/chestTheme'
+import { chestName } from '../combat/combatText'
 import type { Celebration } from './celebrations'
+import type { BossDefeatedEvent, ClassChangedEvent } from './combatFeedback'
+import { bossVictorySceneText, classChangeSceneText, openedChestLine, VICTORY_CHEST_TEXT } from './combatSceneText'
 import type { CampaignCompletedEvent, LevelUpEvent } from './feedbackEvents'
 import { defeatSceneText, hpLabel, rankHint, xpLabel } from './feedbackText'
 import type { DefeatEvent } from './hpFeedback'
 import { HP_COLOR } from './hpTheme'
+import { focusIsLost, useModalScene } from './modalScene'
 
 export interface CelebrationOverlayProps {
   celebration: Celebration
@@ -22,12 +26,19 @@ export interface CelebrationOverlayProps {
   /** Nach dem Einblenden: Mittelpunkt des Medaillons (Anteil der Fenstergröße) – Ursprung fürs Konfetti. */
   onReveal?: (origin: { x: number; y: number }) => void
   /**
-   * Nur Kampagne: ihre Hauptfarbe (Hex, `campaignColor`). Tönt Lichtschein, Strahlen, Medaillon-Rahmen und den
-   * Kampagnen-Titel; Pokal, XP, Belohnung und „Weiter“ bleiben golden. Ohne: alles golden (wie beim Level-Up).
+   * Nur Kampagne bzw. Klassenwechsel: ihre Hauptfarbe (Hex, `campaignColor` bzw. Farbe des Klassen-Attributs). Tönt
+   * Lichtschein, Strahlen, Medaillon-Rahmen und den Titel; Pokal, XP, Belohnung und „Weiter“ bleiben golden. Ohne: alles
+   * golden (wie beim Level-Up und beim Boss-Sieg).
    */
   accent?: string
   /** Heutiger Spieltag – für Texte wie „am Montag“ (Niederlage). */
   today?: DayKey
+  /** Sprachform des Helden (Klassennamen, Titel in der Beute). */
+  form?: GrammaticalForm
+  /** Nur Boss-Sieg: seine Truhe im aktuellen Spielzustand (geöffnet oder nicht). */
+  bossChest?: Chest
+  /** Nur Boss-Sieg: Truhen-Dialog über der Szene öffnen. */
+  onOpenChest?: (chestId: string) => void
 }
 
 /**
@@ -78,13 +89,40 @@ const HEADING =
  * Fokus startet auf „Weiter“, Esc und ein Tipp neben den Inhalt schließen, Tab bleibt in der Szene,
  * danach kehrt der Fokus zurück. Liegt über Toasts und Dialogen.
  */
-export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, accent, today }: CelebrationOverlayProps) {
+export function CelebrationOverlay({
+  celebration,
+  fancy,
+  onClose,
+  onReveal,
+  accent,
+  today,
+  form,
+  bossChest,
+  onOpenChest,
+}: CelebrationOverlayProps) {
   const titleId = useId()
   const descriptionId = useId()
   const panelRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
+  const chestButtonRef = useRef<HTMLButtonElement>(null)
   const medallionRef = useRef<HTMLDivElement>(null)
-  useModalScene(panelRef, buttonRef, onClose)
+  // Fokus beim Öffnen: „Truhe öffnen“ der Siegesszene, sonst „Weiter“ (gelesen beim Einblenden).
+  const initialFocus = useMemo<RefObject<HTMLElement | null>>(
+    () => ({
+      get current() {
+        return chestButtonRef.current ?? buttonRef.current
+      },
+    }),
+    [],
+  )
+  useModalScene(panelRef, initialFocus, onClose)
+
+  // Ist die Truhe der Siegesszene offen, verschwindet „Öffnen“. Lag der Fokus noch darauf (der Truhen-Dialog war schon
+  // zu, als die Live-Daten nachzogen), springt er auf „Weiter“ – solange der Dialog offen ist, bleibt er dort.
+  const bossChestOpened = celebration.kind === 'boss' && bossChest?.openedAt !== undefined
+  useEffect(() => {
+    if (bossChestOpened && focusIsLost()) buttonRef.current?.focus({ preventScroll: true })
+  }, [bossChestOpened])
 
   const onRevealRef = useRef(onReveal)
   useEffect(() => {
@@ -101,7 +139,11 @@ export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, acce
   }, [])
 
   const tone: SceneTone =
-    celebration.kind === 'defeat' ? 'calm' : celebration.kind === 'campaign' && accent !== undefined ? 'accent' : 'gold'
+    celebration.kind === 'defeat'
+      ? 'calm'
+      : (celebration.kind === 'campaign' || celebration.kind === 'class') && accent !== undefined
+        ? 'accent'
+        : 'gold'
 
   let content: ReactNode
   switch (celebration.kind) {
@@ -125,6 +167,34 @@ export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, acce
           descriptionId={descriptionId}
           medallionRef={medallionRef}
           tone={tone}
+        />
+      )
+      break
+    case 'boss':
+      content = (
+        <BossVictoryContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+          chest={bossChest}
+          form={form}
+          onOpenChest={onOpenChest}
+          chestButtonRef={chestButtonRef}
+        />
+      )
+      break
+    case 'class':
+      content = (
+        <ClassChangeContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+          tone={tone}
+          form={form}
         />
       )
       break
@@ -183,7 +253,15 @@ export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, acce
             transition={{ duration: fancy ? 0.45 : 0.2, ease: EASE_OUT }}
           >
             {content}
-            <Button ref={buttonRef} size="lg" onClick={onClose} className="mt-[clamp(1.25rem,3.5dvh,1.75rem)] w-full sm:w-60">
+            <Button
+              ref={buttonRef}
+              size="lg"
+              // Steht noch eine ungeöffnete Truhe in der Szene, ist „Truhe öffnen“ die Hauptaktion.
+              variant={celebration.kind === 'boss' && bossChest !== undefined && bossChest.openedAt === undefined ? 'secondary' : 'primary'}
+              onClick={onClose}
+              data-scene-continue=""
+              className="mt-[clamp(1.25rem,3.5dvh,1.75rem)] w-full sm:w-60"
+            >
               {celebration.kind === 'defeat' ? 'Wieder aufstehen' : 'Weiter'}
             </Button>
           </motion.div>
@@ -335,6 +413,181 @@ function CampaignContent({
 }
 
 /**
+ * Boss besiegt: der Boss als Medaillon mit gekreuzten Klingen, sein Siegessatz und – wenn es sie gibt – seine Truhe mit
+ * „Öffnen“ (öffnet den Truhen-Dialog über der Szene). Danach zeigt die Szene, was darin war.
+ */
+function BossVictoryContent({
+  event,
+  fancy,
+  titleId,
+  descriptionId,
+  medallionRef,
+  chest,
+  form,
+  onOpenChest,
+  chestButtonRef,
+}: ContentProps<BossDefeatedEvent> & {
+  chest?: Chest
+  form?: GrammaticalForm
+  onOpenChest?: (chestId: string) => void
+  chestButtonRef: RefObject<HTMLButtonElement | null>
+}) {
+  const text = bossVictorySceneText(event)
+  return (
+    <>
+      <Eyebrow>{text.eyebrow}</Eyebrow>
+      <Medallion fancy={fancy} medallionRef={medallionRef}>
+        <motion.span
+          className="relative text-[clamp(3rem,8.5dvh,4rem)] leading-none drop-shadow-[0_4px_12px_rgb(0_0_0/0.6)]"
+          initial={fancy ? { opacity: 0, scale: 1.6, rotate: 10 } : { opacity: 0 }}
+          animate={{ opacity: 1, scale: 1, rotate: 0 }}
+          transition={fancy ? { type: 'spring', stiffness: 260, damping: 15, delay: 0.15 } : { duration: 0.2, delay: 0.05 }}
+        >
+          {event.icon}
+        </motion.span>
+        <span
+          aria-hidden="true"
+          className="absolute -bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-gold-bright/70 bg-linear-to-b from-gold-bright to-gold text-on-gold shadow-glow"
+        >
+          <Swords className="size-[1.125rem]" strokeWidth={2.2} />
+        </span>
+      </Medallion>
+
+      <h2 id={titleId} className={cn(HEADING, 'mt-[clamp(1.5rem,4.5dvh,2.25rem)] wrap-anywhere')}>
+        {text.title}
+      </h2>
+      <Ornament className="mt-2 h-3.5 w-24" />
+      <div id={descriptionId} className="mt-3 flex max-w-full flex-col items-center gap-2.5">
+        <p className="text-[0.9375rem] leading-relaxed text-parchment/90 italic">„{text.line}“</p>
+        <Badge tone="gold" size="md" icon={<Swords />}>
+          {text.hpBadge}
+        </Badge>
+        {text.note && <p className="text-sm text-muted">{text.note}</p>}
+      </div>
+
+      {chest && <VictoryChest chest={chest} form={form} onOpenChest={onOpenChest} buttonRef={chestButtonRef} />}
+    </>
+  )
+}
+
+/** Die Truhe des Siegs: ungeöffnet mit „Öffnen“, danach mit ihrem Inhalt. */
+function VictoryChest({
+  chest,
+  form,
+  onOpenChest,
+  buttonRef,
+}: {
+  chest: Chest
+  form?: GrammaticalForm
+  onOpenChest?: (chestId: string) => void
+  buttonRef: RefObject<HTMLButtonElement | null>
+}) {
+  const theme = chestTheme(chest.rarity)
+  const opened = chest.openedAt !== undefined
+  const name = chestName(chest.rarity)
+  return (
+    <div className="mt-[clamp(1rem,3dvh,1.5rem)] w-full">
+      <div
+        data-victory-chest={chest.id}
+        data-rarity={chest.rarity}
+        style={accentVars(theme.color)}
+        className="flex w-full min-w-0 items-center gap-3 rounded-2xl border border-(--accent-35) bg-linear-to-br from-(--accent-10) to-surface/90 py-2.5 pr-3 pl-2.5 text-left shadow-[0_0_0_1px_var(--accent-10),0_16px_36px_-22px_var(--accent-60)]"
+      >
+        <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-xl bg-bg-deep/50 sm:size-14">
+          <ChestGraphic rarity={chest.rarity} phase={opened ? 'open' : 'closed'} fancy={false} className="w-10 sm:w-12" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[0.6875rem] font-semibold tracking-[0.12em] whitespace-nowrap text-gold uppercase sm:tracking-[0.16em]">
+            {VICTORY_CHEST_TEXT.found}
+          </p>
+          <p className="font-display text-[0.9375rem] leading-snug font-semibold tracking-wide text-(--accent-text)">{name}</p>
+          {opened && (
+            <p className="text-sm leading-snug text-muted" data-victory-chest-content="">
+              {openedChestLine(chestReveal(chest.content, { form }).name)}
+            </p>
+          )}
+        </div>
+        {!opened && onOpenChest && (
+          <Button
+            ref={buttonRef}
+            size="sm"
+            icon={<Gift />}
+            aria-label={`${name} öffnen`}
+            onClick={() => onOpenChest(chest.id)}
+            className="shrink-0"
+          >
+            Öffnen
+          </Button>
+        )}
+      </div>
+      {!opened && <p className="mt-2 text-xs text-muted">{VICTORY_CHEST_TEXT.later}</p>}
+    </div>
+  )
+}
+
+/**
+ * Klassenwechsel zu Wochenbeginn: das Symbol der neuen Klasse im Medaillon (in der Farbe ihres Attributs), „Du bist zur
+ * Erzmagierin aufgestiegen!“, der Weg „🔮 Magierin → 🌌 Erzmagierin“, die Beschreibung und der neue Klassen-Bonus.
+ */
+function ClassChangeContent({
+  event,
+  fancy,
+  titleId,
+  descriptionId,
+  medallionRef,
+  tone = 'gold',
+  form,
+}: ContentProps<ClassChangedEvent> & { form?: GrammaticalForm }) {
+  const text = classChangeSceneText(event, form)
+  const accentText = tone === 'accent' ? 'text-(--accent-text)' : 'text-gold-bright'
+  return (
+    <>
+      <Eyebrow>{text.eyebrow}</Eyebrow>
+      <Medallion fancy={fancy} medallionRef={medallionRef} tone={tone}>
+        <motion.span
+          className="relative text-[clamp(3rem,8.5dvh,4rem)] leading-none drop-shadow-[0_4px_12px_rgb(0_0_0/0.6)]"
+          initial={fancy ? { opacity: 0, scale: 0.3, y: 12 } : { opacity: 0 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={fancy ? { type: 'spring', stiffness: 230, damping: 14, delay: 0.18 } : { duration: 0.2, delay: 0.05 }}
+        >
+          {event.to.icon}
+        </motion.span>
+      </Medallion>
+
+      <h2 id={titleId} className={cn(HEADING, 'mt-[clamp(1.25rem,4dvh,2rem)]')}>
+        {text.title}
+      </h2>
+      <Ornament className="mt-2 h-3.5 w-24" />
+      <div id={descriptionId} className="mt-3 flex max-w-full flex-col items-center gap-2.5">
+        <p className="flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[1.0625rem]">
+          <span className="sr-only">{text.changeSpoken}</span>
+          <span aria-hidden="true" className="text-muted">
+            {text.from.icon} {text.from.name}
+          </span>
+          <ArrowRight aria-hidden className="size-4 shrink-0 text-gold" strokeWidth={2.2} />
+          <span aria-hidden="true" className={cn('font-display font-bold tracking-wide', accentText)} data-class-to="">
+            {text.to.icon} {text.to.name}
+          </span>
+        </p>
+        {text.line && <p className="text-[0.9375rem] text-parchment">{text.line}</p>}
+        <p className="text-sm leading-relaxed text-muted">{text.description}</p>
+        {text.bonus.length > 0 && (
+          <ul aria-label="Klassen-Bonus" className="flex flex-wrap justify-center gap-1.5">
+            {text.bonus.map((line) => (
+              <li key={line}>
+                <Badge tone="gold" size="md">
+                  {line}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  )
+}
+
+/**
  * Niederlage: würdevoll und ermutigend – „Du bist gefallen – und stehst wieder auf“, das verlorene Gold (als Lohn des
  * Heilers), was bleibt (Level, XP, Serien), die wieder vollen Lebenspunkte und leise der Sanfte Modus. Ein
  * Sonnenaufgang statt Totenkopf, keine Strahlen.
@@ -478,56 +731,4 @@ function Medallion({
       {children}
     </div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Modal-Verhalten
-// ---------------------------------------------------------------------------
-
-/**
- * Wie `Dialog`: in den Modal-Stapel eintragen, Seite sperren und für Screenreader verbergen,
- * Fokus auf `initialFocusRef`, Esc schließt, Tab bleibt im Panel, Fokus kehrt danach zurück.
- */
-function useModalScene(
-  panelRef: RefObject<HTMLElement | null>,
-  initialFocusRef: RefObject<HTMLElement | null>,
-  onClose: () => void,
-): void {
-  const onCloseRef = useRef(onClose)
-  useEffect(() => {
-    onCloseRef.current = onClose
-  })
-
-  useEffect(() => {
-    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const token = Symbol('celebration')
-    const releaseStack = pushModal(token)
-    const releaseScroll = lockBodyScroll()
-    const releaseInert = makeAppInert()
-    const initial = initialFocusRef.current ?? panelRef.current
-    initial?.focus({ preventScroll: true })
-    // Sehr niedrige Bildschirme (Handy quer): Der fokussierte Button darf nicht unsichtbar unter dem Rand liegen.
-    if (initial && initial.getBoundingClientRect().bottom > window.innerHeight) {
-      initial.scrollIntoView?.({ block: 'nearest' })
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (!isTopModal(token) || event.defaultPrevented) return
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        onCloseRef.current()
-      } else if (event.key === 'Tab' && panelRef.current) {
-        trapTabKey(event, panelRef.current)
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      releaseStack()
-      releaseInert()
-      releaseScroll()
-      if (previouslyFocused?.isConnected) previouslyFocused.focus({ preventScroll: true })
-    }
-  }, [panelRef, initialFocusRef])
 }

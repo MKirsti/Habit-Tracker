@@ -7,8 +7,10 @@ import { panelId, tabId } from './heroTabs'
 export interface HeroTab<T extends string> {
   id: T
   label: ReactNode
-  /** Kleine Zusatzinfo hinter dem Label, z. B. "12/31". */
+  /** Kleine Zusatzinfo hinter dem Label, z. B. "12/31" – auf dem Handy nur vorgelesen (vier Reiter passen sonst nicht). */
   meta?: ReactNode
+  /** Auf dem Handy statt `meta` ein kleiner Leuchtpunkt (z. B. ungeöffnete Truhen). */
+  metaDot?: boolean
   icon?: ReactNode
 }
 
@@ -94,8 +96,10 @@ export function HeroTabs<T extends string>({
             onClick={() => select(index)}
             onKeyDown={(event) => handleKeyDown(event, index)}
             className={cn(
-              // Auf dem Handy nach Inhalt verteilt und ohne Icons – sonst würde bei drei Reitern „Erfolge 19/39“ gekürzt.
-              'relative isolate flex h-10 min-w-0 flex-auto items-center justify-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold tracking-wide whitespace-nowrap transition-colors duration-150 sm:flex-none sm:gap-2 sm:px-4',
+              // Auf dem Handy nach Inhalt verteilt, ohne Icons und ohne sichtbare Zusatzinfo – sonst würden vier Reiter auf
+              // 360 px gekürzt („Übers…“).
+              // Unter sm etwas kleiner und ohne Sperrung: vier Reiter passen so auch auf 360 px ungekürzt nebeneinander.
+              'relative isolate flex h-10 min-w-0 flex-auto items-center justify-center gap-1 rounded-lg px-1.5 text-[0.8125rem] font-semibold tracking-normal whitespace-nowrap transition-colors duration-150 sm:flex-none sm:gap-2 sm:px-4 sm:text-sm sm:tracking-wide',
               'focus-visible:outline-offset-0 [&_svg]:size-4 [&_svg]:shrink-0 max-sm:[&>svg]:hidden',
               selected ? 'text-gold-bright' : 'text-muted hover:text-parchment',
             )}
@@ -113,12 +117,18 @@ export function HeroTabs<T extends string>({
             {tab.meta !== undefined && (
               <span
                 className={cn(
-                  'rounded-full px-1.5 py-px text-xs font-medium tracking-normal tabular-nums',
+                  'rounded-full px-1.5 py-px text-xs font-medium tracking-normal tabular-nums max-sm:sr-only',
                   selected ? 'bg-gold/15 text-gold-bright' : 'bg-surface-raised text-muted',
                 )}
               >
                 {tab.meta}
               </span>
+            )}
+            {tab.metaDot === true && (
+              <span
+                aria-hidden="true"
+                className="size-1.5 shrink-0 rounded-full bg-gold-bright shadow-[0_0_6px_rgb(240_201_106/0.8)] sm:hidden"
+              />
             )}
           </button>
         )

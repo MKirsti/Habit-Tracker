@@ -2,7 +2,10 @@ import { Dexie, type Table } from 'dexie'
 import type {
   AchievementUnlock,
   BlueprintRef,
+  BossVictory,
+  Chest,
   Completion,
+  CosmeticUnlock,
   Habit,
   HpLedgerEntry,
   MainQuest,
@@ -55,6 +58,14 @@ const SCHEMA_V4 = {
   restPeriods: '&id, from',
 } as const
 
+/** Ab Version 5 (Phase 3a): besiegte Wochen-Bosse, gefundene Truhen, aus Truhen freigeschaltete Titel/Rahmen. */
+const SCHEMA_V5 = {
+  ...SCHEMA_V4,
+  bossVictories: '&weekStart',
+  chests: '&id, foundDay',
+  cosmeticUnlocks: '&id',
+} as const
+
 /** Titel der Kampagne, die das Onboarding vor der Kampagnen-Bibliothek angelegt hat. */
 const LEGACY_SCHOLAR_TITLE = 'Der Weg des Gelehrten'
 
@@ -76,6 +87,8 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  * - `completions`: `habitId` (Kaskaden-Löschen), `day`
  * - `rewards`, `sideQuests`: `order` (Sortierung); `purchases`: `day`
  * - `hpLedger`: Primärschlüssel `day` (höchstens ein abgerechneter Eintrag pro Spieltag); `restPeriods`: `from`
+ * - `bossVictories`: Primärschlüssel `weekStart` (höchstens ein Sieg pro Woche); `chests`: `foundDay` (Quest-Truhen
+ *   je Tag zählen); `cosmeticUnlocks`: Primärschlüssel `id` (Titel- bzw. Rahmen-ID)
  *
  * Schemaänderungen immer über eine neue `version(n)` mit Upgrade-Funktion – niemals `version(1)` ändern.
  *
@@ -91,6 +104,11 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  *    Niederlagen – ein Eintrag pro Tag, Schlüssel `day`) und `restPeriods` (Rast & Urlaub). Sie starten leer;
  *    vorhandene Daten bleiben unverändert. Abgerechnet wird erst ab dem ersten Start danach
  *    (`settings.penalties.since`, gesetzt von `settleHpDays`) – nie rückwirkend.
+ * 5. Phase 3a: neue Tabellen `bossVictories` (besiegte Wochen-Bosse, Schlüssel `weekStart`), `chests` (gefundene
+ *    Truhen – Inhalt beim Fund festgelegt, `openedAt` beim Öffnen) und `cosmeticUnlocks` (aus Truhen freigeschaltete
+ *    Titel und Rahmen). Sie starten leer; vorhandene Daten bleiben unverändert. Klasse, Bosse und Truhen werden aus
+ *    dem gespeicherten Verlauf abgeleitet – neue Truhen nur ab dem Fenster der Engine (`chestWindowStart`), Bosse nur
+ *    für die laufende (und in der Gnadenfrist die vorige) Woche; nichts davon rückwirkend.
  */
 export class QuestlogDB extends Dexie {
   habits!: Table<Habit, string>
@@ -103,6 +121,9 @@ export class QuestlogDB extends Dexie {
   achievementUnlocks!: Table<AchievementUnlock, string>
   hpLedger!: Table<HpLedgerEntry, string>
   restPeriods!: Table<RestPeriod, string>
+  bossVictories!: Table<BossVictory, string>
+  chests!: Table<Chest, string>
+  cosmeticUnlocks!: Table<CosmeticUnlock, string>
 
   /** @param name Datenbankname – Tests verwenden pro Test einen eigenen Namen. */
   constructor(name: string = DEFAULT_DB_NAME) {
@@ -121,6 +142,7 @@ export class QuestlogDB extends Dexie {
       )
     this.version(3).stores(SCHEMA_V3)
     this.version(4).stores(SCHEMA_V4)
+    this.version(5).stores(SCHEMA_V5)
   }
 }
 
@@ -141,6 +163,9 @@ export function allTables(database: QuestlogDB) {
     database.achievementUnlocks,
     database.hpLedger,
     database.restPeriods,
+    database.bossVictories,
+    database.chests,
+    database.cosmeticUnlocks,
   ]
 }
 

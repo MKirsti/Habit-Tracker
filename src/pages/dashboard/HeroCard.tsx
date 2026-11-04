@@ -1,8 +1,11 @@
 import { ChevronRight, Coins } from 'lucide-react'
 import { useId } from 'react'
 import { Link } from 'react-router'
+import { activeFrame, activeTitle, titleNameFor } from '../../domain/combat/cosmetics'
 import type { CharacterProfile, DayKey, GameState, HpLedgerEntry } from '../../domain/types'
-import { Card, XpBar, cn, formatNumber } from '../../ui'
+import { AvatarFrame } from '../../features/combat/AvatarFrame'
+import { Card, XpBar, cn, formatNumber, useMediaQuery } from '../../ui'
+import { heroClassLabel, levelClassSpoken } from './combatText'
 import { compactDayLabel, goldChipLabel } from './dashboardText'
 import { HeroHp } from './HeroHp'
 import { settlementNote } from './hpText'
@@ -19,17 +22,23 @@ export interface HeroCardProps {
 }
 
 /**
- * Kopfkarte mit Avatar, Name, Level/Rang, Abenteuertag, XP-Balken, Lebenspunkten (nur mit Lebenspunkten, nicht im
- * Sanften Modus) und Gold-Guthaben. Der übliche Tagesschaden der Abrechnung erscheint hier ruhig als Notiz
+ * Kopfkarte mit Avatar (Phase 3a: im gewählten Rahmen), Name, gewähltem Titel darunter, Level und Klasse
+ * („Lvl 7 · 🔮 Magierin“ in der Sprachform des Helden), Rang und Abenteuertag, XP-Balken, Lebenspunkten (nur mit
+ * Lebenspunkten, nicht im Sanften Modus) und Gold-Guthaben. Titel und Rahmen erscheinen nur, solange sie freigeschaltet
+ * sind (`activeTitle`/`activeFrame`). Der übliche Tagesschaden der Abrechnung erscheint hier ruhig als Notiz
  * („Sonntag: −1 HP“) – nicht als Toast.
  * Die ganze Karte ist ein Link zur Heldenseite (unsichtbarer Link über der Fläche); das Gold ist ein eigener
  * Link zur Schatzkammer, der über dieser Fläche liegt.
- * Unter `md` eine flache Leiste (~96 px), damit die heutigen Quests weit oben stehen (PLAN §4): Datum und Gold
- * stehen dort rechtsbündig untereinander.
+ * Unter `md` eine flache Leiste (~96 px, mit Titel ~110 px), damit die heutigen Quests weit oben stehen (PLAN §4):
+ * Datum und Gold stehen dort rechtsbündig untereinander; der Rang steht dort nicht (Platz für die Klasse).
  */
 export function HeroCard({ profile, state, shimmer, today, hpLedger }: HeroCardProps) {
   const nameId = useId()
   const { level, rank, adventureDay, gold, hp } = state
+  const heroClass = heroClassLabel(state.heroClass, profile.form)
+  const title = activeTitle(profile, state.cosmetics)
+  const frame = activeFrame(profile, state.cosmetics)
+  const wide = useMediaQuery('(min-width: 768px)')
 
   return (
     <Card
@@ -46,13 +55,22 @@ export function HeroCard({ profile, state, shimmer, today, hpLedger }: HeroCardP
       />
       <div className="flex flex-col gap-2.5 py-3 pr-9 pl-3 md:flex-row md:items-center md:gap-8 md:py-5 md:pr-14 md:pl-6">
         <div className="flex min-w-0 items-center gap-3 md:gap-4">
-          <div
-            aria-hidden="true"
-            className="relative grid size-11 shrink-0 place-items-center rounded-full bg-radial from-gold/25 via-gold/8 to-transparent text-[1.625rem] leading-none ring-2 ring-gold/45 md:size-[4.5rem] md:text-[2.5rem]"
-          >
-            <span className="absolute -inset-1 rounded-full ring-1 ring-gold/15 md:-inset-1.5" />
-            {profile.avatar}
-          </div>
+          {frame ? (
+            // Gewählter Rahmen (gemeinsamer Baustein mit der Held-Seite und der Sammlung).
+            <div aria-hidden="true" className="shrink-0" data-hero-frame={frame.id}>
+              <AvatarFrame frameId={frame.id} size={wide ? 'lg' : 'sm'}>
+                {profile.avatar}
+              </AvatarFrame>
+            </div>
+          ) : (
+            <div
+              aria-hidden="true"
+              className="relative grid size-11 shrink-0 place-items-center rounded-full bg-radial from-gold/25 via-gold/8 to-transparent text-[1.625rem] leading-none ring-2 ring-gold/45 md:size-[4.5rem] md:text-[2.5rem]"
+            >
+              <span className="absolute -inset-1 rounded-full ring-1 ring-gold/15 md:-inset-1.5" />
+              {profile.avatar}
+            </div>
+          )}
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline justify-between gap-2">
               <h2
@@ -66,18 +84,36 @@ export function HeroCard({ profile, state, shimmer, today, hpLedger }: HeroCardP
                 {compactDayLabel(today)}
               </span>
             </div>
+            {title && (
+              // Gewählter Titel unter dem Namen: „Aria – die Unbeugsame“.
+              <p
+                className="truncate font-display text-[0.6875rem] leading-tight tracking-wide text-gold/90 italic md:mt-0.5 md:text-sm"
+                data-hero-title={title.id}
+              >
+                <span className="sr-only">Titel: </span>
+                {titleNameFor(title, profile.form)}
+              </p>
+            )}
             <div className="flex items-center justify-between gap-2">
-              {/* Handy: eine Zeile „Level 5 · Wanderer · Tag 31“; ab md zweizeilig mit „… deines Abenteuers“.
+              {/* Handy: eine Zeile „Lvl 7 · 🔮 Magierin · Tag 31“; ab md zweizeilig mit Rang und „… deines Abenteuers“.
                   Neben dem Gold wird es auf schmalen Handys eng: Die Zeile ist dort eine umbrechende Flex-Zeile mit
                   der Höhe einer Textzeile – passt „· Tag 31“ nicht mehr daneben, rutscht es in die (abgeschnittene)
                   zweite Zeile, statt als „Ta…“ zu enden. Vorgelesen wird es weiterhin. */}
               <p className="mt-0.5 min-w-0 flex-1 text-xs font-semibold text-gold-bright max-md:flex max-md:h-4 max-md:flex-wrap max-md:gap-x-1 max-md:overflow-hidden md:mt-1 md:text-sm">
-                <span className="max-md:min-w-0 max-md:truncate">
-                  Level <span className="tabular-nums">{formatNumber(level.level)}</span> · {rank}
+                <span className="max-md:min-w-0 max-md:truncate" data-hero-class={state.heroClass.definition.id}>
+                  <span className="sr-only">{levelClassSpoken(level.level, heroClass.name)}</span>
+                  <span aria-hidden="true">
+                    Lvl <span className="tabular-nums">{formatNumber(level.level)}</span> · {heroClass.icon}{' '}
+                    {heroClass.name}
+                  </span>
                 </span>{' '}
                 <span className="font-normal text-muted max-md:shrink-0 max-md:whitespace-nowrap md:mt-0.5 md:block md:text-xs">
                   <span aria-hidden="true" className="md:hidden">
                     ·{' '}
+                  </span>
+                  <span className="max-md:sr-only">
+                    {rank}
+                    {' · '}
                   </span>
                   Tag <span className="tabular-nums">{formatNumber(adventureDay)}</span>
                   <span className="max-md:sr-only"> deines Abenteuers</span>

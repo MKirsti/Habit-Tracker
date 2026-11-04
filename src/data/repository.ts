@@ -18,11 +18,15 @@
  *   vergangener Tag nachträglich perfekt wird.
  * - Lebenspunkte (Phase 2b): Abgerechnete Tage (`hpLedger`) werden nur angehängt, nie geändert. Rast & Urlaub
  *   lassen sich nur für Tage anlegen, ändern oder löschen, die noch nicht vorbei bzw. abgerechnet sind.
+ * - Fortschritt (Phase 2a/3a): Erfolge, Boss-Siege und gefundene Truhen werden nur hinzugefügt, nie überschrieben
+ *   (`recordProgress`). Eine Truhe ändert sich genau einmal – beim Öffnen (`openChest`).
  */
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { BALANCING, DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
 import { CAMPAIGN_LIMIT_MESSAGE, CAMPAIGN_RESTORE_LIMIT_MESSAGE, isCampaignActive } from '../domain/campaigns'
-import { addDays, compareDays, diffDays, formatDay, isValidDayKey, toDayKey } from '../domain/dates'
+import { heroSeedOf } from '../domain/combat/boss'
+import { FRAMES, TITLES } from '../domain/combat/cosmeticDefinitions'
+import { addDays, compareDays, diffDays, formatDay, isoWeekday, isValidDayKey, toDayKey } from '../domain/dates'
 import { habitTombstone, withTombstone } from '../domain/deletion'
 import { deriveGameState, evaluateMainQuests } from '../domain/engine'
 import { canUndoItemPurchase, settleDays } from '../domain/hp'
@@ -31,15 +35,23 @@ import type {
   AchievementUnlock,
   AttributeId,
   BlueprintRef,
+  BossVictory,
   Chapter,
   ChapterCriterion,
   ChapterMetric,
   CharacterProfile,
+  Chest,
+  ChestContent,
+  ChestRarity,
+  ChestSource,
   Completion,
+  CosmeticUnlock,
   DayKey,
   DeletedHabit,
   Difficulty,
   GameData,
+  GameState,
+  GrammaticalForm,
   Habit,
   HabitPause,
   HpLedgerEntry,
@@ -91,6 +103,15 @@ export const ITEMS: Record<ItemId, { title: string; icon: string; price: number 
 /** Alle Gegenstände in Anzeigereihenfolge (die von `ITEMS`). */
 export const ITEM_IDS = Object.keys(ITEMS) as readonly ItemId[]
 
+/** Sprachformen für Klassen und Titel (Phase 3a) – `satisfies` hält die Liste vollständig zu `GrammaticalForm`. */
+const GRAMMATICAL_FORM_SET = { female: true, male: true, neutral: true } satisfies Record<GrammaticalForm, true>
+/** Alle Sprachformen: Heldin, Held, neutral (Standard). */
+export const GRAMMATICAL_FORMS = Object.keys(GRAMMATICAL_FORM_SET) as readonly GrammaticalForm[]
+/** Fundorte von Truhen (Phase 3a). */
+const CHEST_SOURCE_SET = { boss: true, quest: true, chapter: true } satisfies Record<ChestSource, true>
+/** Seltenheiten von Truhen (Phase 3a). */
+const CHEST_RARITY_SET = { common: true, uncommon: true, rare: true, legendary: true } satisfies Record<ChestRarity, true>
+
 /** Die bearbeitbaren Felder einer Quest. Verlauf (`scheduleHistory`) und Pausen pflegt das Repository selbst. */
 export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay' | 'scheduleHistory' | 'pauses'>
 export type MainQuestDraft = Omit<MainQuest, 'id' | 'createdAt'>
@@ -125,6 +146,15 @@ const MSG = {
   restOrder: 'Eine Rast kann nicht enden, bevor sie beginnt.',
   restTooLong: `Eine Rast dauert höchstens ${MAX_REST_PERIOD_DAYS} Tage am Stück.`,
   restOver: 'Diese Rast ist schon vorbei – vergangene Rasttage bleiben erhalten.',
+  noHero: 'Es gibt noch keinen Helden – beginne zuerst dein Abenteuer.',
+  unknownForm: 'Diese Sprachform gibt es nicht.',
+  unknownTitle: 'Diesen Titel gibt es nicht.',
+  unknownFrame: 'Diesen Rahmen gibt es nicht.',
+  invalidAchievement: 'Ungültiger Erfolg.',
+  invalidVictory: 'Ungültiger Boss-Sieg.',
+  invalidChest: 'Ungültige Truhe.',
+  chestNotFound: 'Diese Truhe gibt es nicht (mehr).',
+  chestOpened: 'Diese Truhe hast du schon geöffnet.',
 } as const
 
 /** Meldung, wenn das Gold für eine Belohnung nicht reicht, z. B. "Dafür fehlen dir noch 150 Gold." */
@@ -147,6 +177,8 @@ export function missingGoldMessage(missing: number): string {
  * - Phase 2b: `hpLedger` nach Tag, `restPeriods` nach `from` (dann `until`, Anlagezeit) – ebenso nur, wenn es
  *   welche gibt. `settings.penalties` fehlt, solange nie etwas gespeichert wurde: Das heißt „Lebenspunkte an,
  *   noch nie abgerechnet“ (`penaltiesEnabled` aus `domain/hp.ts`); `since` setzt erst `settleHpDays`.
+ * - Phase 3a: `bossVictories` nach Woche, `chests` nach Fundtag (dann ID), `cosmeticUnlocks` nach Tag (dann ID) –
+ *   ebenso nur, wenn es welche gibt; `settings.combatIntroSeen` geprüft übernommen.
  */
 export async function loadGameData(database: QuestlogDB = db): Promise<GameData> {
   return database.transaction('r', allTables(database), async () => {
@@ -163,6 +195,9 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
       achievementUnlocks,
       hpLedger,
       restPeriods,
+      bossVictories,
+      chests,
+      cosmeticUnlocks,
     ] = await Promise.all([
       database.habits.toArray(),
       database.completions.toArray(),
@@ -176,6 +211,9 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
       database.achievementUnlocks.toArray(),
       database.hpLedger.toArray(),
       database.restPeriods.toArray(),
+      database.bossVictories.toArray(),
+      database.chests.toArray(),
+      database.cosmeticUnlocks.toArray(),
     ])
 
     const data: GameData = {
@@ -194,6 +232,9 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
     if (achievementUnlocks.length > 0) data.achievementUnlocks = achievementUnlocks.sort(compareUnlocks)
     if (hpLedger.length > 0) data.hpLedger = hpLedger.sort((a, b) => compareDays(a.day, b.day))
     if (restPeriods.length > 0) data.restPeriods = restPeriods.sort(compareRestPeriods)
+    if (bossVictories.length > 0) data.bossVictories = bossVictories.sort((a, b) => compareDays(a.weekStart, b.weekStart))
+    if (chests.length > 0) data.chests = chests.sort(compareChests)
+    if (cosmeticUnlocks.length > 0) data.cosmeticUnlocks = cosmeticUnlocks.sort(compareUnlocks)
     return data
   })
 }
@@ -202,16 +243,116 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
 // Profil & Einstellungen
 // ---------------------------------------------------------------------------
 
-/** Speichert (bzw. ersetzt) das Charakterprofil. Der Name darf nicht leer sein. */
+/**
+ * Speichert (bzw. ersetzt) das Charakterprofil. Der Name darf nicht leer sein (getrimmt), ohne Avatar gilt 🧙.
+ *
+ * Phase 3a – Sprachform (`form`), gewählter Titel (`titleId`) und Rahmen (`frameId`):
+ * - Fehlt eines dieser Felder im übergebenen Objekt, **bleibt** das gespeicherte (so ändert „Held bearbeiten“ mit
+ *   Name und Avatar nichts an Titel, Rahmen oder Sprachform). Steht es explizit mit `undefined` (oder `''` bei Titel
+ *   und Rahmen) da, wird es entfernt.
+ * - Geprüft wird nur, was übergeben wird: `form` muss `'female' | 'male' | 'neutral'` sein („Diese Sprachform gibt es
+ *   nicht.“), `titleId`/`frameId` ein bekannter Titel bzw. Rahmen („Diesen Titel gibt es nicht.“ …). Ob er
+ *   freigeschaltet ist, entscheidet die Anzeige (`activeTitle`/`activeFrame`: gesperrte werden nicht gezeigt).
+ * - Helden-Seed (`heroSeed`): Benennt sich derselbe Held (gleicher `createdDay`) um, bleibt sein bisheriger Seed
+ *   festgehalten – Boss der Woche, Schwäche und offene Truhen-Funde bleiben, wie sie sind (`pinnedHeroSeed`).
+ * Für einzelne Änderungen (z. B. nur den Titel) ist `updateProfile` bequemer.
+ */
 export async function saveProfile(profile: CharacterProfile, database: QuestlogDB = db): Promise<void> {
-  const name = requireText(profile.name, 'Bitte gib deinem Helden einen Namen.')
-  assertDayKey(profile.createdDay, 'Startdatum')
+  await writeProfile(database, (stored) => cleanProfile(profile, profile, stored))
+}
+
+/**
+ * Ändert einzelne Felder des gespeicherten Profils – z. B. `updateProfile({ titleId: 'daring' })` oder
+ * `updateProfile({ frameId: undefined })` (Rahmen ablegen). Felder, die im Patch fehlen, bleiben; sonst gelten
+ * dieselben Regeln und Prüfungen wie bei `saveProfile`. Ohne gespeicherten Helden: Fehler.
+ */
+export async function updateProfile(patch: Partial<CharacterProfile>, database: QuestlogDB = db): Promise<void> {
+  await writeProfile(database, (stored) => {
+    if (stored === undefined) throw new Error(MSG.noHero)
+    return cleanProfile({ ...stored, ...patch }, patch, stored)
+  })
+}
+
+/** Lesen → bereinigen → schreiben des Profils in einer Transaktion (`stored` = gespeichertes Profil, falls vorhanden). */
+async function writeProfile(
+  database: QuestlogDB,
+  next: (stored: CharacterProfile | undefined) => CharacterProfile,
+): Promise<void> {
+  await database.transaction('rw', database.kv, async () => {
+    const entry = await database.kv.get(KV_KEYS.profile)
+    const stored = isRecord(entry?.value) ? (entry.value as unknown as CharacterProfile) : undefined
+    await database.kv.put({ key: KV_KEYS.profile, value: next(stored) })
+  })
+}
+
+/**
+ * Geprüftes, normalisiertes Profil: Name, Avatar und Starttag aus `input`; Sprachform, Titel und Rahmen aus `choices`,
+ * sofern sie dort (auch als `undefined`) stehen – sonst die gespeicherten aus `stored` (siehe `saveProfile`).
+ */
+function cleanProfile(
+  input: CharacterProfile,
+  choices: Partial<CharacterProfile>,
+  stored: CharacterProfile | undefined,
+): CharacterProfile {
+  const name = requireText(input.name, 'Bitte gib deinem Helden einen Namen.')
+  assertDayKey(input.createdDay, 'Startdatum')
   const clean: CharacterProfile = {
     name,
-    avatar: optionalText(profile.avatar) ?? DEFAULT_AVATAR,
-    createdDay: profile.createdDay,
+    avatar: optionalText(input.avatar) ?? DEFAULT_AVATAR,
+    createdDay: input.createdDay,
   }
-  await database.kv.put({ key: KV_KEYS.profile, value: clean })
+  const form = Object.hasOwn(choices, 'form') ? normalizeForm(choices.form) : storedForm(stored?.form)
+  if (form !== undefined) clean.form = form
+  const titleId = Object.hasOwn(choices, 'titleId')
+    ? normalizeCosmeticId(choices.titleId, TITLES, MSG.unknownTitle)
+    : optionalId(stored?.titleId)
+  if (titleId !== undefined) clean.titleId = titleId
+  const frameId = Object.hasOwn(choices, 'frameId')
+    ? normalizeCosmeticId(choices.frameId, FRAMES, MSG.unknownFrame)
+    : optionalId(stored?.frameId)
+  if (frameId !== undefined) clean.frameId = frameId
+  const heroSeed = pinnedHeroSeed(clean, stored)
+  if (heroSeed !== undefined) clean.heroSeed = heroSeed
+  return clean
+}
+
+/**
+ * Helden-Seed (`CharacterProfile.heroSeed`, Phase 3a): Grundlage von Boss-Wahl, Schwäche und Truhen ist
+ * `createdDay + name` – benennt sich **derselbe** Held (gleicher Anlegetag) um, bleibt der bisherige Seed festgehalten,
+ * damit ein neuer Name nichts neu auswürfelt. Gespeichert wird er nur, solange er vom abgeleiteten abweicht (heißt der
+ * Held wieder wie früher, fällt das Feld weg). Ein neuer Held (anderer Anlegetag) bekommt keinen. Von außen (Patch,
+ * Eingabe) lässt er sich nicht setzen – nur das Backup stellt ihn wieder her.
+ */
+function pinnedHeroSeed(clean: CharacterProfile, stored: CharacterProfile | undefined): string | undefined {
+  if (stored === undefined || stored.createdDay !== clean.createdDay) return undefined
+  const seed = heroSeedOf(stored)
+  return seed !== heroSeedOf({ createdDay: clean.createdDay, name: clean.name }) ? seed : undefined
+}
+
+function isGrammaticalForm(value: unknown): value is GrammaticalForm {
+  return typeof value === 'string' && Object.hasOwn(GRAMMATICAL_FORM_SET, value)
+}
+
+/** Übergebene Sprachform: `undefined` entfernt sie, sonst muss sie gültig sein. */
+function normalizeForm(value: unknown): GrammaticalForm | undefined {
+  if (value === undefined) return undefined
+  if (!isGrammaticalForm(value)) throw new Error(MSG.unknownForm)
+  return value
+}
+
+/** Gespeicherte Sprachform – ungültige fallen weg (gilt dann als neutral). */
+function storedForm(value: unknown): GrammaticalForm | undefined {
+  return isGrammaticalForm(value) ? value : undefined
+}
+
+/**
+ * Übergebener Titel bzw. Rahmen: `undefined`/`''` entfernt ihn, sonst muss es ihn geben. (Gespeicherte, inzwischen
+ * unbekannte IDs bleiben beim Speichern anderer Felder erhalten – die Anzeige ignoriert sie.)
+ */
+function normalizeCosmeticId(value: unknown, known: readonly { id: string }[], message: string): string | undefined {
+  if (value === undefined || value === '') return undefined
+  if (typeof value !== 'string' || !known.some((definition) => definition.id === value)) throw new Error(message)
+  return value
 }
 
 /**
@@ -221,6 +362,7 @@ export async function saveProfile(profile: CharacterProfile, database: QuestlogD
  *
  * Phase 2b: `hpIntroSeen` wird übernommen; von `penalties` nur `enabled` – `since` bleibt immer, wie es ist (nie
  * rückwirkend abrechnen). Zum Umschalten der Lebenspunkte besser `setPenaltiesEnabled` (mit Spieltag) verwenden.
+ * Phase 3a: `combatIntroSeen` wird übernommen.
  */
 export async function updateSettings(patch: Partial<Settings>, database: QuestlogDB = db): Promise<void> {
   const changes: Partial<Settings> = {}
@@ -230,6 +372,7 @@ export async function updateSettings(patch: Partial<Settings>, database: Questlo
   }
   if (patch.effects !== undefined) changes.effects = Boolean(patch.effects)
   if (patch.hpIntroSeen !== undefined) changes.hpIntroSeen = Boolean(patch.hpIntroSeen)
+  if (patch.combatIntroSeen !== undefined) changes.combatIntroSeen = Boolean(patch.combatIntroSeen)
   const penalties = patch.penalties
 
   await updateStoredSettings(database, (stored) =>
@@ -317,6 +460,11 @@ export async function setPenaltiesEnabled(enabled: boolean, today: DayKey, datab
 /** Merkt sich, dass die Einführung „Neu: Lebenspunkte“ gesehen wurde (`settings.hpIntroSeen`). */
 export async function markHpIntroSeen(database: QuestlogDB = db): Promise<void> {
   await updateStoredSettings(database, () => ({ hpIntroSeen: true }))
+}
+
+/** Merkt sich, dass die Einführung „Neu: Klassen, Bosse & Beute“ gesehen wurde (`settings.combatIntroSeen`, Phase 3a). */
+export async function markCombatIntroSeen(database: QuestlogDB = db): Promise<void> {
+  await updateStoredSettings(database, () => ({ combatIntroSeen: true }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1349,32 +1497,207 @@ export async function deleteSideQuest(id: string, database: QuestlogDB = db): Pr
 }
 
 // ---------------------------------------------------------------------------
-// Erfolge
+// Fortschritt: Erfolge, Boss-Siege, Truhen (Phase 2a/3a)
 // ---------------------------------------------------------------------------
 
+/** Was `recordProgress` dauerhaft speichert – jede Liste optional. */
+export interface ProgressRecord {
+  achievementUnlocks?: readonly AchievementUnlock[]
+  bossVictories?: readonly BossVictory[]
+  chests?: readonly Chest[]
+}
+
 /**
- * Speichert neu freigeschaltete Erfolge dauerhaft (einmal erreicht = für immer). Idempotent: Ein schon
- * gespeicherter Erfolg behält seinen Tag – er wird nie überschrieben; kommt eine ID mehrfach vor, zählt der
- * früheste Tag. Ungültige Einträge (leere ID, ungültiger Tag) → Fehler, nichts wird gespeichert.
+ * Speichert erreichten Fortschritt dauerhaft (einmal erreicht = für immer) – alles in **einer** Transaktion.
+ * Idempotent: Vorhandenes wird **nie** überschrieben (ein gespeicherter Erfolg behält seinen Tag, ein Boss-Sieg seinen
+ * Boss, eine Truhe ihren Inhalt und ihren Öffnungszustand); doppelt Gespeichertes wird übersprungen. So können der
+ * `ProgressRecorder` mehrerer Tabs und mehrfache Aufrufe gefahrlos dasselbe melden.
+ * - Erfolge: nicht leere ID, gültiger Tag; kommt eine ID mehrfach vor, zählt der früheste Tag.
+ * - Boss-Siege: `weekStart` ein Montag, nicht leere `bossId`, gültiger Tag, `maxHp` > 0; je Woche zählt der früheste.
+ * - Truhen: nicht leere ID, bekannter Fundort und Seltenheit, gültiger Fundtag und Inhalt (Gold: ganze Zahl ≥ 1,
+ *   Gegenstand: Streak-Schutz, Kosmetik: Titel/Rahmen mit ID); je ID zählt die erste. Neu gespeicherte Truhen sind
+ *   immer **ungeöffnet** (`openedAt` wird nicht übernommen – geöffnet wird nur mit `openChest`). Quest-Truhen höchstens
+ *   `BALANCING.chests.maxQuestChestsPerDay` pro Fundtag, gespeicherte eingerechnet (überzählige werden übersprungen –
+ *   etwa wenn zwischen zwei Meldungen eine andere Quest des Tages gewonnen hätte).
+ * Ein ungültiger Eintrag → Fehler, **nichts** wird gespeichert. Alles leer → nichts passiert.
+ */
+export async function recordProgress(progress: ProgressRecord, database: QuestlogDB = db): Promise<void> {
+  const unlocks = cleanUnlocks(progress.achievementUnlocks ?? [])
+  const victories = cleanVictories(progress.bossVictories ?? [])
+  const chests = cleanChests(progress.chests ?? [])
+  if (unlocks.length === 0 && victories.length === 0 && chests.length === 0) return
+  const tables = [database.achievementUnlocks, database.bossVictories, database.chests]
+  await database.transaction('rw', tables, async () => {
+    if (unlocks.length > 0) {
+      const stored = await database.achievementUnlocks.bulkGet(unlocks.map((unlock) => unlock.id))
+      const fresh = unlocks.filter((_, index) => stored[index] === undefined)
+      if (fresh.length > 0) await database.achievementUnlocks.bulkAdd(fresh)
+    }
+    if (victories.length > 0) {
+      const stored = await database.bossVictories.bulkGet(victories.map((victory) => victory.weekStart))
+      const fresh = victories.filter((_, index) => stored[index] === undefined)
+      if (fresh.length > 0) await database.bossVictories.bulkAdd(fresh)
+    }
+    if (chests.length > 0) {
+      const stored = await database.chests.bulkGet(chests.map((chest) => chest.id))
+      const fresh = await withinQuestChestLimit(
+        database,
+        chests.filter((_, index) => stored[index] === undefined),
+      )
+      if (fresh.length > 0) await database.chests.bulkAdd(fresh)
+    }
+  })
+}
+
+/**
+ * Speichert neu freigeschaltete Erfolge dauerhaft – dünner Wrapper um `recordProgress` (gleiche Regeln: idempotent,
+ * überschreibt nie einen gespeicherten Tag, doppelte IDs → frühester Tag, ungültige Einträge → Fehler, nichts
+ * gespeichert).
  */
 export async function recordAchievementUnlocks(
   unlocks: readonly AchievementUnlock[],
   database: QuestlogDB = db,
 ): Promise<void> {
+  await recordProgress({ achievementUnlocks: unlocks }, database)
+}
+
+/**
+ * Öffnet eine gefundene Truhe am Spieltag `today` – in **einer** Transaktion über `allTables`:
+ * - Die Truhe muss es geben: gespeichert oder – noch nicht vom Recorder gespeichert – gerade gefunden
+ *   (`deriveGameState(…, today).chests`); sonst „Diese Truhe gibt es nicht (mehr).“ Schon geöffnet → Fehler.
+ * - Gold: zählt ab jetzt (`gold.fromChests`). Gespeichert wird nur `openedAt`.
+ * - ❄️ Streak-Schutz: kommt in den Vorrat (ab dem Spieltag des Öffnens). Ist der Vorrat
+ *   (`inventory.streakFreezes`) schon voll (`items.streakFreeze.max`), liegt stattdessen
+ *   `chests.freezeFallbackGold` Gold darin – entschieden beim Öffnen und so gespeichert (der Inhalt der Truhe wird
+ *   ersetzt), damit der Spielstand später derselbe bleibt.
+ * - Titel/Rahmen: zusätzlich ein `CosmeticUnlock` (`{ id, kind, day: today, source: 'chest' }`; ein vorhandener bleibt).
+ * @param now Zeitpunkt des Öffnens (`openedAt`, epoch ms; Standard: jetzt).
+ * @returns der tatsächliche Inhalt (beim vollen Vorrat also das Ersatz-Gold).
+ */
+export async function openChest(
+  id: string,
+  today: DayKey,
+  database: QuestlogDB = db,
+  now: number = Date.now(),
+): Promise<ChestContent> {
+  assertDayKey(today)
+  if (optionalId(id) === undefined) throw new Error(MSG.chestNotFound)
+  return database.transaction('rw', allTables(database), async () => {
+    let state: GameState | undefined
+    const currentState = async () => (state ??= deriveGameState(await loadGameData(database), today))
+    const chest = (await database.chests.get(id)) ?? (await currentState()).chests.find((found) => found.id === id)
+    if (chest === undefined) throw new Error(MSG.chestNotFound)
+    if (chest.openedAt !== undefined) throw new Error(MSG.chestOpened)
+
+    let content = chest.content
+    if (content?.kind === 'item' && content.itemId === 'streakFreeze') {
+      const { inventory } = await currentState()
+      if (inventory.streakFreezes >= BALANCING.items.streakFreeze.max) {
+        content = { kind: 'gold', amount: BALANCING.chests.freezeFallbackGold }
+      }
+    }
+    await database.chests.put({ ...chest, content, openedAt: now })
+    if (content?.kind === 'cosmetic' && (await database.cosmeticUnlocks.get(content.cosmeticId)) === undefined) {
+      const unlock: CosmeticUnlock = { id: content.cosmeticId, kind: content.cosmeticKind, day: today, source: 'chest' }
+      await database.cosmeticUnlocks.add(unlock)
+    }
+    return content
+  })
+}
+
+/** Erfolge geprüft, je ID der früheste Tag (Reihenfolge des ersten Auftretens). */
+function cleanUnlocks(unlocks: readonly AchievementUnlock[]): AchievementUnlock[] {
   const earliest = new Map<string, DayKey>()
   for (const unlock of unlocks) {
     const id = optionalId(unlock?.id)
-    if (id === undefined) throw new Error('Ungültiger Erfolg.')
+    if (id === undefined) throw new Error(MSG.invalidAchievement)
     assertDayKey(unlock.day, 'Datum eines Erfolgs')
     const known = earliest.get(id)
     if (known === undefined || compareDays(unlock.day, known) < 0) earliest.set(id, unlock.day)
   }
-  if (earliest.size === 0) return
-  await database.transaction('rw', database.achievementUnlocks, async () => {
-    const candidates = [...earliest].map(([id, day]): AchievementUnlock => ({ id, day }))
-    const stored = await database.achievementUnlocks.bulkGet(candidates.map((unlock) => unlock.id))
-    const fresh = candidates.filter((_, index) => stored[index] === undefined)
-    if (fresh.length > 0) await database.achievementUnlocks.bulkAdd(fresh)
+  return [...earliest].map(([id, day]) => ({ id, day }))
+}
+
+/** Boss-Siege geprüft und bereinigt, je Woche der früheste. */
+function cleanVictories(victories: readonly BossVictory[]): BossVictory[] {
+  const byWeek = new Map<DayKey, BossVictory>()
+  for (const victory of victories) {
+    const weekStart = victory?.weekStart
+    const bossId = optionalId(victory?.bossId)
+    const maxHp = victory?.maxHp
+    if (!isDayKeyValue(weekStart) || isoWeekday(weekStart) !== 1 || bossId === undefined) {
+      throw new Error(MSG.invalidVictory)
+    }
+    if (!isDayKeyValue(victory.day) || typeof maxHp !== 'number' || !Number.isFinite(maxHp) || maxHp <= 0) {
+      throw new Error(MSG.invalidVictory)
+    }
+    const clean: BossVictory = { weekStart, bossId, day: victory.day, maxHp }
+    const known = byWeek.get(weekStart)
+    if (known === undefined || compareDays(clean.day, known.day) < 0) byWeek.set(weekStart, clean)
+  }
+  return [...byWeek.values()]
+}
+
+/** Truhen geprüft und bereinigt (ungeöffnet), je ID die erste. */
+function cleanChests(chests: readonly Chest[]): Chest[] {
+  const byId = new Map<string, Chest>()
+  for (const chest of chests) {
+    const id = optionalId(chest?.id)
+    const content = cleanChestContent(chest?.content)
+    if (
+      id === undefined ||
+      content === undefined ||
+      typeof chest.source !== 'string' ||
+      !Object.hasOwn(CHEST_SOURCE_SET, chest.source) ||
+      typeof chest.rarity !== 'string' ||
+      !Object.hasOwn(CHEST_RARITY_SET, chest.rarity) ||
+      !isDayKeyValue(chest.foundDay)
+    ) {
+      throw new Error(MSG.invalidChest)
+    }
+    if (!byId.has(id)) byId.set(id, { id, source: chest.source, foundDay: chest.foundDay, rarity: chest.rarity, content })
+  }
+  return [...byId.values()]
+}
+
+/** Gültiger Truhen-Inhalt (nur die bekannten Felder) oder `undefined`. */
+function cleanChestContent(content: unknown): ChestContent | undefined {
+  if (!isRecord(content)) return undefined
+  switch (content.kind) {
+    case 'gold': {
+      const amount = content.amount
+      return typeof amount === 'number' && Number.isInteger(amount) && amount >= 1 ? { kind: 'gold', amount } : undefined
+    }
+    case 'item':
+      return content.itemId === 'streakFreeze' ? { kind: 'item', itemId: 'streakFreeze' } : undefined
+    case 'cosmetic': {
+      const cosmeticId = optionalId(content.cosmeticId)
+      const cosmeticKind = content.cosmeticKind
+      if (cosmeticId === undefined || (cosmeticKind !== 'title' && cosmeticKind !== 'frame')) return undefined
+      return { kind: 'cosmetic', cosmeticKind, cosmeticId }
+    }
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Neue Truhen ohne die Quest-Truhen, die das Tageslimit (`maxQuestChestsPerDay`, gespeicherte des Tages eingerechnet)
+ * überschreiten würden – in der übergebenen Reihenfolge.
+ */
+async function withinQuestChestLimit(database: QuestlogDB, fresh: readonly Chest[]): Promise<Chest[]> {
+  const questDays = [...new Set(fresh.filter((chest) => chest.source === 'quest').map((chest) => chest.foundDay))]
+  if (questDays.length === 0) return [...fresh]
+  const perDay = new Map<DayKey, number>()
+  for (const chest of await database.chests.where('foundDay').anyOf(questDays).toArray()) {
+    if (chest.source === 'quest') perDay.set(chest.foundDay, (perDay.get(chest.foundDay) ?? 0) + 1)
+  }
+  return fresh.filter((chest) => {
+    if (chest.source !== 'quest') return true
+    const count = perDay.get(chest.foundDay) ?? 0
+    if (count >= BALANCING.chests.maxQuestChestsPerDay) return false
+    perDay.set(chest.foundDay, count + 1)
+    return true
   })
 }
 
@@ -1384,7 +1707,7 @@ export async function recordAchievementUnlocks(
 
 /**
  * Löscht ALLE Daten (Profil, Einstellungen, Quests, Erledigungen, Kampagnen, Belohnungen, Einlösungen,
- * Nebenquests, Erfolge, abgerechnete Tage, Rast & Urlaub) in einer Transaktion.
+ * Nebenquests, Erfolge, abgerechnete Tage, Rast & Urlaub, Boss-Siege, Truhen, Titel & Rahmen) in einer Transaktion.
  */
 export async function resetAllData(database: QuestlogDB = db): Promise<void> {
   const tables = allTables(database)
@@ -1422,9 +1745,14 @@ function compareRestPeriods(a: RestPeriod, b: RestPeriod): number {
   return compareDays(a.from, b.from) || compareDays(a.until, b.until) || a.createdAt - b.createdAt || compareIds(a.id, b.id)
 }
 
-/** Sortierung freigeschalteter Erfolge: Tag, dann ID. */
-function compareUnlocks(a: AchievementUnlock, b: AchievementUnlock): number {
+/** Sortierung freigeschalteter Erfolge bzw. Titel/Rahmen: Tag, dann ID. */
+function compareUnlocks(a: Pick<AchievementUnlock, 'id' | 'day'>, b: Pick<AchievementUnlock, 'id' | 'day'>): number {
   return compareDays(a.day, b.day) || compareIds(a.id, b.id)
+}
+
+/** Sortierung der Truhen: Fundtag, dann ID (wie `GameState.chests`). */
+function compareChests(a: Chest, b: Chest): number {
+  return compareDays(a.foundDay, b.foundDay) || compareIds(a.id, b.id)
 }
 
 function compareIds(a: string, b: string): number {
@@ -1592,7 +1920,7 @@ async function storedDayStartHour(database: QuestlogDB): Promise<number> {
 function pickValidSettings(stored: unknown): Partial<Settings> {
   const result: Partial<Settings> = {}
   if (!isRecord(stored)) return result
-  const { dayStartHour, effects, penalties, hpIntroSeen } = stored
+  const { dayStartHour, effects, penalties, hpIntroSeen, combatIntroSeen } = stored
   if (typeof dayStartHour === 'number' && Number.isInteger(dayStartHour) && dayStartHour >= 0 && dayStartHour <= 12) {
     result.dayStartHour = dayStartHour
   }
@@ -1602,6 +1930,7 @@ function pickValidSettings(stored: unknown): Partial<Settings> {
     if (isDayKeyValue(penalties.since)) result.penalties.since = penalties.since
   }
   if (typeof hpIntroSeen === 'boolean') result.hpIntroSeen = hpIntroSeen
+  if (typeof combatIntroSeen === 'boolean') result.combatIntroSeen = combatIntroSeen
   return result
 }
 

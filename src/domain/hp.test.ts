@@ -434,7 +434,7 @@ describe('settleDays – Streak-Schutz', () => {
       [D(5), false], // verpasst, Vorrat wieder leer, Zähler 1
     ])
     expect(deriveGameState(withEntries(settled, second), D(7))).toMatchObject({
-      inventory: { streakFreezes: 0 },
+      inventory: { streakFreezes: 0, unopenedChests: 0 },
     })
   })
 
@@ -470,6 +470,7 @@ describe('settleDays – Streak-Schutz', () => {
     ])
     expect(deriveGameState(withEntries(hero({ habits: [habit], purchases: late }), paused), D(11)).inventory).toEqual({
       streakFreezes: 8,
+      unopenedChests: 0,
     })
   })
 
@@ -911,7 +912,7 @@ describe('Abgeleiteter Zustand & Kennzahlen', () => {
   it('ohne Abrechnung: volle HP, Level 1 → 50', () => {
     const state = deriveGameState(hero({ habits: [habit] }, null), START)
     expect(state.hp).toEqual({ enabled: true, current: 50, max: 50, ratio: 1, defeats: 0 })
-    expect(state.inventory).toEqual({ streakFreezes: 0 })
+    expect(state.inventory).toEqual({ streakFreezes: 0, unopenedChests: 0 })
     expect(state.restToday).toBe(false)
   })
 

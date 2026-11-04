@@ -108,7 +108,7 @@ describe('deriveGameState – leerer Spielstand', () => {
       perfectBonusXp: 0,
     })
     expect(state.mainQuests).toEqual([])
-    expect(state.gold).toEqual({ fromXp: 0, fromAchievements: 0, earned: 0, spent: 0, lostToDefeats: 0, balance: 0 })
+    expect(state.gold).toEqual({ fromXp: 0, fromAchievements: 0, fromChests: 0, earned: 0, spent: 0, lostToDefeats: 0, balance: 0 })
     expect(state.sideQuests).toEqual([])
     expect(state.achievements.length).toBeGreaterThan(0)
     expect(state.achievements.every((achievement) => !achievement.unlocked)).toBe(true)

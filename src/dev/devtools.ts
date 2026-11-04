@@ -6,7 +6,16 @@
  *                                 // + abgerechnete Lebenspunkte (Ledger ab Abenteuerbeginn)
  *   await questlog.seedDemo(30, { missedDays: 3 })      // die letzten 3 abgerechneten Tage verpasst → HP angeschlagen
  *   await questlog.seedDemo(30, { penalties: false })   // Sanfter Modus (keine HP)
+ *   await questlog.seedDemo(30, { combat: false })      // ohne Boss-Sieg und Truhen
  *   await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })  // weitere Kampagne
+ *
+ * Phase 3a (Klassen, Bosse, Truhen):
+ *   await questlog.grantChest()                          // ungeöffnete Truhe (Seltenheit/Inhalt wie beim Fund)
+ *   await questlog.grantChest({ rarity: 'legendary' })   // gezielt eine Seltenheit …
+ *   await questlog.grantChest({ content: { kind: 'item', itemId: 'streakFreeze' } })   // … oder einen Inhalt
+ *   await questlog.openChest(id)                         // öffnen wie in der App (heutiger Spieltag)
+ *   await questlog.defeatBoss()                          // Boss der Vorwoche als besiegt speichern (Bestiarium)
+ *   await questlog.defeatBoss(await questlog.today())    // … oder den der Woche dieses Tages
  *   await questlog.reset()        // alles löschen → Onboarding
  *
  * Alle Repository-Funktionen stehen unter `questlog.repository` bereit, z. B.
@@ -19,12 +28,16 @@
  * Wird in Produktions-Builds nicht eingebunden (siehe main.tsx).
  */
 import { DEFAULT_SETTINGS } from '../domain/balancing'
-import { addDays, dayRange, isoWeekday, toDayKey } from '../domain/dates'
+import { unrecordedVictories } from '../domain/combat/boss'
+import { chestContent, chestCosmetic, chestRarity } from '../domain/combat/chests'
+import { addDays, compareDays, dayRange, isoWeekday, startOfWeek, toDayKey } from '../domain/dates'
+import { deriveGameState } from '../domain/engine'
 import { isRequiredOn } from '../domain/schedule'
-import type { DayKey } from '../domain/types'
+import type { BossVictory, Chest, ChestContent, ChestRarity, ChestSource, DayKey } from '../domain/types'
 import * as backup from '../data/backup'
 import { db, KV_KEYS } from '../data/db'
 import type { BlueprintOptions } from '../data/blueprints/types'
+import { newId } from '../data/ids'
 import * as repository from '../data/repository'
 import * as seed from '../data/seed'
 
@@ -58,10 +71,21 @@ async function currentDay(): Promise<DayKey> {
  * wird abgerechnet (`settleHpDays`) – so sind HP, Ledger und die Vorschau für gestern sofort sichtbar.
  * `missedDays: n` lässt die letzten n abgerechneten Tage (bis vorgestern) ganz aus, damit die HP angeschlagen sind;
  * `penalties: false` startet im Sanften Modus.
+ *
+ * Phase 3a (`combat: false` lässt es weg): Der Boss der Vorwoche ist besiegt (`defeatBoss`, gespeichert über
+ * `recordProgress`), alles, was der `ProgressRecorder` der App jetzt speichern würde (gerade gefundene Truhen, Siege),
+ * ist gespeichert, und es liegen mindestens zwei ungeöffnete Truhen bereit (fehlende per `grantChest`).
  */
 async function seedDemo(
   days = 30,
-  options: { completeToday?: boolean; seed?: number; purchase?: boolean; penalties?: boolean; missedDays?: number } = {},
+  options: {
+    completeToday?: boolean
+    seed?: number
+    purchase?: boolean
+    penalties?: boolean
+    missedDays?: number
+    combat?: boolean
+  } = {},
 ): Promise<void> {
   const today = await currentDay()
   const start = addDays(today, -days)
@@ -98,6 +122,110 @@ async function seedDemo(
   await setPenaltiesSince(start, options.penalties ?? true)
   await repository.saveProfile({ name: 'Aria', avatar: '🧙', createdDay: start })
   await repository.settleHpDays(today)
+  // Nach dem Profil: Boss-Wahl und Quest-Truhen hängen vom Helden ab (`heroSeed`).
+  if (options.combat ?? true) await seedCombat(today)
+}
+
+/** Mindestens so viele ungeöffnete Truhen legt `seedDemo` bereit. */
+const DEMO_UNOPENED_CHESTS = 2
+
+/** Phase 3a für `seedDemo`: Sieg über den Boss der Vorwoche, Fortschritt speichern, ungeöffnete Truhen auffüllen. */
+async function seedCombat(today: DayKey): Promise<void> {
+  await defeatBoss(addDays(startOfWeek(today), -7))
+  await recordCurrentProgress(today)
+  const unopened = (await db.chests.toArray()).filter((chest) => chest.openedAt === undefined).length
+  // Fehlende als abwechslungsreiche Funde: zuerst eine seltene (Streak-Schutz oder Rahmen), dann Gold.
+  const extra: ChestRarity[] = ['rare', 'uncommon']
+  for (let i = 0; i < DEMO_UNOPENED_CHESTS - unopened; i++) await grantChest({ rarity: extra[i] ?? 'common' })
+}
+
+/** Speichert, was der `ProgressRecorder` der App jetzt speichern würde: neue Erfolge, Boss-Siege und Truhen. */
+async function recordCurrentProgress(today: DayKey): Promise<void> {
+  const data = await repository.loadGameData()
+  const state = deriveGameState(data, today)
+  const storedChests = new Set((data.chests ?? []).map((chest) => chest.id))
+  const storedUnlocks = new Set((data.achievementUnlocks ?? []).map((unlock) => unlock.id))
+  await repository.recordProgress({
+    achievementUnlocks: state.achievements
+      .filter((achievement) => achievement.unlocked && !storedUnlocks.has(achievement.definition.id))
+      .map((achievement) => ({ id: achievement.definition.id, day: achievement.unlockedDay ?? today })),
+    bossVictories: unrecordedVictories([state.bosses.current, state.bosses.previous], data.bossVictories),
+    chests: state.chests.filter((chest) => !storedChests.has(chest.id)),
+  })
+}
+
+/**
+ * Speichert einen Sieg über den Boss der Woche, zu der `day` gehört (Standard: Vorwoche) – so, wie die Engine ihn am
+ * Sonntag dieser Woche (bzw. heute, für die laufende Woche) sieht: echter Sieg-Tag, falls der Verlauf ihn schon besiegt
+ * hat, sonst dieser Tag. Ein schon gespeicherter Sieg bleibt (idempotent). Ohne Boss (in der Woche keine Quests geplant,
+ * kein Held) → `undefined`. Die Boss-Truhe dazu zeigt die Engine sofort; gespeichert wird sie vom Recorder bzw. von
+ * `seedDemo`.
+ */
+async function defeatBoss(day?: DayKey): Promise<BossVictory | undefined> {
+  const today = await currentDay()
+  const weekStart = startOfWeek(day ?? addDays(startOfWeek(today), -7))
+  const sunday = addDays(weekStart, 6)
+  const asOf = compareDays(sunday, today) < 0 ? sunday : today
+  if (compareDays(weekStart, asOf) > 0) return undefined
+  const data = await repository.loadGameData()
+  if (data.profile === undefined) return undefined
+  const stored = data.bossVictories?.find((victory) => victory.weekStart === weekStart)
+  if (stored !== undefined) return stored
+  const boss = deriveGameState(data, asOf).bosses.current
+  if (boss === undefined || boss.weekStart !== weekStart) return undefined
+  const victory: BossVictory = { weekStart, bossId: boss.boss.id, day: boss.defeatedDay ?? asOf, maxHp: boss.maxHp }
+  await repository.recordProgress({ bossVictories: [victory] })
+  return victory
+}
+
+/** Optionen für `grantChest`. */
+interface GrantChestOptions {
+  /** Seltenheit (Standard: wie beim Fund per Hash der ID). */
+  rarity?: ChestRarity
+  /** Inhalt (Standard: nach den Regeln der Seltenheit – Kosmetik nur, was noch zu haben ist). */
+  content?: ChestContent
+  /** Fundort (Standard: 'chapter' – zählt nicht gegen das Tageslimit der Quest-Truhen). */
+  source?: ChestSource
+  /** Fundtag (Standard: heute). */
+  foundDay?: DayKey
+}
+
+/**
+ * Legt eine ungeöffnete Truhe in den Beutel (nur zum Ausprobieren der Truhen-Oberflächen). Die ID `<source>:dev-…`
+ * kollidiert nie mit echten Fundorten. Gespeichert über `recordProgress` (gleiche Prüfungen; eine zweite Quest-Truhe
+ * an einem Tag wird abgelehnt).
+ */
+async function grantChest(options: GrantChestOptions = {}): Promise<Chest> {
+  const today = await currentDay()
+  const source = options.source ?? 'chapter'
+  const id = `${source}:dev-${newId()}`
+  const rarity = options.rarity ?? (options.content === undefined ? chestRarity(id) : rarityOf(options.content))
+  const content = options.content ?? chestContent(id, rarity, { taken: await takenCosmetics(today) })
+  await repository.recordProgress({ chests: [{ id, source, foundDay: options.foundDay ?? today, rarity, content }] })
+  const stored = await db.chests.get(id)
+  if (stored === undefined) throw new Error('An diesem Tag gibt es schon eine Quest-Truhe – wähle einen anderen Tag oder Fundort.')
+  return stored
+}
+
+/** Passende Seltenheit zu einem vorgegebenen Inhalt (Gold: nach Betrag). */
+function rarityOf(content: ChestContent): ChestRarity {
+  if (content.kind === 'item') return 'rare'
+  if (content.kind === 'cosmetic') return 'legendary'
+  return content.amount > 50 ? 'uncommon' : 'common'
+}
+
+/** Titel/Rahmen, die eine neue Truhe nicht mehr bringen soll: freigeschaltete und in anderen Truhen versprochene. */
+async function takenCosmetics(today: DayKey): Promise<Set<string>> {
+  const state = deriveGameState(await repository.loadGameData(), today)
+  const taken = new Set<string>([
+    ...state.cosmetics.titles.map((id) => `title:${id}`),
+    ...state.cosmetics.frames.map((id) => `frame:${id}`),
+  ])
+  for (const chest of state.chests) {
+    const cosmetic = chestCosmetic(chest)
+    if (cosmetic !== undefined) taken.add(`${cosmetic.kind}:${cosmetic.id}`)
+  }
+  return taken
 }
 
 /**
@@ -180,6 +308,10 @@ export const devtools = {
   today: currentDay,
   /** Rechnet die Lebenspunkte bis vorgestern ab (wie die App beim Start); liefert die neuen Ledger-Einträge. */
   settle: async () => repository.settleHpDays(await currentDay()),
+  defeatBoss,
+  grantChest,
+  /** Öffnet eine Truhe am heutigen Spieltag (wie die App); liefert den tatsächlichen Inhalt. */
+  openChest: async (id: string) => repository.openChest(id, await currentDay()),
 }
 
 declare global {

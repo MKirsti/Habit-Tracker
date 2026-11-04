@@ -2,6 +2,8 @@
  * Gemeinsame Regeln für das Heldenprofil (Onboarding und Heldenseite).
  */
 import { RANKS } from '../../domain/balancing'
+import { GRAMMATICAL_FORMS } from '../../domain/combat/classDefinitions'
+import type { GrammaticalForm } from '../../domain/types'
 import { EMOJI_CATEGORIES } from '../../ui'
 import type { EmojiCategory } from '../../ui'
 
@@ -56,10 +58,33 @@ export const AVATAR_CATEGORIES: readonly EmojiCategory[] = [
   ...EMOJI_CATEGORIES.filter((category) => category.id === 'fantasy'),
 ]
 
-/** Prüft den Heldennamen. Liefert eine deutsche Fehlermeldung oder `undefined`, wenn alles passt. */
+/** Sprachform des Helden für Klassen- und Titelnamen – fehlt sie (oder ist sie unbekannt), gilt neutral. */
+export function formOrDefault(form: GrammaticalForm | undefined): GrammaticalForm {
+  return form !== undefined && GRAMMATICAL_FORMS.includes(form) ? form : 'neutral'
+}
+
+/**
+ * Überschrift des Onboarding-Schritts „Held“ in der gewählten Sprachform: „Erschaffe deine Heldin“ / „Erschaffe deinen
+ * Helden“ / neutral „Erschaffe deinen Charakter“ (wie der „Charakterbogen“ der Heldenseite).
+ */
+export function heroStepHeading(form: GrammaticalForm | undefined): { eyebrow: string; title: string } {
+  switch (formOrDefault(form)) {
+    case 'female':
+      return { eyebrow: 'Deine Heldin', title: 'Erschaffe deine Heldin' }
+    case 'male':
+      return { eyebrow: 'Dein Held', title: 'Erschaffe deinen Helden' }
+    case 'neutral':
+      return { eyebrow: 'Dein Charakter', title: 'Erschaffe deinen Charakter' }
+  }
+}
+
+/**
+ * Prüft den Heldennamen. Liefert eine deutsche Fehlermeldung oder `undefined`, wenn alles passt. Die Meldung passt zu
+ * jeder Sprachform (sie steht direkt neben deren Auswahl).
+ */
 export function validateHeroName(name: string): string | undefined {
   const trimmed = name.trim()
-  if (trimmed === '') return 'Bitte gib deinem Helden einen Namen.'
+  if (trimmed === '') return 'Bitte gib einen Namen ein.'
   if (trimmed.length > HERO_NAME_MAX) return `Der Name darf höchstens ${HERO_NAME_MAX} Zeichen lang sein.`
   return undefined
 }

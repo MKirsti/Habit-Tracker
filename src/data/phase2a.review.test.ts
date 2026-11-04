@@ -174,7 +174,7 @@ describe('Upgrade einer Version-2-Datenbank mit echtem Verlauf', () => {
     const database = new QuestlogDB(name)
     await database.open()
     try {
-      expect(database.verno).toBe(4)
+      expect(database.verno).toBe(5)
       const state = await stateOf(database)
       // Perfekter Tag: an den Tagen der Wochenquest steigt der Bonus mit (06.: 11 + 40 = 51 → 13; 13.: 14 + 42 = 56 → 14)
       // statt 3 bzw. 4 → +10 und +10 gegenüber der Tagesquest allein

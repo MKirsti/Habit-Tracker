@@ -190,7 +190,7 @@ describe('deriveGameState – Gold', () => {
     const state = deriveGameState(data, '2026-11-04', noAchievements)
     expect(BALANCING.goldPerXp).toBe(0.5)
     expect(state.level.totalXp).toBe(119)
-    expect(state.gold).toEqual({ fromXp: 59, fromAchievements: 0, earned: 59, spent: 0, lostToDefeats: 0, balance: 59 })
+    expect(state.gold).toEqual({ fromXp: 59, fromAchievements: 0, fromChests: 0, earned: 59, spent: 0, lostToDefeats: 0, balance: 59 })
   })
 
   it('Kapitel- und Kampagnen-XP zählen mit', () => {
@@ -207,7 +207,7 @@ describe('deriveGameState – Gold', () => {
       purchases: [makePurchase({ id: 'p1', day: '2026-11-03' }, pizza), makePurchase({ id: 'p2', day: '2026-11-04' }, pizza)],
     })
     const state = deriveGameState(data, '2026-11-04', noAchievements)
-    expect(state.gold).toEqual({ fromXp: 39, fromAchievements: 0, earned: 39, spent: 80, lostToDefeats: 0, balance: -41 })
+    expect(state.gold).toEqual({ fromXp: 39, fromAchievements: 0, fromChests: 0, earned: 39, spent: 80, lostToDefeats: 0, balance: -41 })
   })
 
   it('ungültige Preise zählen nicht; Käufe „nach heute“ bleiben ausgegeben', () => {
@@ -232,7 +232,7 @@ describe('deriveGameState – Gold', () => {
       ['rich', true, 39],
       ['richer', false, 39],
     ])
-    expect(state.gold).toEqual({ fromXp: 39, fromAchievements: 100, earned: 139, spent: 0, lostToDefeats: 0, balance: 139 })
+    expect(state.gold).toEqual({ fromXp: 39, fromAchievements: 100, fromChests: 0, earned: 139, spent: 0, lostToDefeats: 0, balance: 139 })
   })
 })
 

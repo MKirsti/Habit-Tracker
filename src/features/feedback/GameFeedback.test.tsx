@@ -29,6 +29,13 @@ import { ToastProvider } from '../../ui'
 import { ACHIEVEMENT_TIER_COLORS } from './achievementTier'
 import { GameFeedback } from './GameFeedback'
 
+// Feste IDs: Ob eine erledigte Quest eine Truhe abwirft, hängt (deterministisch) an der ID ihrer Erledigung – mit
+// zufälligen IDs käme in jedem zehnten Lauf ein zusätzlicher Toast „Truhe gefunden“ dazu.
+vi.mock('../../data/ids', () => {
+  let next = 0
+  return { newId: () => `test-id-${(next += 1)}` }
+})
+
 /** Dienstag, 3. November 2026, 12:00 Uhr → Spieltag 2026-11-03. */
 const TODAY: DayKey = '2026-11-03'
 
