@@ -1,18 +1,21 @@
 /**
- * Warteschlange der großen Feier-Szenen (Level-Up, Kampagne gemeistert). Sie werden nacheinander
- * gezeigt; der erste Eintrag ist der sichtbare.
+ * Warteschlange der großen Szenen (Level-Up, Kampagne gemeistert – und die würdevolle Niederlage-Szene der
+ * Lebenspunkte). Sie werden nacheinander gezeigt; der erste Eintrag ist der sichtbare.
  */
-import type { GameState } from '../../domain/types'
+import { compareDays } from '../../domain/dates'
+import type { DayKey, GameState } from '../../domain/types'
 import { feedbackStillHolds } from './feedbackEvents'
 import type { CampaignCompletedEvent, FeedbackEvent, LevelUpEvent } from './feedbackEvents'
+import type { DefeatEvent } from './hpFeedback'
 
 export type Celebration =
   | { id: number; kind: 'level-up'; event: LevelUpEvent }
   | { id: number; kind: 'campaign'; event: CampaignCompletedEvent }
+  | { id: number; kind: 'defeat'; event: DefeatEvent }
 
 /**
- * Hängt die Feier-Szenen aus `events` an die Warteschlange an: erst Kampagnen (Ursache), dann der
- * Level-Up (Folge). Ein Level-Up, der auf einen noch nicht gezeigten Level-Up folgt, wird mit diesem
+ * Hängt die Szenen aus `events` an die Warteschlange an: zuerst eine Niederlage (Nachricht der Abrechnung), dann
+ * Kampagnen (Ursache), dann der Level-Up (Folge). Ein Level-Up, der auf einen noch nicht gezeigten Level-Up folgt, wird mit diesem
  * zusammengefasst (Level 3 → 5 statt zweier Szenen). Der sichtbare erste Eintrag bleibt unverändert.
  *
  * @param nextId liefert fortlaufende, eindeutige IDs.
@@ -23,6 +26,9 @@ export function enqueueCelebrations(
   nextId: () => number,
 ): Celebration[] {
   const result = [...queue]
+  for (const event of events) {
+    if (event.type === 'defeat') result.push({ id: nextId(), kind: 'defeat', event })
+  }
   for (const event of events) {
     if (event.type === 'campaign-completed') result.push({ id: nextId(), kind: 'campaign', event })
   }
@@ -56,9 +62,9 @@ export function hasCelebration(events: readonly FeedbackEvent[]): boolean {
   return events.some(isCelebrationEvent)
 }
 
-/** Level-Up und Kampagne bekommen eine Szene, alles andere einen Toast. */
+/** Level-Up, Kampagne und Niederlage bekommen eine Szene, alles andere einen Toast. */
 export function isCelebrationEvent(event: FeedbackEvent): boolean {
-  return event.type === 'level-up' || event.type === 'campaign-completed'
+  return event.type === 'level-up' || event.type === 'campaign-completed' || event.type === 'defeat'
 }
 
 /**
@@ -101,29 +107,42 @@ export interface CelebrationMemory {
   level: number
   /** Kampagnen, deren Abschluss schon gefeiert wurde (bzw. die beim Start abgeschlossen waren). */
   campaigns: ReadonlySet<string>
+  /** Letzte schon gezeigte (bzw. beim Start bekannte) Niederlage – keine Szene für sie oder frühere. */
+  lastDefeatDay?: DayKey
 }
 
 /** Ausgangspunkt: Alles, was im Zustand schon erreicht ist, gilt als gefeiert. */
 export function celebrationMemoryOf(state: GameState): CelebrationMemory {
-  return {
+  const memory: CelebrationMemory = {
     level: state.level.level,
     campaigns: new Set(state.mainQuests.filter((campaign) => campaign.complete).map((campaign) => campaign.quest.id)),
   }
+  const lastDefeat = state.hp.lastDefeat?.day
+  if (lastDefeat !== undefined) memory.lastDefeatDay = lastDefeat
+  return memory
 }
 
 /** Nach dem Schließen einer Szene: Sie gilt als gesehen. */
 export function rememberCelebration(memory: CelebrationMemory, celebration: Celebration): CelebrationMemory {
-  if (celebration.kind === 'level-up') {
-    return { ...memory, level: Math.max(memory.level, celebration.event.to) }
+  switch (celebration.kind) {
+    case 'level-up':
+      return { ...memory, level: Math.max(memory.level, celebration.event.to) }
+    case 'campaign':
+      return { ...memory, campaigns: new Set([...memory.campaigns, celebration.event.campaignId]) }
+    case 'defeat': {
+      const { day } = celebration.event
+      const seen = memory.lastDefeatDay
+      return { ...memory, lastDefeatDay: seen !== undefined && compareDays(seen, day) >= 0 ? seen : day }
+    }
   }
-  return { ...memory, campaigns: new Set([...memory.campaigns, celebration.event.campaignId]) }
 }
 
-/** Entfernt Szenen-Ereignisse, die schon gefeiert wurden (Toast-Ereignisse bleiben). */
+/** Entfernt Szenen-Ereignisse, die schon gefeiert bzw. gezeigt wurden (Toast-Ereignisse bleiben). */
 export function withoutCelebrated(events: readonly FeedbackEvent[], memory: CelebrationMemory): FeedbackEvent[] {
   return events.filter((event) => {
     if (event.type === 'level-up') return event.to > memory.level
     if (event.type === 'campaign-completed') return !memory.campaigns.has(event.campaignId)
+    if (event.type === 'defeat') return memory.lastDefeatDay === undefined || compareDays(event.day, memory.lastDefeatDay) > 0
     return true
   })
 }

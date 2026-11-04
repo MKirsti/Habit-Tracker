@@ -32,6 +32,9 @@ function freshStats(): AchievementStats {
     purchases: 0,
     goldFromXp: 0,
     comebacks: 0,
+    defeats: 0,
+    perfectDaysAfterDefeat: 0,
+    freezesUsed: 0,
   }
 }
 
@@ -214,10 +217,11 @@ describe('ACHIEVEMENTS – Inhalt', () => {
     }
   })
 
-  it('mindestens 2 geheime Erfolge, darunter der Phönix', () => {
+  it('mindestens 2 geheime Erfolge, darunter der Phönix und „Unbeugsam“', () => {
     const secret = ACHIEVEMENTS.filter((a) => a.secret)
     expect(secret.length).toBeGreaterThanOrEqual(2)
     expect(getAchievement('phoenix')?.secret).toBe(true)
+    expect(getAchievement('indomitable')).toMatchObject({ title: 'Unbeugsam', secret: true, category: 'special' })
     // Nicht alles verstecken: Ziele, auf die man hinarbeiten kann, bleiben sichtbar.
     expect(secret.length).toBeLessThanOrEqual(ACHIEVEMENTS.length / 4)
   })
@@ -352,6 +356,21 @@ describe('ACHIEVEMENTS – progress(stats)', () => {
     expect(at('lucky-7777', withScalar(fresh, 'totalXp', 7777))).toBe(true)
     expect(at('adventure-days-365', withScalar(fresh, 'adventureDay', 364))).toBe(false)
     expect(at('adventure-days-365', withScalar(fresh, 'adventureDay', 365))).toBe(true)
+    // Unbeugsam: ein Perfekter Tag nach der (ersten) Niederlage – die Niederlage allein zählt nicht.
+    expect(at('indomitable', withScalar(fresh, 'defeats', 3))).toBe(false)
+    expect(at('indomitable', withScalar(withScalar(fresh, 'defeats', 1), 'perfectDaysAfterDefeat', 0))).toBe(false)
+    expect(at('indomitable', withScalar(withScalar(fresh, 'defeats', 1), 'perfectDaysAfterDefeat', 1))).toBe(true)
+  })
+
+  it('belohnt nie Niederlagen oder verbrauchte Streak-Schutz-Gegenstände', () => {
+    // Lebenspunkte sollen motivieren, nicht bestrafen – und erst recht nicht zum Verlieren verleiten.
+    for (const achievement of ACHIEVEMENTS) {
+      for (const base of [freshStats(), ...sampleStats(5)]) {
+        const before = achievement.progress(base).current
+        expect(achievement.progress(withScalar(base, 'defeats', base.defeats + 50)).current, achievement.id).toBe(before)
+        expect(achievement.progress(withScalar(base, 'freezesUsed', base.freezesUsed + 50)).current, achievement.id).toBe(before)
+      }
+    }
   })
 
   it('Attribut-Erfolge: höchstes Attribut zählt; „Im Gleichgewicht“ zählt Attribute ab Level 3', () => {

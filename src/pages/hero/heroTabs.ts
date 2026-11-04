@@ -1,13 +1,13 @@
 /**
- * Reiter der Held-Seite und ihr Platz in der Adresse (`/held?tab=erfolge`). Ohne (gültigen) Parameter: Übersicht.
- * Phase 2b ergänzt „Statistik“.
+ * Reiter der Held-Seite und ihr Platz in der Adresse (`/held?tab=erfolge`, `/held?tab=statistik`). Ohne (gültigen)
+ * Parameter: Übersicht.
  */
-export type HeroTabId = 'uebersicht' | 'erfolge'
+export type HeroTabId = 'uebersicht' | 'erfolge' | 'statistik'
 
 export const HERO_TAB_PARAM = 'tab'
 export const DEFAULT_HERO_TAB: HeroTabId = 'uebersicht'
 
-const HERO_TAB_IDS: readonly HeroTabId[] = ['uebersicht', 'erfolge']
+const HERO_TAB_IDS: readonly HeroTabId[] = ['uebersicht', 'erfolge', 'statistik']
 
 export function parseHeroTab(value: string | null): HeroTabId {
   return HERO_TAB_IDS.find((id) => id === value) ?? DEFAULT_HERO_TAB

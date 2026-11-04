@@ -95,6 +95,22 @@ describe('Der Weg des Körpers (Sport-Vorlage)', () => {
     expect(metrics.has('streak')).toBe(true)
   })
 
+  it('Waldläufer (Einsteiger): „Eine halbe Stunde Atem“ zählt automatisch als Bestwert der Ausdauer-Einheit', () => {
+    const content = build('beginner', 'endurance')
+    const chapter = content.chapters.find((candidate) => candidate.title === 'Eine halbe Stunde Atem')
+    expect(chapter?.criterion).toEqual({ type: 'habit', questKey: 'cardio', metric: 'best', target: 30 })
+    // 30 Minuten am Stück bei einem Tagesziel von 20 Minuten – ein echtes Stück mehr, aber in Reichweite.
+    expect(content.quests.find((quest) => quest.key === 'cardio')?.measure).toEqual({ target: 20, unit: 'Minuten' })
+    expect(chapter?.description).toContain('30 Minuten am Stück')
+    // Strecken („5 km am Stück“) misst keine Quest – die bleiben Meilensteine von Hand, ebenso Liegestütze „ohne
+    // Absetzen“ (die Quest zählt die Liegestütze des ganzen Tages).
+    for (const { content: other } of cases) {
+      for (const { title, criterion } of other.chapters) {
+        if (/Kilometer am Stück|am Stück$/.test(title) && title !== 'Eine halbe Stunde Atem') expect(criterion.type, title).toBe('manual')
+      }
+    }
+  })
+
   it.each(PATH_IDS)('%s: Fortgeschritten hat höhere Ziele als Einsteiger', (pathId) => {
     const beginner = build('beginner', pathId)
     const advanced = build('advanced', pathId)

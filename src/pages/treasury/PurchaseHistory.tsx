@@ -1,11 +1,13 @@
-import { History, Undo2 } from 'lucide-react'
-import { useId, useRef, useState } from 'react'
+import { CircleCheck, History, Undo2 } from 'lucide-react'
+import { useId, useMemo, useRef, useState } from 'react'
+import { useGameContext } from '../../app/gameContext'
 import { undoPurchase } from '../../data/repository'
 import { formatDay } from '../../domain/dates'
 import type { Purchase } from '../../domain/types'
 import { Button, Card, ConfirmDialog, SectionTitle, formatNumber, useToast } from '../../ui'
 import { errorMessage } from './errors'
 import { purchaseUndoButtonId, usePendingFocus } from './focus'
+import { ITEM_OUTCOME_LABELS, POTION_HEAL, canUndoPurchase, itemOutcomes } from './items'
 import { formatShortDate, goldText, purchaseHistory } from './treasuryState'
 
 /** So viele Einlösungen zeigt die Chronik zunächst. */
@@ -15,10 +17,16 @@ export interface PurchaseHistoryProps {
   purchases: readonly Purchase[]
 }
 
-/** „Chronik“: alle Einlösungen, neueste zuerst, jeweils mit „Rückgängig“ (nach Rückfrage). */
+/**
+ * „Chronik“: alle Einlösungen und Käufe, neueste zuerst, jeweils mit „Rückgängig“ (nach Rückfrage). Gegenstände
+ * (Phase 2b) lassen sich nur am Kauftag zurückgeben, solange sie nicht verbraucht bzw. abgerechnet sind
+ * (`canUndoItemPurchase`) – sonst steht dort ihr Verbleib („Getrunken“, „Im Beutel“, „Eingesetzt“).
+ */
 export function PurchaseHistory({ purchases }: PurchaseHistoryProps) {
   const titleId = useId()
   const { toast } = useToast()
+  const { data, today } = useGameContext()
+  const outcomes = useMemo(() => itemOutcomes(data), [data])
   const [showAll, setShowAll] = useState(false)
   const [undoTarget, setUndoTarget] = useState<Purchase | null>(null)
   // Bleibt beim Schließen stehen, damit der Dialog beim Ausblenden nicht leer wird.
@@ -43,7 +51,7 @@ export function PurchaseHistory({ purchases }: PurchaseHistoryProps) {
       },
     })
     try {
-      await undoPurchase(purchase.id)
+      await undoPurchase(purchase.id, today)
     } catch (error) {
       requestFocus(null)
       toast({ tone: 'error', title: 'Rückgängig machen fehlgeschlagen', description: errorMessage(error) })
@@ -51,12 +59,13 @@ export function PurchaseHistory({ purchases }: PurchaseHistoryProps) {
     }
     toast({
       tone: 'success',
-      title: 'Einlösung rückgängig gemacht',
+      title: purchase.kind === 'item' ? 'Kauf rückgängig gemacht' : 'Einlösung rückgängig gemacht',
       description: `${goldText(purchase.price)} für „${purchase.title}“ sind zurück in deiner Schatzkammer.`,
     })
   }
 
   const shown = undoTarget ?? lastTarget
+  const hasItems = history.some((purchase) => purchase.kind === 'item')
 
   return (
     <section aria-labelledby={titleId}>
@@ -97,27 +106,34 @@ export function PurchaseHistory({ purchases }: PurchaseHistoryProps) {
                     </span>
                   </p>
                 </div>
-                <Button
-                  id={purchaseUndoButtonId(purchase.id)}
-                  variant="ghost"
-                  size="sm"
-                  icon={<Undo2 />}
-                  onClick={() => {
-                    setUndoTarget(purchase)
-                    setLastTarget(purchase)
-                  }}
-                  aria-label={`Einlösung „${purchase.title}“ vom ${formatDay(purchase.day)} rückgängig machen`}
-                  title="Rückgängig"
-                  className="shrink-0"
-                >
-                  <span className="hidden sm:inline">Rückgängig</span>
-                </Button>
+                {canUndoPurchase(data, purchase, today) ? (
+                  <Button
+                    id={purchaseUndoButtonId(purchase.id)}
+                    variant="ghost"
+                    size="sm"
+                    icon={<Undo2 />}
+                    onClick={() => {
+                      setUndoTarget(purchase)
+                      setLastTarget(purchase)
+                    }}
+                    aria-label={`${purchase.kind === 'item' ? 'Kauf' : 'Einlösung'} „${purchase.title}“ vom ${formatDay(purchase.day)} rückgängig machen`}
+                    title="Rückgängig"
+                    className="shrink-0"
+                  >
+                    <span className="hidden sm:inline">Rückgängig</span>
+                  </Button>
+                ) : (
+                  <ItemOutcomeLabel outcome={outcomes.get(purchase.id)} />
+                )}
               </li>
             ))}
           </ul>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2.5 text-sm text-muted">
             <span>
               Insgesamt ausgegeben: <span className="font-medium text-parchment tabular-nums">{goldText(total)}</span>
+              {hasItems && (
+                <span className="mt-0.5 block text-[0.8125rem]">Gegenstände kannst du nur am Kauftag zurückgeben.</span>
+              )}
             </span>
             {history.length > HISTORY_PREVIEW && (
               <Button
@@ -138,17 +154,31 @@ export function PurchaseHistory({ purchases }: PurchaseHistoryProps) {
         onClose={() => setUndoTarget(null)}
         onConfirm={confirmUndo}
         icon={shown?.icon}
-        title="Einlösung rückgängig machen?"
+        title={shown?.kind === 'item' ? 'Kauf rückgängig machen?' : 'Einlösung rückgängig machen?'}
         message={
           shown && (
             <>
               „{shown.title}“ vom {formatDay(shown.day)} verschwindet aus der Chronik, und du bekommst{' '}
               <strong className="font-semibold text-gold-bright">{goldText(shown.price)}</strong> zurück.
+              {shown.kind === 'item' && shown.itemId === 'healingPotion' &&
+                ` Seine Heilung (bis zu +${formatNumber(POTION_HEAL)} HP) wird dabei zurückgenommen.`}
+              {shown.kind === 'item' && shown.itemId === 'streakFreeze' && ' Der Streak-Schutz verlässt deinen Beutel.'}
             </>
           )
         }
         confirmLabel="Rückgängig machen"
       />
     </section>
+  )
+}
+
+/** Verbleib eines Gegenstands, der sich nicht mehr zurückgeben lässt. */
+function ItemOutcomeLabel({ outcome }: { outcome: keyof typeof ITEM_OUTCOME_LABELS | undefined }) {
+  if (outcome === undefined) return null
+  return (
+    <span className="flex shrink-0 items-center gap-1 text-[0.8125rem] whitespace-nowrap text-muted">
+      <CircleCheck aria-hidden className="size-3.5 text-success" />
+      {ITEM_OUTCOME_LABELS[outcome]}
+    </span>
   )
 }

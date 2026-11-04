@@ -61,6 +61,7 @@ export function GoldBalance({ gold, pulse, effects }: GoldBalanceProps) {
             <GoldFact label="Aus XP" value={gold.fromXp} />
             <GoldFact label="Aus Erfolgen" value={gold.fromAchievements} />
             <GoldFact label="Ausgegeben" value={gold.spent} />
+            {gold.lostToDefeats > 0 && <GoldFact label="Bei Niederlagen verloren" value={gold.lostToDefeats} />}
           </dl>
         </div>
       </div>

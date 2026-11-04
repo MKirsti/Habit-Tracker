@@ -11,7 +11,9 @@ import {
   durationLabel,
   formatDate,
   isArchived,
+  METRIC_LABELS,
   metricUnit,
+  needsMeasure,
   xpHint,
 } from './campaignText'
 
@@ -142,6 +144,20 @@ describe('chapterProgressText', () => {
     })
   })
 
+  it('Bestwert: höchster Tageswert mit Einheit der Quest', () => {
+    const chapter: Chapter = { id: 'c', title: 'Am Stück', criterion: { type: 'habit', habitId: 'read', metric: 'best', target: 30 } }
+    expect(chapterProgressText(state(chapter, 22.5, 30), READING)).toEqual({
+      prefix: 'Bestwert',
+      value: '22,5 / 30',
+      suffix: 'Seiten',
+      spoken: 'Bestwert: 22,5 von 30 Seiten',
+    })
+    // Geschafft: zeigt das erreichte Ziel.
+    expect(chapterProgressText(state(chapter, 41, 30), READING)?.value).toBe('30 / 30')
+    // Ohne Messgröße (z. B. Quest später auf Abhaken umgestellt): "am Tag"
+    expect(chapterProgressText(state(chapter, 1, 30), TALK)?.suffix).toBe('am Tag')
+  })
+
   it('liefert für Abhak-Kapitel keinen Zahlenwert', () => {
     const chapter: Chapter = { id: 'm', title: 'Buch', criterion: { type: 'manual' } }
     expect(chapterProgressText(state(chapter, 0, 1), undefined)).toBeUndefined()
@@ -154,6 +170,16 @@ describe('metricUnit & criterionSummary', () => {
     expect(metricUnit('streak', TALK, 1)).toBe('Woche')
     expect(metricUnit('streak', TALK, 2, 'day')).toBe('Tage')
     expect(metricUnit('streak', READING, 2, 'week')).toBe('Wochen')
+    expect(metricUnit('best', READING, 1)).toBe('Seiten')
+    expect(metricUnit('best', TALK, 1)).toBe('am Tag')
+  })
+
+  it('kennt alle Messgrößen und welche eine messbare Quest brauchen', () => {
+    expect(METRIC_LABELS).toEqual({ completions: 'Erledigungen', total: 'Gesamtmenge', streak: 'Streak', best: 'Bestwert' })
+    expect(needsMeasure('total')).toBe(true)
+    expect(needsMeasure('best')).toBe(true)
+    expect(needsMeasure('completions')).toBe(false)
+    expect(needsMeasure('streak')).toBe(false)
   })
 
   it('isArchived: archiviert ab archivedDay (ein künftiger zählt noch nicht)', () => {
@@ -171,6 +197,9 @@ describe('metricUnit & criterionSummary', () => {
     )
     expect(criterionSummary({ type: 'habit', habitId: 'read', metric: 'streak', target: 21 }, habits)).toBe(
       '📖 Täglich lesen · Streak 21 Tage',
+    )
+    expect(criterionSummary({ type: 'habit', habitId: 'read', metric: 'best', target: 30 }, habits)).toBe(
+      '📖 Täglich lesen · Bestwert 30 Seiten',
     )
     expect(criterionSummary({ type: 'habit', habitId: 'weg', metric: 'completions', target: 5 }, habits)).toBe(
       'Gelöschte Quest · 5 Tage',

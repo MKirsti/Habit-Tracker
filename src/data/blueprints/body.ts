@@ -315,9 +315,11 @@ function rangerContent(level: BlueprintLevel): BlueprintContent {
           criterion: { type: 'habit', questKey: 'cardio', metric: 'completions', target: 5 },
         },
         {
+          // Bestwert der Ausdauer-Einheit (Phase 2b): Sobald du an einem Tag 30 Minuten einträgst, ist das Kapitel
+          // geschafft – ganz automatisch, ohne Abhaken.
           title: 'Eine halbe Stunde Atem',
-          description: 'Bleib 30 Minuten am Stück in Bewegung – laufen, radeln oder schwimmen, ganz ohne Pause.',
-          criterion: { type: 'manual' },
+          description: 'Bleib 30 Minuten am Stück in Bewegung – laufen, radeln oder schwimmen. Trag die Minuten bei deiner Ausdauer-Einheit ein, und das Kapitel gehört dir.',
+          criterion: { type: 'habit', questKey: 'cardio', metric: 'best', target: 30 },
         },
         {
           title: 'Acht Wochen auf der Fährte',

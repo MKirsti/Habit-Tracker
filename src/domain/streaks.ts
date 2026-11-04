@@ -27,10 +27,36 @@
  * Wird eine Quest zwischen Tages- und Wochenquest umgestellt, wechselt die Einheit von `computeStreak`.
  * Die in der früheren Einheit erreichten Serien liefert `bestStreakIn` – damit gehen Bestwerte und
  * erreichte Streak-Kapitel (und deren XP) durch das Umstellen nicht verloren.
+ *
+ * Schontage (Phase 2b, optionaler Parameter `freeDays`): Ruhetage/Urlaub und Tage, die ein Streak-Schutz
+ * auffängt (abgerechnet oder – für gestern – als Vorschau), gelten für **alle** Quests als freiwillige Tage:
+ * - Tages-Einheit: Eine Erledigung an einem Schontag zählt wie sonst (die Serie wächst), eine fehlende bricht
+ *   nichts. Ein Streak-Schutz kostet so nie einen Serientag – auch nicht den Quests, die am Tag erledigt waren.
+ * - Wochen-Einheit: Erledigungen an Schontagen zählen für das Wochenziel; eine Woche mit Schontag bricht nie
+ *   (sie zählt nur, wenn sie erfüllt ist) – wie eine Woche mit Pause.
+ * Die Engine (`engine.ts`) und die HP-Abrechnung (`hp.ts`) reichen dasselbe Set an alle Quests weiter; es wird
+ * je Set einmal in Epoch-Tage umgerechnet (nach der Übergabe daher nicht mehr verändern).
  */
 import { fromEpochDay, isoWeekday, isValidDayKey, toEpochDay } from './dates'
 import { isScheduledWeekday, mergePauses } from './schedule'
 import type { DayKey, Habit, IsoWeekday, Schedule, Streak } from './types'
+
+const NO_FREE_DAYS: ReadonlySet<number> = new Set()
+const freeDayCache = new WeakMap<ReadonlySet<DayKey>, { size: number; days: ReadonlySet<number> }>()
+
+/**
+ * Schontage als Epoch-Tage (ungültige Einträge entfallen). Gecacht je Set-Instanz – die Engine reicht dasselbe
+ * Set an alle Quests weiter; hat sich die Größe geändert, wird neu umgerechnet.
+ */
+function freeEpochDays(freeDays: ReadonlySet<DayKey> | undefined): ReadonlySet<number> {
+  if (freeDays === undefined || freeDays.size === 0) return NO_FREE_DAYS
+  const cached = freeDayCache.get(freeDays)
+  if (cached !== undefined && cached.size === freeDays.size) return cached.days
+  const days = new Set<number>()
+  for (const day of freeDays) if (isValidDayKey(day)) days.add(toEpochDay(day))
+  freeDayCache.set(freeDays, { size: freeDays.size, days })
+  return days
+}
 
 interface StreakWindow {
   /** Erster Tag des Fensters (Epoch-Tag). */
@@ -95,7 +121,13 @@ function habitTimeline(habit: Habit): Timeline {
 }
 
 /** Serie in Plantagen (daily / weekdays). */
-function scanDays(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWindow, reachTarget?: number): ScanResult {
+function scanDays(
+  habit: Habit,
+  doneDays: ReadonlySet<DayKey>,
+  window: StreakWindow,
+  free: ReadonlySet<number>,
+  reachTarget?: number,
+): ScanResult {
   const { start, end, asOf } = window
   const timeline = habitTimeline(habit)
   // Plantage je Wochentag für den zuletzt gesehenen Rhythmus – neu berechnet nur bei einem Wechsel.
@@ -120,8 +152,8 @@ function scanDays(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWin
       run++
       if (run > best) best = run
       if (reachTarget !== undefined && reachedOn === undefined && run >= reachTarget) reachedOn = day
-    } else if (day !== asOf) {
-      // Verpasster Plantag. Ausnahme: der Stichtag selbst läuft noch und bricht nichts.
+    } else if (day !== asOf && !free.has(day)) {
+      // Verpasster Plantag. Ausnahmen: der Stichtag selbst läuft noch, ein Schontag bricht nichts.
       run = 0
     }
   }
@@ -129,7 +161,13 @@ function scanDays(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWin
 }
 
 /** Serie in ISO-Wochen (weekly). */
-function scanWeeks(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWindow, reachTarget?: number): ScanResult {
+function scanWeeks(
+  habit: Habit,
+  doneDays: ReadonlySet<DayKey>,
+  window: StreakWindow,
+  free: ReadonlySet<number>,
+  reachTarget?: number,
+): ScanResult {
   const { start, end, asOf } = window
   const asOfWeekStart = asOf - (isoWeekday(fromEpochDay(asOf)) - 1)
   const timeline = habitTimeline(habit)
@@ -153,22 +191,26 @@ function scanWeeks(habit: Habit, doneDays: ReadonlySet<DayKey>, window: StreakWi
 
     if (timeline.pausedAt(day)) {
       weekHasPause = true
-    } else if (times > 0 && doneDays.has(fromEpochDay(day))) {
-      doneInWeek++
-      // Die Woche zählt ab dem Tag, an dem sie erfüllt ist (wichtig für "erreicht am …").
-      if (!weekFulfilled && doneInWeek >= times) {
-        weekFulfilled = true
-        run++
-        if (run > best) best = run
-        if (reachTarget !== undefined && reachedOn === undefined && run >= reachTarget) reachedOn = day
+    } else {
+      // Schontag: Erledigungen zählen fürs Wochenziel, die Woche bricht aber nie.
+      if (free.has(day)) weekHasPause = true
+      if (times > 0 && doneDays.has(fromEpochDay(day))) {
+        doneInWeek++
+        // Die Woche zählt ab dem Tag, an dem sie erfüllt ist (wichtig für "erreicht am …").
+        if (!weekFulfilled && doneInWeek >= times) {
+          weekFulfilled = true
+          run++
+          if (run > best) best = run
+          if (reachTarget !== undefined && reachedOn === undefined && run >= reachTarget) reachedOn = day
+        }
       }
     }
 
     const isLastDayOfWeek = weekday === 7 || day === end
     if (isLastDayOfWeek) {
       const weekStart = day - (weekday - 1)
-      // Eine unvollständige Woche (Woche des Stichtags, durch Archivierung abgeschnitten oder mit
-      // pausierten Tagen) bricht nichts – ebenso wenig eine übersprungene Woche.
+      // Eine unvollständige Woche (Woche des Stichtags, durch Archivierung abgeschnitten, mit pausierten
+      // Tagen oder Schontagen) bricht nichts – ebenso wenig eine übersprungene Woche.
       const weekIsCutShort = weekStart === asOfWeekStart || weekday !== 7 || weekHasPause
       if (times > 0 && !weekFulfilled && !weekIsCutShort) run = 0
       doneInWeek = 0
@@ -185,13 +227,15 @@ function scan(
   unit: Streak['unit'],
   asOf: DayKey,
   from: DayKey | undefined,
+  freeDays: ReadonlySet<DayKey> | undefined,
   reachTarget?: number,
 ): ScanResult {
   const window = streakWindow(habit, asOf, from)
   if (window.start > window.end) return { current: 0, best: 0 }
+  const free = freeEpochDays(freeDays)
   return unit === 'week'
-    ? scanWeeks(habit, doneDays, window, reachTarget)
-    : scanDays(habit, doneDays, window, reachTarget)
+    ? scanWeeks(habit, doneDays, window, free, reachTarget)
+    : scanDays(habit, doneDays, window, free, reachTarget)
 }
 
 /** Einheit einer Serie bei diesem Rhythmus: Wochenquests zählen Wochen, alle anderen Plantage. */
@@ -209,10 +253,17 @@ function everHadUnit(habit: Habit, unit: Streak['unit']): boolean {
  * Aktuelle und beste Serie einer Quest zum Stichtag `asOf`, in der Einheit des **aktuellen** Rhythmus.
  * @param doneDays Tage, an denen die Quest erledigt war (value ≥ target).
  * @param from     optionaler frühester Tag (z. B. Start einer Kampagne); es gilt max(createdDay, from).
+ * @param freeDays Schontage (Ruhetage, vom Streak-Schutz aufgefangene Tage), siehe oben.
  */
-export function computeStreak(habit: Habit, doneDays: ReadonlySet<DayKey>, asOf: DayKey, from?: DayKey): Streak {
+export function computeStreak(
+  habit: Habit,
+  doneDays: ReadonlySet<DayKey>,
+  asOf: DayKey,
+  from?: DayKey,
+  freeDays?: ReadonlySet<DayKey>,
+): Streak {
   const unit = streakUnit(habit.schedule)
-  const { current, best } = scan(habit, doneDays, unit, asOf, from)
+  const { current, best } = scan(habit, doneDays, unit, asOf, from, freeDays)
   return { current, best, unit }
 }
 
@@ -231,9 +282,10 @@ export function bestStreakIn(
   unit: Streak['unit'],
   asOf: DayKey,
   from?: DayKey,
+  freeDays?: ReadonlySet<DayKey>,
 ): number {
   if (!everHadUnit(habit, unit)) return 0
-  return scan(habit, doneDays, unit, asOf, from).best
+  return scan(habit, doneDays, unit, asOf, from, freeDays).best
 }
 
 /**
@@ -254,9 +306,17 @@ export function bestStreakIn(
  * archivierte Zeit wird dabei zur Pause). Der Wert eines Tages hängt nur von den Tagen davor und dem Rhythmus
  * des Tages ab.
  *
+ * Schontage (`freeDays`, siehe oben): Eine Erledigung zählt, eine fehlende bricht nichts; eine Woche mit Schontag
+ * bricht nie.
+ *
  * Laufzeit: ein Durchlauf von `createdDay` bis zum spätesten Tag in `days`, O(Tage + Erledigungen + Einträge).
  */
-export function streakRunsBefore(habit: Habit, doneDays: ReadonlySet<DayKey>, days: readonly DayKey[]): number[] {
+export function streakRunsBefore(
+  habit: Habit,
+  doneDays: ReadonlySet<DayKey>,
+  days: readonly DayKey[],
+  freeDays?: ReadonlySet<DayKey>,
+): number[] {
   const runs = days.map(() => 0)
   const start = toEpochDay(habit.createdDay)
   const queries = days
@@ -269,6 +329,7 @@ export function streakRunsBefore(habit: Habit, doneDays: ReadonlySet<DayKey>, da
   const archived = habit.archivedDay === undefined ? Number.POSITIVE_INFINITY : toEpochDay(habit.archivedDay)
   const done = new Set<number>()
   for (const day of doneDays) if (isValidDayKey(day)) done.add(toEpochDay(day))
+  const free = freeEpochDays(freeDays)
   const timeline = habitTimeline(habit)
 
   // Tages-Einheit (wie scanDays, ohne Ausnahme für den Stichtag: vor einem Tag liegt nur Vergangenes).
@@ -282,7 +343,7 @@ export function streakRunsBefore(habit: Habit, doneDays: ReadonlySet<DayKey>, da
   let times = 0
   let doneInWeek = 0
   let weekFulfilled = false
-  /** Woche mit pausierten (oder archivierten) Tagen: bricht nichts. */
+  /** Woche mit pausierten (oder archivierten) Tagen bzw. Schontagen: bricht nichts. */
   let weekInterrupted = false
 
   let next = 0
@@ -304,11 +365,14 @@ export function streakRunsBefore(habit: Habit, doneDays: ReadonlySet<DayKey>, da
 
     if (day < archived && !timeline.pausedAt(day)) {
       const isDoneDay = done.has(day)
+      const isFreeDay = free.has(day)
       if (daySchedule !== schedule) {
         schedule = daySchedule
         for (let w = 1; w <= 7; w++) scheduled[w] = isScheduledWeekday(daySchedule, w as IsoWeekday)
       }
-      if (scheduled[weekday]) dayRun = isDoneDay ? dayRun + 1 : 0
+      // Schontag: zählt, wenn erledigt – bricht nichts, wenn nicht.
+      if (scheduled[weekday]) dayRun = isDoneDay ? dayRun + 1 : isFreeDay ? dayRun : 0
+      if (isFreeDay) weekInterrupted = true
       if (times > 0 && isDoneDay) {
         doneInWeek++
         if (!weekFulfilled && doneInWeek >= times) {
@@ -346,8 +410,9 @@ export function streakReachedDay(
   asOf: DayKey,
   from?: DayKey,
   unit: Streak['unit'] = streakUnit(habit.schedule),
+  freeDays?: ReadonlySet<DayKey>,
 ): DayKey | undefined {
   if (!everHadUnit(habit, unit)) return undefined
-  const { reachedOn } = scan(habit, doneDays, unit, asOf, from, target)
+  const { reachedOn } = scan(habit, doneDays, unit, asOf, from, freeDays, target)
   return reachedOn === undefined ? undefined : fromEpochDay(reachedOn)
 }

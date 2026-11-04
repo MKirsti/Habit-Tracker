@@ -6,6 +6,9 @@
  * - Tempo (echte Kapitel-Auswertung, Held erledigt alles genau nach Plan): erstes Kapitel in ≤ 14 Tagen, Kapitel in
  *   Erzählreihenfolge, jedes automatische Kapitel mit ≥ 20 % Puffer erreichbar, ein automatisches Schlusskapitel
  *   braucht mindestens die halbe Laufzeit.
+ * - Bestwerte (`metric: 'best'`, „30 Minuten am Stück“): nur für messbare Quests, über dem Tagesziel und höchstens
+ *   doppelt so hoch, der Text nennt Ziel und Einheit. Sie gehen über den Plan hinaus und haben – wie Meilensteine
+ *   von Hand – kein Plan-Tempo (`isPlanPaced` in `planPace.ts`).
  * - Stufen: Fortgeschritten enthält alle Einsteiger-Quests mit mindestens gleichen Zielen, bringt mehr XP pro Woche
  *   und hebt die Kapitel-Ziele an.
  * - Geteilte Quests: gleicher Titel ⇒ gleiche Quest (Icon, Attribut, Rhythmus-Typ, Einheit), Bausteine aus
@@ -21,7 +24,7 @@ import { BALANCING, DIFFICULTIES } from '../../domain/balancing'
 import { dominantAttribute, plannedWeeklyXpByAttribute } from '../../domain/training'
 import type { IsoWeekday, Schedule } from '../../domain/types'
 import { BLUEPRINTS, getBlueprint } from './index'
-import { daysToReachAtPlanPace } from './planPace'
+import { daysToReachAtPlanPace, isPlanPaced } from './planPace'
 import { bedtimeQuest, candlelightQuest, morningLightQuest, stretchingQuest, waterQuest } from './shared'
 import { BLUEPRINT_LEVELS } from './types'
 import type { BlueprintContent, BlueprintLevel, BlueprintOptions, BlueprintQuest, CampaignBlueprint } from './types'
@@ -323,6 +326,17 @@ describe('Kampagnen-Bibliothek', () => {
         } else if (criterion.metric === 'completions') {
           expect(Number.isInteger(criterion.target), chapter.title).toBe(true)
           expect(criterion.target, chapter.title).toBeLessThanOrEqual(Math.floor(max * 0.9))
+        } else if (criterion.metric === 'best') {
+          // Bestwert („30 Minuten am Stück“): nur für messbare Quests – ein echtes Stück über dem Tagesziel, aber
+          // machbar (höchstens das Doppelte), und der Text nennt Ziel und Einheit der Quest.
+          expect(quest.measure, `${chapter.title}: "Bestwert" nur für messbare Quests`).toBeDefined()
+          if (quest.measure) {
+            expect(criterion.target, `${chapter.title}: über dem Tagesziel`).toBeGreaterThan(quest.measure.target)
+            expect(criterion.target, `${chapter.title}: höchstens das Doppelte des Tagesziels`).toBeLessThanOrEqual(quest.measure.target * 2)
+            expect(numbersBefore(chapter.description, quest.measure.unit), `${chapter.title}: nennt ${criterion.target} ${quest.measure.unit}`).toContain(
+              criterion.target,
+            )
+          }
         } else {
           // Streak: Tage (daily/weekdays) bzw. Wochen (weekly) – muss in die Laufzeit passen.
           expect(Number.isInteger(criterion.target), chapter.title).toBe(true)
@@ -351,12 +365,13 @@ describe('Kampagnen-Bibliothek', () => {
     })
 
     it('nach Plan: erster Erfolg in ≤ 14 Tagen, Kapitel der Reihe nach, alle automatischen mit ≥ 20 % Puffer', () => {
+      // Bestwerte gehen über das Tagesziel hinaus und haben – wie Meilensteine von Hand – kein Plan-Tempo.
       const days = daysToReachAtPlanPace(content, blueprint.durationDays)
       const [first] = content.chapters
-      expect(first?.criterion.type, 'das erste Kapitel zählt automatisch').toBe('habit')
+      expect(first !== undefined && isPlanPaced(first.criterion), 'das erste Kapitel zählt automatisch nach Plan').toBe(true)
       expect(days.get(first?.title ?? ''), first?.title).toBeLessThanOrEqual(14)
 
-      const reached = content.chapters.flatMap((chapter) => (chapter.criterion.type === 'habit' ? [days.get(chapter.title)] : []))
+      const reached = content.chapters.flatMap((chapter) => (isPlanPaced(chapter.criterion) ? [days.get(chapter.title)] : []))
       for (const day of reached) expect(day).toBeDefined()
       const sorted = [...reached].sort((a = 0, b = 0) => a - b)
       expect(reached, 'Kapitel sind nach voraussichtlichem Zeitpunkt geordnet').toEqual(sorted)
@@ -364,7 +379,7 @@ describe('Kampagnen-Bibliothek', () => {
 
       // Ein automatisches Schlusskapitel ist das große Ziel: ehrgeizig, mindestens die halbe Laufzeit.
       const last = content.chapters.at(-1)
-      if (last?.criterion.type === 'habit') {
+      if (last !== undefined && isPlanPaced(last.criterion)) {
         const lastDay = days.get(last.title) ?? Infinity
         expect(lastDay, last.title).toBe(Math.max(...reached.map((day) => day ?? 0)))
         expect(lastDay, last.title).toBeGreaterThanOrEqual(Math.ceil(blueprint.durationDays * 0.5))

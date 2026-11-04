@@ -207,7 +207,7 @@ describe('deleteReward', () => {
     expect(await deleteReward(reward.id, database)).toBe('archived') // erneut: bleibt ausgeblendet
 
     // Nach dem Rückgängigmachen der einzigen Einlösung darf sie gelöscht werden.
-    await undoPurchase(purchase.id, database)
+    await undoPurchase(purchase.id, DAY, database)
     expect(await deleteReward(reward.id, database)).toBe('deleted')
     expect(await database.rewards.count()).toBe(0)
   })
@@ -363,7 +363,7 @@ describe('purchaseReward', () => {
     await expect(purchaseReward(reward.id, DAY, database)).rejects.toThrow('Diese Belohnung hast du schon eingelöst.')
     expect(await database.purchases.count()).toBe(1)
 
-    await undoPurchase(purchase.id, database)
+    await undoPurchase(purchase.id, DAY, database)
     await expect(purchaseReward(reward.id, DAY, database)).resolves.toMatchObject({ rewardId: reward.id })
   })
 
@@ -406,13 +406,13 @@ describe('undoPurchase', () => {
     const undo = await purchaseReward(reward.id, DAY, database)
     expect((await gold()).spent).toBe(30)
 
-    await undoPurchase(undo.id, database)
+    await undoPurchase(undo.id, DAY, database)
     expect((await loadGameData(database)).purchases).toStrictEqual([keep])
     expect((await gold()).spent).toBe(15)
   })
 
   it('ist für unbekannte bzw. schon rückgängig gemachte Einlösungen wirkungslos', async () => {
-    await expect(undoPurchase('weg', database)).resolves.toBeUndefined()
+    await expect(undoPurchase('weg', DAY, database)).resolves.toBeUndefined()
   })
 })
 

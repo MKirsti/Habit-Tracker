@@ -94,8 +94,9 @@ export function HeroTabs<T extends string>({
             onClick={() => select(index)}
             onKeyDown={(event) => handleKeyDown(event, index)}
             className={cn(
-              'relative isolate flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold tracking-wide whitespace-nowrap transition-colors duration-150 sm:flex-none sm:gap-2 sm:px-4',
-              'focus-visible:outline-offset-0 [&_svg]:size-4 [&_svg]:shrink-0',
+              // Auf dem Handy nach Inhalt verteilt und ohne Icons – sonst würde bei drei Reitern „Erfolge 19/39“ gekürzt.
+              'relative isolate flex h-10 min-w-0 flex-auto items-center justify-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold tracking-wide whitespace-nowrap transition-colors duration-150 sm:flex-none sm:gap-2 sm:px-4',
+              'focus-visible:outline-offset-0 [&_svg]:size-4 [&_svg]:shrink-0 max-sm:[&>svg]:hidden',
               selected ? 'text-gold-bright' : 'text-muted hover:text-parchment',
             )}
           >

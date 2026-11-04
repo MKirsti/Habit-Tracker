@@ -3,7 +3,7 @@
  * Nur für Tests gedacht – im App-Code wird diese Datei nicht importiert.
  */
 import { ATTRIBUTE_IDS } from './attributes'
-import { DEFAULT_SETTINGS } from './balancing'
+import { BALANCING, DEFAULT_SETTINGS } from './balancing'
 import { dayRange } from './dates'
 import type {
   AchievementDefinition,
@@ -14,8 +14,11 @@ import type {
   DayKey,
   GameData,
   Habit,
+  HpLedgerEntry,
+  ItemId,
   MainQuest,
   Purchase,
+  RestPeriod,
   Reward,
   SideQuest,
 } from './types'
@@ -171,6 +174,9 @@ export function makeAchievementStats(overrides: Partial<AchievementStats> = {}):
     purchases: 0,
     goldFromXp: 0,
     comebacks: 0,
+    defeats: 0,
+    perfectDaysAfterDefeat: 0,
+    freezesUsed: 0,
     ...overrides,
   }
 }
@@ -196,4 +202,28 @@ export function makeAchievement(
     progress: (stats) => ({ current: read(stats), target }),
     ...overrides,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2b: Lebenspunkte, Rast & Urlaub, Gegenstände
+// ---------------------------------------------------------------------------
+
+const ITEM_META: Record<ItemId, { title: string; icon: string; price: number }> = {
+  streakFreeze: { title: 'Streak-Schutz', icon: '❄️', price: BALANCING.items.streakFreeze.price },
+  healingPotion: { title: 'Heiltrank', icon: '🧪', price: BALANCING.items.healingPotion.price },
+}
+
+/** Kauf eines Gegenstands (`kind: 'item'`) am Tag `day`, Titel/Icon/Preis wie in der Schatzkammer. */
+export function makeItemPurchase(id: string, itemId: ItemId, day: DayKey, overrides: Partial<Purchase> = {}): Purchase {
+  return { id, kind: 'item', itemId, ...ITEM_META[itemId], day, createdAt: 0, ...overrides }
+}
+
+/** Ruhetag bzw. Urlaub von `from` bis `until` (inklusive; Standard: ein einzelner Tag). */
+export function makeRestPeriod(id: string, from: DayKey, until: DayKey = from, overrides: Partial<RestPeriod> = {}): RestPeriod {
+  return { id, from, until, createdAt: 0, ...overrides }
+}
+
+/** Abgerechneter Tag (Standard: Wertung `none`, volle HP auf Level 1, Lebenspunkte aktiv). */
+export function makeLedgerEntry(day: DayKey, overrides: Partial<HpLedgerEntry> = {}): HpLedgerEntry {
+  return { day, score: 'none', frozen: false, hpDelta: 0, hpAfter: 50, maxHp: 50, penalties: true, ...overrides }
 }

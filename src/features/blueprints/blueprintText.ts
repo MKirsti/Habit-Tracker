@@ -60,6 +60,7 @@ export function measureText(measure: Measure): string {
  * - completions → "7× Täglich lesen"
  * - total → "1.000 Seiten gesamt"
  * - streak → "21 Tage Streak" (Wochenquest: "8 Wochen Streak")
+ * - best → "Bestwert: 30 Minuten" (höchster Tageswert einer messbaren Quest)
  */
 export function criterionSummary(
   criterion: BlueprintCriterion,
@@ -89,6 +90,8 @@ export function criterionSummary(
               : 'Tage'
           return `${target} ${unit} Streak`
         }
+        case 'best':
+          return quest?.measure ? `Bestwert: ${target} ${quest.measure.unit}` : `Bestwert: ${target}`
       }
     }
   }

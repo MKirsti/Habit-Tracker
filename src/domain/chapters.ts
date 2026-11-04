@@ -7,8 +7,10 @@
  * - habit:   automatisch aus einer Quest; es zählen nur Erledigungen mit `quest.startDay ≤ day ≤ today`.
  *            Metriken: completions (erledigte Tage), total (Summe aller Werte inkl. Teilfortschritt),
  *            streak (bester Streak seit Kampagnenstart; nach einer Umstellung zwischen Tages- und
- *            Wochenquest bleibt ein in der früheren Einheit erreichtes Ziel erreicht). `ChapterState.unit`
- *            nennt die Einheit des Werts.
+ *            Wochenquest bleibt ein in der früheren Einheit erreichtes Ziel erreicht; Schontage aus
+ *            `ChapterContext.freeDays` brechen keine Serie). `ChapterState.unit`
+ *            nennt die Einheit des Werts. best (Phase 2b): höchster Tageswert einer messbaren Quest, z. B.
+ *            „30 Minuten am Stück“ – abgeschlossen am ersten Tag, dessen Wert das Ziel erreicht.
  */
 import { compareDays } from './dates'
 import { isDone, reachesTarget } from './schedule'
@@ -20,6 +22,11 @@ export interface ChapterContext {
   /** Je Quest nach `day` aufsteigend sortiert. */
   completionsByHabit: ReadonlyMap<string, Completion[]>
   today: DayKey
+  /**
+   * Schontage (Phase 2b: Ruhetage/Urlaub und vom Streak-Schutz aufgefangene Tage, `HpCalendar.freeDays`): brechen
+   * in Streak-Kapiteln keine Serie – dieselben Regeln wie bei den Quest-Streaks (`freeDays` in `streaks.ts`).
+   */
+  freeDays?: ReadonlySet<DayKey>
 }
 
 /** min(current / target, 1), robust gegen Ziele ≤ 0 (gelten als sofort erreicht). */
@@ -103,12 +110,15 @@ function evaluateHabitChapter(
       // umgestellt, bleibt ein in der früheren Einheit erreichtes Ziel erreicht – verdiente XP gehen nie verloren.
       const unit = streakUnit(habit.schedule)
       const earlierUnit = unit === 'day' ? 'week' : 'day'
-      const best = bestStreakIn(habit, doneDays, unit, ctx.today, quest.startDay)
-      const earlierBest = bestStreakIn(habit, doneDays, earlierUnit, ctx.today, quest.startDay)
+      const { freeDays } = ctx
+      const best = bestStreakIn(habit, doneDays, unit, ctx.today, quest.startDay, freeDays)
+      const earlierBest = bestStreakIn(habit, doneDays, earlierUnit, ctx.today, quest.startDay, freeDays)
       const reachedOn = earliestDay(
-        best >= target ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, unit) : undefined,
+        best >= target
+          ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, unit, freeDays)
+          : undefined,
         earlierBest >= target
-          ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, earlierUnit)
+          ? streakReachedDay(habit, doneDays, target, ctx.today, quest.startDay, earlierUnit, freeDays)
           : undefined,
       )
       // Nur in der früheren Einheit erreicht: Wert und Einheit von dort, damit die Anzeige stimmt
@@ -117,6 +127,18 @@ function evaluateHabitChapter(
       const state = buildState(chapter, fromEarlier ? earlierBest : best, target, reachedOn)
       state.unit = fromEarlier ? earlierUnit : unit
       return state
+    }
+    case 'best': {
+      // Höchster einzelner Tageswert im Zeitraum – auch Teilfortschritt zählt (35 von 40 Minuten sind ein
+      // Bestwert von 35). Gedacht für messbare Quests; eine Abhak-Quest hat höchstens den Wert 1.
+      let best = 0
+      let reachedOn: DayKey | undefined
+      for (const c of completions) {
+        if (!Number.isFinite(c.value)) continue
+        if (c.value > best) best = c.value
+        if (reachedOn === undefined && reachesTarget(c.value, target)) reachedOn = c.day
+      }
+      return buildState(chapter, best, target, reachedOn)
     }
   }
 }

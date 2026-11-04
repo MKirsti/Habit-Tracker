@@ -6,7 +6,8 @@
  * - Rhythmus: der an diesem Tag gültige Rhythmus (`scheduleOn`) – frühere Rhythmen stehen in
  *             `scheduleHistory`, damit eine Änderung die Vergangenheit nicht umschreibt
  * - Pflicht:  aktiv und laut Rhythmus des Tages planmäßig fällig (daily, oder weekdays mit passendem
- *             Wochentag). Nur Pflicht-Quests zählen für den "Perfekten Tag". Wochenquests sind nie Pflicht.
+ *             Wochentag). Nur Pflicht-Quests zählen für den "Perfekten Tag". Wochenquests sind nie Pflicht,
+ *             an Ruhetagen (Phase 2b, optionaler Parameter `restDays`) ist keine Quest Pflicht.
  * - sichtbar: Pflicht-Quests plus alle aktiven Quests, die an dem Tag Wochenquests sind (die an jedem Tag
  *             der Woche erledigt werden können)
  */
@@ -128,14 +129,22 @@ export function isScheduledWeekday(schedule: Schedule, weekday: IsoWeekday): boo
 /**
  * Aktiv UND laut Rhythmus dieses Tages (`scheduleOn`) planmäßig fällig (daily, oder weekdays mit passendem
  * Wochentag). War die Quest an dem Tag eine Wochenquest: false.
+ *
+ * Phase 2b: An Ruhetagen bzw. im Urlaub (`restDays`, z. B. aus `restDaySet(data.restPeriods)` in `hp.ts`) ist
+ * keine Quest Pflicht. Sichtbar bleiben die Quests trotzdem (`isVisibleOn`) – sie können freiwillig erledigt
+ * werden und bringen XP.
  */
-export function isRequiredOn(habit: HabitTimeline, day: DayKey): boolean {
+export function isRequiredOn(habit: HabitTimeline, day: DayKey, restDays?: ReadonlySet<DayKey>): boolean {
+  if (restDays !== undefined && restDays.has(day)) return false
   const schedule = scheduleOn(habit, day)
   if (schedule.type === 'weekly') return false
   return isActiveOn(habit, day) && isScheduledWeekday(schedule, isoWeekday(day))
 }
 
-/** Aktiv UND (Pflicht an diesem Tag ODER an diesem Tag eine Wochenquest). */
+/**
+ * Aktiv UND (planmäßig fällig ODER an diesem Tag eine Wochenquest). Ruhetage ändern daran nichts: Die Quests
+ * bleiben sichtbar und können freiwillig erledigt werden (nur Pflicht sind sie dann nicht, `isRequiredOn`).
+ */
 export function isVisibleOn(habit: HabitTimeline, day: DayKey): boolean {
   if (!isActiveOn(habit, day)) return false
   const schedule = scheduleOn(habit, day)

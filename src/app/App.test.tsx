@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { MotionGlobalConfig } from 'motion/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { resetAllData, saveProfile } from '../data/repository'
+import { loadGameData, resetAllData, saveProfile } from '../data/repository'
 import { App } from './App'
 import { NAV_ITEMS } from './navigation'
 
@@ -128,6 +128,14 @@ describe('App-Rahmen', () => {
     await screen.findByRole('heading', { level: 1 })
     await user.click(screen.getByRole('button', { name: 'Zum Inhalt springen' }))
     expect(screen.getByRole('main')).toHaveFocus()
+  })
+})
+
+describe('Lebenspunkte', () => {
+  it('rechnet beim Start ab (HpSettler ist eingebunden) – ab heute, nie rückwirkend', async () => {
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Heute' })
+    await waitFor(async () => expect((await loadGameData()).settings.penalties?.since).toMatch(/^\d{4}-\d{2}-\d{2}$/))
   })
 })
 

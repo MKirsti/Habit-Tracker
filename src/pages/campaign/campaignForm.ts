@@ -7,6 +7,7 @@ import { newId } from '../../data/ids'
 import { compareDays, isValidDayKey } from '../../domain/dates'
 import { reachesTarget } from '../../domain/schedule'
 import type { Chapter, ChapterCriterion, DayKey, Habit, MainQuest } from '../../domain/types'
+import { needsMeasure } from './campaignText'
 import type { ChapterType, HabitMetric } from './campaignText'
 
 export const TITLE_MAX = 60
@@ -215,7 +216,8 @@ export function validateChapterForm(
   } else if (values.type === 'habit') {
     const habit = habitsById.get(values.habitId)
     if (!habit) errors.habitId = 'Wähle eine Quest für dieses Kapitel.'
-    if (values.metric === 'total') {
+    if (needsMeasure(values.metric)) {
+      // Gesamtmenge und Bestwert: Messwerte dürfen Nachkommastellen haben (2,5 km).
       if (habit && !habit.measure) errors.habitId = 'Diese Quest ist nicht messbar – wähle „Erledigungen“ oder „Streak“.'
       if (values.habitTarget === null) errors.habitTarget = 'Gib ein Ziel an.'
       else if (!Number.isFinite(values.habitTarget) || values.habitTarget <= 0) {

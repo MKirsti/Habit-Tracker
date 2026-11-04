@@ -1,9 +1,11 @@
 import { ChevronRight, Coins } from 'lucide-react'
 import { useId } from 'react'
 import { Link } from 'react-router'
-import type { CharacterProfile, DayKey, GameState } from '../../domain/types'
+import type { CharacterProfile, DayKey, GameState, HpLedgerEntry } from '../../domain/types'
 import { Card, XpBar, cn, formatNumber } from '../../ui'
 import { compactDayLabel, goldChipLabel } from './dashboardText'
+import { HeroHp } from './HeroHp'
+import { settlementNote } from './hpText'
 
 export interface HeroCardProps {
   profile: CharacterProfile
@@ -12,18 +14,22 @@ export interface HeroCardProps {
   shimmer: boolean
   /** Heutiger Spieltag – auf dem Handy steht das Datum hier statt im (dort ausgeblendeten) Seitenkopf. */
   today: DayKey
+  /** Abgerechnete Tage (`data.hpLedger`) – für die ruhige Notiz zur letzten Abrechnung unter dem HP-Balken. */
+  hpLedger?: readonly HpLedgerEntry[]
 }
 
 /**
- * Kopfkarte mit Avatar, Name, Level/Rang, Abenteuertag, XP-Balken und Gold-Guthaben.
+ * Kopfkarte mit Avatar, Name, Level/Rang, Abenteuertag, XP-Balken, Lebenspunkten (nur mit Lebenspunkten, nicht im
+ * Sanften Modus) und Gold-Guthaben. Der übliche Tagesschaden der Abrechnung erscheint hier ruhig als Notiz
+ * („Sonntag: −3 HP“) – nicht als Toast.
  * Die ganze Karte ist ein Link zur Heldenseite (unsichtbarer Link über der Fläche); das Gold ist ein eigener
  * Link zur Schatzkammer, der über dieser Fläche liegt.
  * Unter `md` eine flache Leiste (~96 px), damit die heutigen Quests weit oben stehen (PLAN §4): Datum und Gold
  * stehen dort rechtsbündig untereinander.
  */
-export function HeroCard({ profile, state, shimmer, today }: HeroCardProps) {
+export function HeroCard({ profile, state, shimmer, today, hpLedger }: HeroCardProps) {
   const nameId = useId()
-  const { level, rank, adventureDay, gold } = state
+  const { level, rank, adventureDay, gold, hp } = state
 
   return (
     <Card
@@ -81,15 +87,20 @@ export function HeroCard({ profile, state, shimmer, today }: HeroCardProps) {
             </div>
           </div>
         </div>
-        <XpBar
-          level={level.level}
-          xpIntoLevel={level.xpIntoLevel}
-          xpForNextLevel={level.xpForNextLevel}
-          showLevel={false}
-          shimmer={shimmer}
-          // Handy: Zahlen rechts neben dem Balken (eine Zeile); ab md wie gehabt darüber.
-          className="max-md:flex max-md:flex-row-reverse max-md:items-center max-md:gap-2.5 max-md:[&>div:first-child]:mb-0 max-md:[&>div:first-child]:shrink-0 max-md:[&>div:first-child]:gap-0 max-md:[&>div:first-child]:text-xs md:max-w-md md:flex-1"
-        />
+        <div className="flex min-w-0 flex-col gap-1.5 md:max-w-md md:flex-1 md:gap-2">
+          <XpBar
+            level={level.level}
+            xpIntoLevel={level.xpIntoLevel}
+            xpForNextLevel={level.xpForNextLevel}
+            showLevel={false}
+            shimmer={shimmer}
+            // Handy: Zahlen rechts neben dem Balken (eine Zeile); ab md wie gehabt darüber.
+            className="max-md:flex max-md:flex-row-reverse max-md:items-center max-md:gap-2.5 max-md:[&>div:first-child]:mb-0 max-md:[&>div:first-child]:shrink-0 max-md:[&>div:first-child]:gap-0 max-md:[&>div:first-child]:text-xs"
+          />
+          {hp.enabled && (
+            <HeroHp hp={hp} note={settlementNote(hp, hpLedger, today)} freezes={state.inventory.streakFreezes} />
+          )}
+        </div>
         <GoldChip balance={gold.balance} size="lg" className="max-md:hidden md:ml-auto" />
       </div>
       <ChevronRight

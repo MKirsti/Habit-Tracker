@@ -85,6 +85,15 @@ export const METRIC_LABELS: Record<HabitMetric, string> = {
   completions: 'Erledigungen',
   total: 'Gesamtmenge',
   streak: 'Streak',
+  best: 'Bestwert',
+}
+
+/** Messgrößen, die nur für messbare Quests (mit `measure`) sinnvoll sind. */
+export const MEASURABLE_METRICS: readonly HabitMetric[] = ['total', 'best']
+
+/** Braucht die Messgröße eine messbare Quest („Gesamtmenge“, „Bestwert“)? */
+export function needsMeasure(metric: HabitMetric): boolean {
+  return MEASURABLE_METRICS.includes(metric)
 }
 
 /** Einheit, in der ein Streak der Quest nach ihrem **aktuellen** Rhythmus zählt (ohne Quest: Tage). */
@@ -94,7 +103,8 @@ function currentStreakUnit(habit: Habit | undefined): StreakUnit {
 
 /**
  * Einheit eines Quest-Ziels, passend zur Zahl `n`:
- * completions → "Tag"/"Tage", total → Einheit der Quest (sonst "gesamt"), streak → "Tag(e)" bzw. "Woche(n)".
+ * completions → "Tag"/"Tage", total → Einheit der Quest (sonst "gesamt"), streak → "Tag(e)" bzw. "Woche(n)",
+ * best → Einheit der Quest (sonst "am Tag").
  * Für Streaks gilt `unit`, sonst die Einheit des aktuellen Rhythmus der Quest.
  */
 export function metricUnit(metric: HabitMetric, habit: Habit | undefined, n: number, unit?: StreakUnit): string {
@@ -106,14 +116,32 @@ export function metricUnit(metric: HabitMetric, habit: Habit | undefined, n: num
     case 'streak':
       if ((unit ?? currentStreakUnit(habit)) === 'week') return n === 1 ? 'Woche' : 'Wochen'
       return n === 1 ? 'Tag' : 'Tage'
+    case 'best':
+      return habit?.measure?.unit ?? 'am Tag'
   }
 }
 
 /** Einheit im Dativ für vorgelesene Texte ("5 von 7 Tagen"). */
 function metricUnitDative(metric: HabitMetric, habit: Habit | undefined, n: number, unit?: StreakUnit): string {
-  if (metric === 'total') return metricUnit(metric, habit, n)
+  if (metric === 'total' || metric === 'best') return metricUnit(metric, habit, n)
   if (metric === 'streak' && (unit ?? currentStreakUnit(habit)) === 'week') return n === 1 ? 'Woche' : 'Wochen'
   return n === 1 ? 'Tag' : 'Tagen'
+}
+
+/** Sichtbare Beschriftung vor dem Fortschritt eines Quest-Ziels. */
+const PROGRESS_PREFIX: Record<HabitMetric, string> = {
+  completions: '',
+  total: '',
+  streak: 'Bester Streak',
+  best: 'Bestwert',
+}
+
+/** Vorgelesene Beschriftung des Fortschritts eines Quest-Ziels. */
+const SPOKEN_LABEL: Record<HabitMetric, string> = {
+  completions: 'Erledigt',
+  total: 'Gesamt',
+  streak: 'Bester Streak',
+  best: 'Bestwert',
 }
 
 export interface ChapterProgressText {
@@ -129,7 +157,8 @@ export interface ChapterProgressText {
 
 /**
  * Fortschritt eines Zähler- oder Quest-Kapitels als Text: "5 / 7 Tage", "430 / 1.000 Seiten",
- * "Bester Streak 12 / 21 Tage", "3 / 12 Bücher beendet". Für 'manual' gibt es keinen Zahlenwert.
+ * "Bester Streak 12 / 21 Tage", "Bestwert 20 / 30 Minuten", "3 / 12 Bücher beendet". Für 'manual' gibt es keinen
+ * Zahlenwert.
  * Streaks nennen die Einheit des Werts (`state.unit`): Nach einer Umstellung zwischen Tages- und Wochenquest
  * kann ein vorher erreichtes Ziel in der früheren Einheit zählen ("21 / 21 Tage" bei einer Wochenquest).
  */
@@ -150,8 +179,8 @@ export function chapterProgressText(state: ChapterState, habit: Habit | undefine
       const { metric } = criterion
       const suffix = metricUnit(metric, habit, state.target, state.unit)
       const dative = metricUnitDative(metric, habit, state.target, state.unit)
-      const prefix = metric === 'streak' ? 'Bester Streak' : ''
-      const spokenLabel = metric === 'streak' ? 'Bester Streak' : metric === 'total' ? 'Gesamt' : 'Erledigt'
+      const prefix = PROGRESS_PREFIX[metric]
+      const spokenLabel = SPOKEN_LABEL[metric]
       return { prefix, value, suffix, spoken: `${spokenLabel}: ${current} von ${target} ${dative}` }
     }
   }
@@ -159,7 +188,8 @@ export function chapterProgressText(state: ChapterState, habit: Habit | undefine
 
 /**
  * Kurzbeschreibung eines Kapitelziels für Listen, z. B. "Abhaken", "Zähler · 12 Bücher beendet",
- * "📖 Täglich lesen · 7 Tage", "📖 Täglich lesen · 1.000 Seiten", "📖 Täglich lesen · Streak 21 Tage".
+ * "📖 Täglich lesen · 7 Tage", "📖 Täglich lesen · 1.000 Seiten", "📖 Täglich lesen · Streak 21 Tage",
+ * "🏃 Laufen · Bestwert 30 Minuten".
  */
 export function criterionSummary(criterion: ChapterCriterion, habitsById: ReadonlyMap<string, Habit>): string {
   switch (criterion.type) {
@@ -171,7 +201,7 @@ export function criterionSummary(criterion: ChapterCriterion, habitsById: Readon
       const habit = habitsById.get(criterion.habitId)
       const name = habit ? `${habit.icon} ${habit.title}` : 'Gelöschte Quest'
       const unit = metricUnit(criterion.metric, habit, criterion.target)
-      const prefix = criterion.metric === 'streak' ? 'Streak ' : ''
+      const prefix = criterion.metric === 'streak' ? 'Streak ' : criterion.metric === 'best' ? 'Bestwert ' : ''
       return `${name} · ${prefix}${formatValue(criterion.target)} ${unit}`
     }
   }

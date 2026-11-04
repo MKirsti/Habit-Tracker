@@ -332,6 +332,46 @@ describe('CampaignPage – Kapitel', () => {
     expect(screen.getAllByText('Lesen').length).toBeGreaterThanOrEqual(3)
   })
 
+  it('legt ein Bestwert-Kapitel an – nur für messbare Quests – und zeigt den höchsten Tageswert', async () => {
+    const habit = await createHabit({ ...READING, mainQuestId: undefined }, '2026-10-25')
+    await createHabit({ ...READING, title: 'Meditieren', icon: '🧘', measure: undefined }, '2026-10-25')
+    await setCompletionValue(habit.id, '2026-10-30', 12)
+    await setCompletionValue(habit.id, '2026-11-01', 22)
+    await setCompletionValue(habit.id, '2026-11-02', 8)
+    await createMainQuest(campaign([MANUAL]))
+    const { user } = await renderPage()
+
+    await user.click(screen.getByRole('button', { name: 'Kapitel hinzufügen' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Neues Kapitel' })
+    await user.type(within(dialog).getByLabelText(/^Titel/), 'Lesemarathon')
+    await user.click(within(dialog).getByRole('radio', { name: 'Quest-Ziel' }))
+    const metrics = within(dialog).getByRole('radiogroup', { name: 'Messgröße' })
+    expect(within(metrics).getAllByRole('radio').map((radio) => radio.textContent)).toEqual([
+      'Erledigungen',
+      'Gesamtmenge',
+      'Streak',
+      'Bestwert',
+    ])
+
+    // Eine Abhak-Quest hat keinen Bestwert …
+    await user.selectOptions(within(dialog).getByLabelText(/^Quest/), '🧘 Meditieren')
+    expect(within(metrics).getByRole('radio', { name: 'Bestwert' })).toBeDisabled()
+    expect(metrics).toHaveAccessibleDescription(/„Gesamtmenge“ und „Bestwert“ gibt es nur für messbare Quests\./)
+
+    // … eine messbare schon.
+    await user.selectOptions(within(dialog).getByLabelText(/^Quest/), '📖 Lesen')
+    await user.click(within(metrics).getByRole('radio', { name: 'Bestwert' }))
+    expect(metrics).toHaveAccessibleDescription(/höchster Wert an einem einzelnen Tag \(in Seiten\)/)
+    await user.type(within(dialog).getByLabelText(/^Ziel/), '30')
+    await user.click(within(dialog).getByRole('button', { name: 'Kapitel anlegen' }))
+
+    await waitFor(async () =>
+      expect((await firstQuest()).chapters[1].criterion).toEqual({ type: 'habit', habitId: habit.id, metric: 'best', target: 30 }),
+    )
+    // Erfasst ab dem Kampagnenstart: der höchste einzelne Tag (22 Seiten am 1. November).
+    expect(await screen.findByText(byFullText('Bestwert 22 / 30 Seiten'))).toBeInTheDocument()
+  })
+
   it('weist darauf hin, wenn die Quest eines Quest-Ziels archiviert ist', async () => {
     const habit = await createHabit(READING, '2026-10-25')
     await setCompletionValue(habit.id, '2026-11-01', 10)

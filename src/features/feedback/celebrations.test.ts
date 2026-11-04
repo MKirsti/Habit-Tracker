@@ -157,3 +157,29 @@ describe('feedbackStillHolds', () => {
     expect(feedbackStillHolds(xp, level1)).toBe(true)
   })
 })
+
+describe('Niederlage-Szene', () => {
+  const defeat = (day: DayKey): FeedbackEvent => ({ type: 'defeat', day, goldLost: 120, count: 1, hp: 55, max: 55 })
+
+  it('steht vor Kampagnen und Level-Up in der Warteschlange und gilt weiter als gültig', () => {
+    const events = [...diffGameStates(level1, level2), defeat(YESTERDAY)]
+    const queue = enqueueCelebrations([], events, ids())
+    expect(queue.map((celebration) => celebration.kind)).toEqual(['defeat', 'level-up'])
+    // Abgerechnete Tage ändern sich nie: Die Szene bleibt, auch wenn sonst etwas zurückgenommen wird.
+    expect(reconcileCelebrations(queue, level1).map((celebration) => celebration.kind)).toEqual(['defeat'])
+    expect(feedbackStillHolds(defeat(YESTERDAY), level1)).toBe(true)
+  })
+
+  it('zeigt eine schon gesehene (oder beim Start bekannte) Niederlage nicht noch einmal', () => {
+    const memory = celebrationMemoryOf(level1)
+    expect(withoutCelebrated([defeat(YESTERDAY)], memory)).toHaveLength(1)
+    const [scene] = enqueueCelebrations([], [defeat(YESTERDAY)], ids())
+    const seen = rememberCelebration(memory, scene)
+    expect(seen.lastDefeatDay).toBe(YESTERDAY)
+    expect(withoutCelebrated([defeat(YESTERDAY), defeat('2026-11-01')], seen)).toEqual([])
+    expect(withoutCelebrated([defeat(TODAY)], seen)).toHaveLength(1)
+
+    const known = celebrationMemoryOf({ ...level1, hp: { ...level1.hp, lastDefeat: { day: YESTERDAY, goldLost: 1 } } })
+    expect(withoutCelebrated([defeat(YESTERDAY)], known)).toEqual([])
+  })
+})

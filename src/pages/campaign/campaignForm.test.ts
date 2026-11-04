@@ -116,6 +116,20 @@ describe('Kapitel-Formular', () => {
     expect(validateChapterForm({ ...base, habitId: 'read', metric: 'streak', habitTarget: 0 }, habits).habitTarget).toBeDefined()
   })
 
+  it('erlaubt den Bestwert nur für messbare Quests – mit Nachkommastellen', () => {
+    const base = { ...initialChapterFormValues(undefined), title: 'Am Stück', type: 'habit' as const, metric: 'best' as const }
+    expect(validateChapterForm({ ...base, habitId: 'plain', habitTarget: 30 }, habits).habitId).toMatch(/nicht messbar/)
+    expect(validateChapterForm({ ...base, habitId: 'read', habitTarget: 2.5 }, habits)).toEqual({})
+    expect(validateChapterForm({ ...base, habitId: 'read', habitTarget: null }, habits).habitTarget).toBe('Gib ein Ziel an.')
+    expect(validateChapterForm({ ...base, habitId: 'read', habitTarget: 0 }, habits).habitTarget).toBe(
+      'Das Ziel muss größer als 0 sein.',
+    )
+    const chapter = chapterFromValues({ ...base, habitId: 'read', habitTarget: 30 }, undefined, TODAY)
+    expect(chapter.criterion).toEqual({ type: 'habit', habitId: 'read', metric: 'best', target: 30 })
+    // Beim erneuten Öffnen steht die Messgröße wieder im Formular.
+    expect(initialChapterFormValues(chapter)).toMatchObject({ metric: 'best', habitTarget: 30, habitId: 'read' })
+  })
+
   it('behält ID und Zustand beim Bearbeiten, solange die Art gleich bleibt', () => {
     const counter: Chapter = {
       id: 'k',

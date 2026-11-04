@@ -25,6 +25,7 @@ import type {
   MainQuestState,
   SideQuest,
 } from '../../domain/types'
+import type { HpFeedbackEvent } from './hpFeedback'
 
 /**
  * Ändern sich in einem Schritt mehr als so viele Erledigungen (bzw. perfekte Tage, Nebenquests, Kapitel oder
@@ -152,6 +153,10 @@ export interface AchievementUnlockedEvent {
   gold: number
 }
 
+/**
+ * Alle Rückmeldungen. Die Lebenspunkte-Ereignisse (Niederlage, Streak-Schutz, Heiltrank) erkennt `hpFeedbackEvents`
+ * (`hpFeedback.ts`) aus Ledger und Käufen – nicht `diffGameStates`.
+ */
 export type FeedbackEvent =
   | XpGainedEvent
   | LevelUpEvent
@@ -160,6 +165,7 @@ export type FeedbackEvent =
   | ChapterCompletedEvent
   | CampaignCompletedEvent
   | AchievementUnlockedEvent
+  | HpFeedbackEvent
 
 /**
  * Massenänderung? Dann gibt es keine Rückmeldung, nur der neue Zustand wird zur Vergleichsbasis.
@@ -511,5 +517,10 @@ export function feedbackStillHolds(event: FeedbackEvent, state: GameState): bool
       return state.level.level >= event.to
     case 'achievement-unlocked':
       return state.achievements.some((achievement) => achievement.definition.id === event.id && achievement.unlocked)
+    // Abgerechnete Tage ändern sich nie; ein Heiltrank ist getrunken – diese Meldungen bleiben stehen.
+    case 'defeat':
+    case 'freeze-used':
+    case 'potion-healed':
+      return true
   }
 }

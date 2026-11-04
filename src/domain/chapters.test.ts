@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
 import { completeRange, makeChapter, makeCompletion, makeHabit, makeMainQuest } from './testing'
-import type { Completion, DayKey, Habit } from './types'
+import type { ChapterMetric, Completion, DayKey, Habit } from './types'
 
 const reading = makeHabit({
   id: 'read',
@@ -114,7 +114,7 @@ describe('evaluateChapter – habit', () => {
   ]
   const ctx = context([reading], completions, '2026-11-20')
 
-  function habitChapter(metric: 'completions' | 'total' | 'streak', target: number) {
+  function habitChapter(metric: ChapterMetric, target: number) {
     return makeChapter({ id: `c-${metric}`, criterion: { type: 'habit', habitId: reading.id, metric, target } })
   }
 
@@ -282,6 +282,19 @@ describe('evaluateChapter – habit', () => {
     })
   })
 
+  it('streak: Schontage (Ruhetag, Streak-Schutz) brechen die Serie nicht', () => {
+    // 01.–03. gelesen, 04. Ruhetag (nicht gelesen), 05.–08. gelesen → mit Schontag 7 in Folge, ohne nur 4.
+    const days = ['2026-11-01', '2026-11-02', '2026-11-03', '2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08']
+    const base = context([reading], days.map((day) => makeCompletion(reading, day)), '2026-11-09')
+    expect(evaluateChapter(habitChapter('streak', 7), quest, base)).toMatchObject({ current: 4, done: false })
+    const withFree = { ...base, freeDays: new Set(['2026-11-04']) }
+    expect(evaluateChapter(habitChapter('streak', 7), quest, withFree)).toMatchObject({
+      current: 7,
+      done: true,
+      doneDay: '2026-11-08',
+    })
+  })
+
   it('total: Gleitkomma-Rauschen verhindert den Abschluss nicht (10 × 0,1 L = 1 L)', () => {
     const water = makeHabit({ id: 'water', createdDay: '2026-11-01', measure: { target: 0.1, unit: 'L' } })
     const days = ['2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']
@@ -292,6 +305,79 @@ describe('evaluateChapter – habit', () => {
     expect(state.current).toBeCloseTo(1, 10)
     // Abschluss, voller Balken und Abschlusstag müssen zusammenpassen
     expect(state).toMatchObject({ done: true, progress: 1, doneDay: '2026-11-10' })
+  })
+
+  it('best: höchster Tageswert im Zeitraum [startDay, today]; doneDay = erster Tag, der das Ziel erreicht', () => {
+    // Im Zeitraum: 12, 10, 4 (Teilfortschritt), 10, 15 – vor dem Start und nach today zählen nicht.
+    const reached = makeChapter({ id: 'b', criterion: { type: 'habit', habitId: reading.id, metric: 'best', target: 12 } })
+    expect(evaluateChapter(reached, quest, ctx)).toEqual({
+      chapter: reached,
+      current: 15, // der Bestwert, nicht der erste Wert über dem Ziel
+      target: 12,
+      progress: 1,
+      done: true,
+      doneDay: '2026-11-01',
+    })
+    expect(evaluateChapter(habitChapter('best', 15), quest, ctx)).toMatchObject({ done: true, doneDay: '2026-11-05' })
+    const open = makeChapter({ id: 'b', criterion: { type: 'habit', habitId: reading.id, metric: 'best', target: 20 } })
+    const state = evaluateChapter(open, quest, ctx)
+    expect(state).toEqual({ chapter: open, current: 15, target: 20, progress: 0.75, done: false })
+    // Kein Streak-Kapitel – keine Einheit.
+    expect(state).not.toHaveProperty('unit')
+  })
+
+  it('best: Werte vor dem Kampagnenstart und nach today zählen nicht', () => {
+    const outside = [
+      makeCompletion(reading, '2026-10-31', { value: 50 }),
+      makeCompletion(reading, '2026-11-02', { value: 11 }),
+      makeCompletion(reading, '2026-11-21', { value: 50 }),
+    ]
+    const chapter = makeChapter({ id: 'b', criterion: { type: 'habit', habitId: reading.id, metric: 'best', target: 30 } })
+    expect(evaluateChapter(chapter, quest, context([reading], outside, '2026-11-20'))).toMatchObject({
+      current: 11,
+      done: false,
+    })
+  })
+
+  it('best: auch ein Teilfortschritt ist ein Bestwert („35 von 40 Minuten am Stück“)', () => {
+    const run = makeHabit({ id: 'run', createdDay: '2026-11-01', measure: { target: 40, unit: 'Minuten' } })
+    const completions = [makeCompletion(run, '2026-11-02', { value: 25 }), makeCompletion(run, '2026-11-04', { value: 35 })]
+    const chapter = makeChapter({ id: 'b', criterion: { type: 'habit', habitId: run.id, metric: 'best', target: 30 } })
+    expect(evaluateChapter(chapter, quest, context([run], completions, '2026-11-20'))).toMatchObject({
+      current: 35,
+      done: true,
+      progress: 1,
+      doneDay: '2026-11-04',
+    })
+  })
+
+  it('best: robust gegen Gleitkomma-Rauschen, unsortierte Eingabe und ungültige Werte', () => {
+    const water = makeHabit({ id: 'water', createdDay: '2026-11-01', measure: { target: 0.1, unit: 'L' } })
+    const completions = [
+      makeCompletion(water, '2026-11-09', { value: 0.3 }),
+      makeCompletion(water, '2026-11-03', { value: 0.1 + 0.2 }), // 0.30000000000000004
+      makeCompletion(water, '2026-11-02', { value: Number.NaN }),
+      makeCompletion(water, '2026-11-01', { value: 0.7 - 0.4 }), // 0.29999999999999993
+    ]
+    const chapter = makeChapter({ id: 'b', criterion: { type: 'habit', habitId: water.id, metric: 'best', target: 0.3 } })
+    const state = evaluateChapter(chapter, quest, context([water], completions, '2026-11-20'))
+    expect(state.current).toBeCloseTo(0.3, 10)
+    expect(state).toMatchObject({ done: true, progress: 1, doneDay: '2026-11-01' })
+  })
+
+  it('best: ohne Werte 0, gelöschte Quest als kaputte Referenz', () => {
+    const chapter = makeChapter({ id: 'b', criterion: { type: 'habit', habitId: reading.id, metric: 'best', target: 30 } })
+    expect(evaluateChapter(chapter, quest, context([reading], [], '2026-11-20'))).toEqual({
+      chapter,
+      current: 0,
+      target: 30,
+      progress: 0,
+      done: false,
+    })
+    expect(evaluateChapter(chapter, quest, context([], completions, '2026-11-20'))).toMatchObject({
+      brokenReference: true,
+      done: false,
+    })
   })
 
   it('counter: ein abgeschlossenes Kapitel hat immer progress 1 und done', () => {

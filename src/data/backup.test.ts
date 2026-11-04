@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { z } from 'zod'
+import { makeItemPurchase } from '../domain/testing'
 import type { GameData } from '../domain/types'
 import {
   BACKUP_APP_ID,
@@ -14,6 +15,7 @@ import {
 } from './backup'
 import { QuestlogDB } from './db'
 import {
+  addRestPeriod,
   archiveHabit,
   archiveReward,
   completeSideQuest,
@@ -23,9 +25,11 @@ import {
   createSideQuest,
   deleteHabit,
   loadGameData,
+  markHpIntroSeen,
   purchaseReward,
   recordAchievementUnlocks,
   saveProfile,
+  settleHpDays,
   setChapterCounter,
   setChapterManual,
   restoreHabit,
@@ -180,6 +184,35 @@ async function fillWithRichData(database: QuestlogDB): Promise<void> {
     ],
     database,
   )
+
+  // Phase 2b: Abrechnung ab 1. Oktober, Gegenstand, Rast (laufend und geplant), Einführung gesehen
+  await settleHpDays('2026-10-01', database)
+  await database.purchases.add(makeItemPurchase('frost', 'streakFreeze', '2026-10-05', { createdAt: 5 }))
+  await settleHpDays('2026-10-20', database)
+  await addRestPeriod({ from: '2026-10-19', until: '2026-10-21', note: 'Krank' }, '2026-10-20', database)
+  await addRestPeriod({ from: '2026-12-24', until: '2026-12-26' }, '2026-10-20', database)
+  await markHpIntroSeen(database)
+}
+
+/** Einträge der Phase-2b-Listen und -Einstellungen, wie sie ein Backup enthalten kann. */
+function phase2bEntries() {
+  return {
+    settings: { dayStartHour: 4, effects: true, penalties: { enabled: true, since: '2026-10-01' }, hpIntroSeen: true },
+    purchases: [
+      { id: 'i1', kind: 'item', itemId: 'streakFreeze', title: 'Streak-Schutz', icon: '❄️', price: 150, day: '2026-10-01', createdAt: 1 },
+      { id: 'i2', kind: 'item', itemId: 'healingPotion', title: 'Heiltrank', icon: '🧪', price: 80, day: '2026-10-02', createdAt: 2 },
+    ],
+    hpLedger: [
+      { day: '2026-10-01', score: 'missed', frozen: true, hpDelta: 0, hpAfter: 50, maxHp: 50, penalties: true },
+      { day: '2026-10-02', score: 'weak', frozen: false, hpDelta: 0, hpAfter: 50, maxHp: 50, penalties: true },
+      { day: '2026-10-03', score: 'missed', frozen: false, hpDelta: 2, hpAfter: 55, maxHp: 55, defeat: { goldLost: 12 }, penalties: true },
+      { day: '2026-10-04', score: 'rest', frozen: false, hpDelta: 0, hpAfter: 55, maxHp: 55, penalties: false },
+    ],
+    restPeriods: [
+      { id: 'rast', from: '2026-10-04', until: '2026-10-04', createdAt: 3 },
+      { id: 'urlaub', from: '2026-12-01', until: '2026-12-14', note: 'Italien', createdAt: 4 },
+    ],
+  }
 }
 
 /** Einträge der Phase-2a-Listen, wie sie ein Backup enthalten kann. */
@@ -271,7 +304,13 @@ describe('Backup-Roundtrip', () => {
     expect(original.deletedHabits?.some((t) => t.scheduleHistory?.length && t.pauses?.length)).toBe(true)
     expect(original.rewards?.some((r) => r.archived) && original.rewards.some((r) => r.description && r.repeatable)).toBe(true)
     expect(original.rewards?.some((r) => !r.repeatable)).toBe(true)
-    expect(original.purchases).toHaveLength(2)
+    expect(original.purchases).toHaveLength(3)
+    expect(original.purchases?.some((purchase) => purchase.kind === 'item' && purchase.itemId === 'streakFreeze')).toBe(true)
+    expect(original.hpLedger?.length).toBeGreaterThan(10)
+    expect(original.hpLedger?.some((entry) => entry.frozen)).toBe(true)
+    expect(original.restPeriods?.some((period) => period.note) && original.restPeriods.some((period) => !period.note)).toBe(true)
+    expect(original.settings.penalties).toStrictEqual({ enabled: true, since: '2026-10-01' })
+    expect(original.settings.hpIntroSeen).toBe(true)
     expect(original.sideQuests?.some((q) => q.doneDay && q.dueDay && q.description)).toBe(true)
     expect(original.sideQuests?.some((q) => q.doneDay === undefined)).toBe(true)
     expect(original.achievementUnlocks).toHaveLength(2)
@@ -281,7 +320,8 @@ describe('Backup-Roundtrip', () => {
     if (!parsed.ok) throw new Error(parsed.error)
 
     const target = freshDatabase()
-    await restoreBackup(parsed.backup, target)
+    // Gleich nach dem Export wiederhergestellt (die Uhr fest, sonst hinge der Beginn der Abrechnung vom Testtag ab).
+    await restoreBackup(parsed.backup, target, EXPORT_TIME)
 
     expect(await loadGameData(target)).toStrictEqual(original)
   })
@@ -309,7 +349,7 @@ describe('Backup-Roundtrip', () => {
       DAY,
       target,
     )
-    await restoreBackup(backup, target)
+    await restoreBackup(backup, target, EXPORT_TIME)
 
     const restored = await loadGameData(target)
     expect(restored).toStrictEqual(await loadGameData(source))
@@ -350,6 +390,41 @@ describe('Backup-Roundtrip', () => {
     vi.restoreAllMocks()
 
     expect(await loadGameData(target)).toStrictEqual(before)
+  })
+
+  it('lässt bei einem Fehler in den Phase-2b-Tabellen den alten Stand unangetastet', async () => {
+    await fillWithRichData(source)
+    const backup = await createBackup(EXPORT_TIME, source)
+
+    const target = freshDatabase()
+    await fillWithRichData(target)
+    await addRestPeriod({ from: '2027-01-10', until: '2027-01-12' }, '2026-10-20', target)
+    const before = await loadGameData(target)
+
+    vi.spyOn(target.restPeriods, 'bulkAdd').mockRejectedValue(new Error('Festplatte voll'))
+    await expect(restoreBackup(backup, target)).rejects.toThrow('Festplatte voll')
+    vi.restoreAllMocks()
+
+    expect(await loadGameData(target)).toStrictEqual(before)
+  })
+
+  it('ein Backup ohne Phase-2b-Daten leert Ledger und Rast; abgerechnet wird danach nie rückwirkend', async () => {
+    const target = freshDatabase()
+    await fillWithRichData(target)
+    const input = validBackup()
+    input.data.profile = { name: 'Aria', avatar: '🧝', createdDay: '2026-10-01' }
+    const parsed = parseBackup(input)
+    if (!parsed.ok) throw new Error(parsed.error)
+
+    await restoreBackup(parsed.backup, target)
+
+    const restored = await loadGameData(target)
+    for (const key of ['hpLedger', 'restPeriods']) expect(key in restored).toBe(false)
+    expect(restored.settings).toStrictEqual({ dayStartHour: 4, effects: true })
+    expect(await target.hpLedger.count()).toBe(0)
+    expect(await target.restPeriods.count()).toBe(0)
+    expect(await settleHpDays('2026-11-20', target)).toStrictEqual([])
+    expect((await loadGameData(target)).settings.penalties).toStrictEqual({ enabled: true, since: '2026-11-20' })
   })
 
   it('ein älteres Backup ohne Phase-2a-Listen leert Belohnungen, Einlösungen, Nebenquests und Erfolge', async () => {
@@ -476,7 +551,7 @@ describe('parseBackup', () => {
     ['Preis mit Nachkommastellen', (e: Phase2a) => (e.rewards[1].price = 2.5), 'data.rewards.1.price'],
     ['Belohnung ohne wiederholbar-Angabe', (e: Phase2a) => delete (e.rewards[0] as Partial<Phase2a['rewards'][0]>).repeatable, 'data.rewards.0.repeatable'],
     ['doppelte Belohnung', (e: Phase2a) => (e.rewards[1].id = 'r1'), 'data.rewards.1.id'],
-    ['unbekannte Ausgabe-Art', (e: Phase2a) => (e.purchases[0].kind = 'item'), 'data.purchases.0.kind'],
+    ['unbekannte Ausgabe-Art', (e: Phase2a) => (e.purchases[0].kind = 'boss'), 'data.purchases.0.kind'],
     ['Einlösung an ungültigem Tag', (e: Phase2a) => (e.purchases[1].day = '2026-02-30'), 'data.purchases.1.day'],
     ['negativer Einlösungspreis', (e: Phase2a) => (e.purchases[0].price = -40), 'data.purchases.0.price'],
     ['doppelte Einlösung', (e: Phase2a) => (e.purchases[1].id = 'p1'), 'data.purchases.1.id'],
@@ -489,6 +564,76 @@ describe('parseBackup', () => {
     ['doppelter Erfolg', (e: Phase2a) => e.achievementUnlocks.push({ id: 'streak-7', day: DAY }), 'data.achievementUnlocks.1.id'],
   ])('lehnt ungültige Phase-2a-Daten ab: %s', (_label, breakIt, path) => {
     const entries: Phase2a = phase2aEntries()
+    breakIt(entries)
+    const input = validBackup()
+    Object.assign(input.data, entries)
+    expect(expectError(input)).toContain(`Ungültige Daten: ${path} – `)
+  })
+
+  it('übernimmt Lebenspunkte, Gegenstände, Rast und Einstellungen; ältere Backups ohne sie bleiben gültig', async () => {
+    const input = validBackup()
+    Object.assign(input.data, phase2bEntries())
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    const { settings, purchases, hpLedger, restPeriods } = result.backup.data
+    expect({ settings, purchases, hpLedger, restPeriods }).toStrictEqual(phase2bEntries())
+
+    // Restore → Export ergibt dieselben Daten.
+    const target = freshDatabase()
+    await restoreBackup(result.backup, target, EXPORT_TIME)
+    const exported = await createBackup(EXPORT_TIME, target)
+    expect(exported.data).toStrictEqual(await loadGameData(target))
+    expect({ ...exported.data, completions: [], habits: [] }).toMatchObject({ ...phase2bEntries(), completions: [], habits: [] })
+
+    const legacy = parseBackup(validBackup())
+    if (!legacy.ok) throw new Error(legacy.error)
+    for (const key of ['hpLedger', 'restPeriods']) expect(key in legacy.backup.data).toBe(false)
+    expect(legacy.backup.data.settings).toStrictEqual({ dayStartHour: 4, effects: true })
+  })
+
+  it('übernimmt die Kapitel-Messgröße „Bestwert“', () => {
+    const input = validBackup()
+    input.data.mainQuests = [
+      {
+        id: 'q',
+        title: 'Lauf',
+        icon: '🏃',
+        why: '',
+        reward: '',
+        startDay: DAY,
+        createdAt: 1,
+        chapters: [{ id: 'c', title: '30 Minuten am Stück', criterion: { type: 'habit', habitId: 'h1', metric: 'best', target: 30 } }],
+      },
+    ]
+    const result = parseBackup(input)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.backup.data.mainQuests[0].chapters[0].criterion).toStrictEqual({ type: 'habit', habitId: 'h1', metric: 'best', target: 30 })
+  })
+
+  it.each([
+    ['Gegenstand ohne Art', (e: Phase2b) => delete (e.purchases[0] as Partial<Phase2b['purchases'][0]>).itemId, 'data.purchases.0.itemId'],
+    ['unbekannter Gegenstand', (e: Phase2b) => (e.purchases[1].itemId = 'xpPotion'), 'data.purchases.1.itemId'],
+    ['Gegenstand mit Belohnung', (e: Phase2b) => Object.assign(e.purchases[0], { rewardId: 'r1' }), 'data.purchases.0.rewardId'],
+    ['Belohnung mit Gegenstand', (e: Phase2b) => (e.purchases[0].kind = 'reward'), 'data.purchases.0.itemId'],
+    ['unbekannte Wertung', (e: Phase2b) => (e.hpLedger[0].score = 'epic'), 'data.hpLedger.0.score'],
+    ['HP über dem Maximum', (e: Phase2b) => (e.hpLedger[1].hpAfter = 51), 'data.hpLedger.1.hpAfter'],
+    ['negative HP', (e: Phase2b) => (e.hpLedger[1].hpAfter = -1), 'data.hpLedger.1.hpAfter'],
+    ['HP-Änderung mit Nachkommastellen', (e: Phase2b) => (e.hpLedger[2].hpDelta = 1.5), 'data.hpLedger.2.hpDelta'],
+    ['Max-HP 0', (e: Phase2b) => (e.hpLedger[0].maxHp = 0), 'data.hpLedger.0.maxHp'],
+    ['negativer Gold-Verlust', (e: Phase2b) => (e.hpLedger[2].defeat = { goldLost: -5 }), 'data.hpLedger.2.defeat.goldLost'],
+    ['Ledger ohne Schutz-Angabe', (e: Phase2b) => delete (e.hpLedger[0] as Partial<Phase2b['hpLedger'][0]>).frozen, 'data.hpLedger.0.frozen'],
+    ['Tag doppelt abgerechnet', (e: Phase2b) => (e.hpLedger[3].day = '2026-10-01'), 'data.hpLedger.3.day'],
+    ['ungültiger abgerechneter Tag', (e: Phase2b) => (e.hpLedger[0].day = '2026-10-32'), 'data.hpLedger.0.day'],
+    ['Rast endet vor Beginn', (e: Phase2b) => (e.restPeriods[1].until = '2026-11-30'), 'data.restPeriods.1.until'],
+    ['Rast länger als 60 Tage', (e: Phase2b) => (e.restPeriods[1].until = '2027-01-30'), 'data.restPeriods.1.until'],
+    ['Rast mit ungültigem Tag', (e: Phase2b) => (e.restPeriods[0].from = 'heute'), 'data.restPeriods.0.from'],
+    ['doppelte Rast', (e: Phase2b) => (e.restPeriods[1].id = 'rast'), 'data.restPeriods.1.id'],
+    ['überschneidende Rast', (e: Phase2b) => (e.restPeriods[0].until = '2026-12-01'), 'data.restPeriods.1.from'],
+    ['Lebenspunkte ohne an/aus', (e: Phase2b) => (e.settings.penalties = { since: DAY } as Phase2b['settings']['penalties']), 'data.settings.penalties.enabled'],
+    ['ungültiger Beginn der Abrechnung', (e: Phase2b) => (e.settings.penalties.since = '2026-02-30'), 'data.settings.penalties.since'],
+    ['Einführung kein Wahrheitswert', (e: Phase2b) => Object.assign(e.settings, { hpIntroSeen: 'ja' }), 'data.settings.hpIntroSeen'],
+  ])('lehnt ungültige Phase-2b-Daten ab: %s', (_label, breakIt, path) => {
+    const entries: Phase2b = phase2bEntries()
     breakIt(entries)
     const input = validBackup()
     Object.assign(input.data, entries)
@@ -628,6 +773,8 @@ describe('Schema-Typen', () => {
 
 /** Phase-2a-Einträge (Texte als `string` typisiert) – Tests machen sie gezielt kaputt. */
 type Phase2a = ReturnType<typeof phase2aEntries>
+/** Phase-2b-Einträge – ebenso. */
+type Phase2b = ReturnType<typeof phase2bEntries>
 
 function habitOf(backup: ReturnType<typeof validBackup>): Record<string, unknown> {
   return (backup.data.habits as Record<string, unknown>[])[0]

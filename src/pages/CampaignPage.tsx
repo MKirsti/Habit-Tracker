@@ -7,6 +7,7 @@ import { installBlueprint } from '../data/seed'
 import type { AdventureChoice } from '../data/seed'
 import { BALANCING } from '../domain/balancing'
 import { isCampaignActive } from '../domain/campaigns'
+import { hallOfFame } from '../domain/hallOfFame'
 import type { Chapter, Habit, MainQuest, MainQuestState } from '../domain/types'
 import { activeSlotsText, freeSlotsText } from '../features/blueprints'
 import { campaignColor } from '../features/campaignTheme'
@@ -17,6 +18,7 @@ import { CampaignBanner } from './campaign/CampaignBanner'
 import { CampaignFormDialog } from './campaign/CampaignFormDialog'
 import { CampaignStarter } from './campaign/CampaignStarter'
 import { CampaignVictory } from './campaign/CampaignVictory'
+import { HallOfFame } from './campaign/HallOfFame'
 import { isArchived } from './campaign/campaignText'
 import { campaignEditLoss, campaignEditLossText } from './campaign/campaignXp'
 import { ChapterFormDialog } from './campaign/ChapterFormDialog'
@@ -62,7 +64,8 @@ let rememberedCampaignId: string | null = null
 /**
  * Kampagne (`/kampagne`): das große Ziel mit seinen Kapiteln als Questkarte. Ohne laufende Kampagne (und mit
  * `?neu=1`) zeigt sie die Kampagnen-Bibliothek samt eigener Kampagne; bis zu `BALANCING.maxActiveCampaigns`
- * Kampagnen laufen gleichzeitig. Darunter stehen die beendeten & gemeisterten Kampagnen zum Zurückholen.
+ * Kampagnen laufen gleichzeitig. Darunter die Ruhmeshalle (alle gemeisterten Kampagnen mit ihrer Bilanz) und die
+ * beendeten & gemeisterten Kampagnen zum Zurückholen.
  * Die gezeigte Kampagne steht in der Adresse (`?id=`), damit Zurück und Links sie behalten.
  */
 export function CampaignPage() {
@@ -171,6 +174,11 @@ export function CampaignPage() {
   })
 
   const habitsById = useMemo(() => new Map(data.habits.map((habit) => [habit.id, habit])), [data.habits])
+  // Ruhmeshalle: alle gemeisterten Kampagnen (laufend sichtbare und abgelegte) – dieselbe Auswertung wie oben.
+  const fame = useMemo(
+    () => hallOfFame(data, today, [...state.mainQuests, ...state.archivedMainQuests]),
+    [data, today, state.mainQuests, state.archivedMainQuests],
+  )
   const linkedHabits = useMemo(() => {
     if (!selected) return []
     return selected.linkedHabitIds
@@ -411,6 +419,12 @@ export function CampaignPage() {
           </div>
         </>
       )}
+
+      <HallOfFame
+        entries={fame}
+        today={today}
+        hasCampaigns={campaigns.length + state.archivedMainQuests.length > 0}
+      />
 
       {/* Auch unter der Bibliothek (`?neu=1`): Eine beendete Kampagne fortzusetzen ist ebenfalls ein Neubeginn. */}
       <ArchivedCampaigns

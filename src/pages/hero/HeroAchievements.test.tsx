@@ -62,10 +62,13 @@ describe('Held-Seite: Reiter', () => {
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       'Übersicht',
       expect.stringMatching(/^Erfolge1\/\d+, 1 von \d+ freigeschaltet$/),
+      'Statistik',
     ])
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
-    expect(tabs[1]).toHaveAttribute('aria-selected', 'false')
-    expect(tabs[1]).toHaveAttribute('tabindex', '-1')
+    for (const tab of tabs.slice(1)) {
+      expect(tab).toHaveAttribute('aria-selected', 'false')
+      expect(tab).toHaveAttribute('tabindex', '-1')
+    }
     const panel = screen.getByRole('tabpanel', { name: 'Übersicht' })
     expect(tabs[0]).toHaveAttribute('aria-controls', panel.id)
     expect(within(panel).getByRole('heading', { level: 2, name: 'Aria' })).toBeInTheDocument()
@@ -75,7 +78,7 @@ describe('Held-Seite: Reiter', () => {
 
   it('verweist per aria-controls nur auf das Panel, das es gibt (gültiges ARIA)', async () => {
     const { user } = await setup()
-    for (const name of [/^Erfolge/, 'Übersicht']) {
+    for (const name of [/^Erfolge/, 'Statistik', 'Übersicht']) {
       for (const tab of screen.getAllByRole('tab')) {
         const controls = tab.getAttribute('aria-controls')
         if (controls !== null) expect(document.getElementById(controls)).toHaveAttribute('role', 'tabpanel')
@@ -107,18 +110,24 @@ describe('Held-Seite: Reiter', () => {
     expect(achievements).toHaveFocus()
     expect(achievements).toHaveAttribute('aria-selected', 'true')
     await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: 'Statistik' })).toHaveFocus()
+    // Umlauf: vom letzten Reiter wieder zum ersten.
+    await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('tab', { name: 'Übersicht' })).toHaveFocus()
-    await user.keyboard('{End}')
-    expect(screen.getByRole('tab', { name: /^Erfolge/ })).toHaveFocus()
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.getByRole('tab', { name: 'Statistik' })).toHaveFocus()
     await user.keyboard('{Home}')
     expect(screen.getByRole('tab', { name: 'Übersicht' })).toHaveAttribute('aria-selected', 'true')
+    await user.keyboard('{End}')
+    expect(screen.getByRole('tab', { name: 'Statistik' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('öffnet die Erfolge direkt per Adresse; unbekannte Reiter fallen auf die Übersicht zurück', async () => {
     await setup('/held?tab=erfolge')
     expect(screen.getByRole('tab', { name: /^Erfolge/ })).toHaveAttribute('aria-selected', 'true')
     expect(parseHeroTab('erfolge')).toBe('erfolge')
-    expect(parseHeroTab('statistik')).toBe('uebersicht')
+    expect(parseHeroTab('statistik')).toBe('statistik')
+    expect(parseHeroTab('bestiarium')).toBe('uebersicht')
     expect(parseHeroTab(null)).toBe('uebersicht')
   })
 })

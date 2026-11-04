@@ -16,6 +16,8 @@ const quests = new Map<string, Pick<BlueprintQuest, 'title' | 'schedule' | 'meas
   ['reading', { title: 'Täglich lesen', schedule: { type: 'daily' }, measure: { target: 10, unit: 'Seiten' } }],
   ['training', { title: 'Krafttraining', schedule: { type: 'weekly', times: 2 } }],
   ['plan', { title: 'Planen', schedule: { type: 'weekdays', days: [1, 3, 5] } }],
+  ['cardio', { title: 'Ausdauer-Einheit', schedule: { type: 'weekly', times: 3 }, measure: { target: 20, unit: 'Minuten' } }],
+  ['water', { title: 'Wasser trinken', schedule: { type: 'daily' }, measure: { target: 1.5, unit: 'L' } }],
 ])
 
 describe('blueprintText', () => {
@@ -65,6 +67,20 @@ describe('blueprintText', () => {
     expect(criterionSummary({ type: 'habit', questKey: 'training', metric: 'streak', target: 1 }, quests)).toBe(
       '1 Woche Streak',
     )
+    expect(criterionSummary({ type: 'habit', questKey: 'cardio', metric: 'best', target: 30 }, quests)).toBe('Bestwert: 30 Minuten')
+    expect(criterionSummary({ type: 'habit', questKey: 'water', metric: 'best', target: 2.5 }, quests)).toBe('Bestwert: 2,5 L')
+    // Ohne messbare Quest (sollte es nicht geben): nur die Zahl.
+    expect(criterionSummary({ type: 'habit', questKey: 'training', metric: 'best', target: 3 }, quests)).toBe('Bestwert: 3')
+  })
+
+  it('criterionSummary: der Bestwert des Waldläufers in der Vorschau', () => {
+    const body = getBlueprint('body')
+    if (!body) throw new Error('Vorlage fehlt')
+    const content = body.build({ level: 'beginner', pathId: 'endurance' })
+    const byKey = new Map(content.quests.map((quest) => [quest.key, quest]))
+    const chapter = content.chapters.find((candidate) => candidate.title === 'Eine halbe Stunde Atem')
+    if (!chapter) throw new Error('Kapitel fehlt')
+    expect(criterionSummary(chapter.criterion, byKey)).toBe('Bestwert: 30 Minuten')
   })
 
   it('Plätze: aktiv und frei', () => {

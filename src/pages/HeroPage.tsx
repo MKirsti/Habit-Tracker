@@ -1,4 +1,4 @@
-import { LayoutGrid, Settings, Trophy, UserRound } from 'lucide-react'
+import { ChartNoAxesCombined, LayoutGrid, Settings, Trophy, UserRound } from 'lucide-react'
 import { useId } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
@@ -13,10 +13,12 @@ import type { HeroTab } from './hero/HeroTabs'
 import { DEFAULT_HERO_TAB, HERO_TAB_PARAM, panelId, parseHeroTab, tabId } from './hero/heroTabs'
 import type { HeroTabId } from './hero/heroTabs'
 import { RankLadder } from './hero/RankLadder'
+import { StatisticsTab } from './hero/stats/StatisticsTab'
 
 /**
  * „Held“ – der Charakterbogen mit Reitern (`?tab=`): Übersicht (Avatar, Rang, Level, Attribute, Statistik,
- * XP-Herkunft, Rangleiter) und Erfolge (`?tab=erfolge`). Das Zahnrad im Kopf führt zu den Einstellungen.
+ * XP-Herkunft, Rangleiter), Erfolge (`?tab=erfolge`) und Statistik (`?tab=statistik`: Kennzahlen, Heatmap,
+ * Diagramme). Das Zahnrad im Kopf führt zu den Einstellungen.
  */
 export function HeroPage() {
   const { data, state } = useGameContext()
@@ -43,6 +45,7 @@ export function HeroPage() {
         </>
       ),
     },
+    { id: 'statistik', label: 'Statistik', icon: <ChartNoAxesCombined aria-hidden /> },
   ]
 
   function selectTab(next: HeroTabId) {
@@ -98,6 +101,8 @@ export function HeroPage() {
       >
         {tab === 'erfolge' ? (
           <AchievementsTab achievements={state.achievements} goldFromAchievements={state.gold.fromAchievements} />
+        ) : tab === 'statistik' ? (
+          <StatisticsTab />
         ) : (
           <>
             {profile ? (

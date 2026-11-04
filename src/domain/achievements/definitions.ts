@@ -461,6 +461,19 @@ export const ACHIEVEMENTS: AchievementDefinition[] = [
     progress: reach((s) => s.totalXp, 7777),
   },
   {
+    // Phase 2b: Eine Niederlage kostet nie Level oder XP – und wer danach wieder einen Perfekten Tag schafft,
+    // bekommt dafür einen eigenen (geheimen) Erfolg. Niederlagen selbst werden nie belohnt.
+    id: 'indomitable',
+    title: 'Unbeugsam',
+    description: 'Nach einer Niederlage bist du aufgestanden und hast einen Perfekten Tag geschafft. Nichts beugt dich!',
+    icon: '🌄',
+    tier: 'silver',
+    category: 'special',
+    goldReward: GOLD.silver,
+    secret: true,
+    progress: reach((s) => s.perfectDaysAfterDefeat, 1),
+  },
+  {
     id: 'adventure-days-365',
     title: 'Ein Jahr Abenteuer',
     description: 'Tag 365 deines Abenteuers – ein ganzes Jahr! Auf das nächste.',

@@ -29,7 +29,7 @@ import {
   validateChapterForm,
 } from './campaignForm'
 import type { ChapterFormErrors, ChapterFormField, ChapterFormValues } from './campaignForm'
-import { CHAPTER_TYPE_LABELS, METRIC_LABELS, isArchived, metricUnit } from './campaignText'
+import { CHAPTER_TYPE_LABELS, METRIC_LABELS, isArchived, metricUnit, needsMeasure } from './campaignText'
 import type { ChapterType, HabitMetric } from './campaignText'
 
 export interface ChapterFormDialogProps {
@@ -83,8 +83,15 @@ function metricHint(metric: HabitMetric, habit: Habit | undefined): string {
       return habit?.schedule.type === 'weekly'
         ? 'Längste Serie erfüllter Wochen seit dem Start der Kampagne.'
         : 'Längste Serie erledigter Tage seit dem Start der Kampagne.'
+    case 'best':
+      return habit?.measure
+        ? `Dein höchster Wert an einem einzelnen Tag (in ${habit.measure.unit}) seit dem Start der Kampagne – ein neuer Rekord schließt das Kapitel ab.`
+        : 'Dein höchster Wert an einem einzelnen Tag – nur für messbare Quests.'
   }
 }
+
+/** Hinweis bei einer Abhak-Quest: welche Messgrößen sie nicht hat. */
+const MEASURE_ONLY_HINT = '„Gesamtmenge“ und „Bestwert“ gibt es nur für messbare Quests.'
 
 /**
  * Dialog zum Anlegen und Bearbeiten eines Kapitels: Titel, Beschreibung und Art
@@ -167,8 +174,8 @@ export function ChapterFormDialog({
     setValues((current) => ({
       ...current,
       habitId,
-      // Gesamtmenge gibt es nur für messbare Quests.
-      metric: current.metric === 'total' && !habit?.measure ? 'completions' : current.metric,
+      // Gesamtmenge und Bestwert gibt es nur für messbare Quests.
+      metric: needsMeasure(current.metric) && !habit?.measure ? 'completions' : current.metric,
     }))
   }
 
@@ -217,11 +224,14 @@ export function ChapterFormDialog({
     })),
   ]
   const linkedCount = campaignId === undefined ? 0 : habits.filter((habit) => habit.mainQuestId === campaignId).length
+  const unmeasurable = selectedHabit !== undefined && !selectedHabit.measure
   const metricOptions: SegmentedOption<HabitMetric>[] = [
     { value: 'completions', label: METRIC_LABELS.completions },
-    { value: 'total', label: METRIC_LABELS.total, disabled: selectedHabit !== undefined && !selectedHabit.measure },
+    { value: 'total', label: METRIC_LABELS.total, disabled: unmeasurable },
     { value: 'streak', label: METRIC_LABELS.streak },
+    { value: 'best', label: METRIC_LABELS.best, disabled: unmeasurable },
   ]
+  const measuredTarget = needsMeasure(values.metric)
   const targetUnit = metricUnit(values.metric, selectedHabit, values.habitTarget ?? 2)
   // Beim Bearbeiten eines Kapitels, dessen Quest gelöscht wurde: darauf hinweisen.
   const lostHabit = chapter?.criterion.type === 'habit' && !habitsById.has(chapter.criterion.habitId)
@@ -359,9 +369,11 @@ export function ChapterFormDialog({
                     value={values.metric}
                     onChange={(metric) => update('metric', metric)}
                     options={metricOptions}
+                    // Vier Messgrößen: auf dem Handy als 2 × 2 – „Erledigungen“ passt sonst nicht ungekürzt hinein.
+                    className="grid! grid-cols-2 sm:flex!"
                     hint={
-                      selectedHabit && !selectedHabit.measure && values.metric !== 'total'
-                        ? `${metricHint(values.metric, selectedHabit)} „Gesamtmenge“ gibt es nur für messbare Quests.`
+                      unmeasurable && !measuredTarget
+                        ? `${metricHint(values.metric, selectedHabit)} ${MEASURE_ONLY_HINT}`
                         : metricHint(values.metric, selectedHabit)
                     }
                   />
@@ -371,9 +383,9 @@ export function ChapterFormDialog({
                     value={values.habitTarget}
                     onChange={(target) => update('habitTarget', target)}
                     onBlur={() => touch('habitTarget')}
-                    min={values.metric === 'total' ? 0 : 1}
+                    min={measuredTarget ? 0 : 1}
                     unit={targetUnit}
-                    placeholder={values.metric === 'total' ? 'z. B. 1000' : 'z. B. 21'}
+                    placeholder={values.metric === 'total' ? 'z. B. 1000' : values.metric === 'best' ? 'z. B. 30' : 'z. B. 21'}
                     error={shownError('habitTarget')}
                     required
                     fieldClassName="sm:max-w-xs"

@@ -80,7 +80,7 @@ describe('Schatzkammer', () => {
     expect(amount).toBeGreaterThan(500)
   })
 
-  it('ohne Belohnungen: freundlicher leerer Zustand, Vorschläge, leere Chronik und Ausblick auf Gegenstände', async () => {
+  it('ohne Belohnungen: freundlicher leerer Zustand, Vorschläge, leere Chronik und die Gegenstände', async () => {
     await seedHero()
     await renderPage()
     expect(screen.getByRole('heading', { name: 'Deine Schatzkammer ist noch leer' })).toBeInTheDocument()
@@ -88,7 +88,8 @@ describe('Schatzkammer', () => {
     expect(screen.getByRole('region', { name: 'Ideen für deine Schatzkammer' })).toBeInTheDocument()
     expect(screen.getByText('Noch nichts eingelöst – deine erste Belohnung wartet schon.')).toBeInTheDocument()
     const items = screen.getByRole('region', { name: 'Gegenstände' })
-    expect(items).toHaveTextContent('Bald verfügbar')
+    expect(within(items).getAllByRole('listitem', { name: /^(Streak-Schutz|Heiltrank)$/ })).toHaveLength(2)
+    expect(items).not.toHaveTextContent('Bald verfügbar')
   })
 
   it('übernimmt einen Vorschlag vorbelegt ins Formular und legt die Belohnung an', async () => {

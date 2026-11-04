@@ -38,7 +38,14 @@ export function xpWithStreakBonus(baseXp: number, bonus: number): number {
 /**
  * Streak-Bonus einer Quest an jedem der Tage `days` (beliebige Reihenfolge, `ergebnis[i]` gehört zu `days[i]`).
  * @param doneDays Tage, an denen die Quest erledigt war (value ≥ target).
+ * @param freeDays Schontage (Phase 2b: Ruhetage, vom Streak-Schutz aufgefangene Tage) – brechen keine Serie,
+ *                 siehe `streakRunsBefore`.
  */
-export function streakBonusesOn(habit: Habit, doneDays: ReadonlySet<DayKey>, days: readonly DayKey[]): number[] {
-  return streakRunsBefore(habit, doneDays, days).map(streakBonusForRun)
+export function streakBonusesOn(
+  habit: Habit,
+  doneDays: ReadonlySet<DayKey>,
+  days: readonly DayKey[],
+  freeDays?: ReadonlySet<DayKey>,
+): number[] {
+  return streakRunsBefore(habit, doneDays, days, freeDays).map(streakBonusForRun)
 }

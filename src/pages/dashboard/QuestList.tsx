@@ -1,7 +1,10 @@
 import { useId, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { DayState, HabitStatus, MainQuest } from '../../domain/types'
 import { Card, SectionTitle, cn, formatNumber } from '../../ui'
 import { BackfillNotice, DaySummary, DaySwitcher } from './DayPanel'
+import type { DayRest } from './DayPanel'
+import type { GoodDayMilestone } from './hpText'
 import { MeasureDialog } from './MeasureDialog'
 import { QuestRow } from './QuestRow'
 import type { QuestActions } from './useQuestActions'
@@ -19,6 +22,18 @@ export interface QuestListProps {
   /** Wählbare Abstände; bei nur einem Eintrag wird kein Umschalter gezeigt. */
   offsets: readonly number[]
   onOffsetChange: (offset: number) => void
+  /** Ruhetag bzw. Urlaub am gewählten Tag: Banner statt Tagesbilanz, die Quests bleiben erledigbar. */
+  rest?: DayRest
+  /** Über der Karte, z. B. die Vorschau für gestern (Lebenspunkte). */
+  notice?: ReactNode
+  /** Unter den Tagesquests in der Karte, z. B. „Heute Ruhetag“. */
+  footer?: ReactNode
+  /** Beim Nachtragen: Stand der HP-Wertung dieses Tages (im Nachtrag-Hinweis). */
+  backfillStanding?: string
+  /** Den Nachtrag-Hinweis beim Erscheinen fokussieren (nach „Nachtragen“ in der Vorschau). */
+  focusBackfill?: boolean
+  /** Lebenspunkte: Zwischenziel „guter Tag“ in der Tagesbilanz (nur heute, nur mit Lebenspunkten). */
+  goodDay?: GoodDayMilestone
 }
 
 /**
@@ -36,6 +51,12 @@ export function QuestList({
   offset,
   offsets,
   onOffsetChange,
+  rest,
+  notice,
+  footer,
+  backfillStanding,
+  focusBackfill,
+  goodDay,
 }: QuestListProps) {
   const dailyId = useId()
   const weeklyId = useId()
@@ -43,9 +64,10 @@ export function QuestList({
   const [editOpen, setEditOpen] = useState(false)
 
   const campaigns = useMemo(() => new Map(mainQuests.map((quest) => [quest.id, quest])), [mainQuests])
-  // Abschnitte nach dem Rhythmus des gewählten Tages (`required` bzw. `week` kommen aus `scheduleOn`),
-  // nicht nach `habit.schedule`: Wurde der Rhythmus heute geändert, zeigt „Gestern“ den damaligen.
-  const daily = dayState.habits.filter((status) => status.required)
+  // Abschnitte nach dem Rhythmus des gewählten Tages (`week` kommt aus `scheduleOn`), nicht nach
+  // `habit.schedule`: Wurde der Rhythmus heute geändert, zeigt „Gestern“ den damaligen. Tagesquests sind alle
+  // sichtbaren außer Wochenquests – auch an einem Ruhetag, an dem sie nicht Pflicht sind, aber erledigbar bleiben.
+  const daily = dayState.habits.filter((status) => status.week === undefined)
   const weekly = dayState.habits.filter((status) => status.week !== undefined)
   const weeklyMet = weekly.filter((status) => status.week !== undefined && status.week.done >= status.week.target)
   const editing = editId === null ? undefined : dayState.habits.find((status) => status.habit.id === editId)
@@ -85,18 +107,27 @@ export function QuestList({
         >
           Tagesquests
         </SectionTitle>
-        <BackfillNotice dayState={dayState} offset={offset} />
+        <BackfillNotice dayState={dayState} offset={offset} standing={backfillStanding} focusOnShow={focusBackfill} />
+        {notice}
         <Card
           as="div"
           padding="none"
           tone={perfect ? 'gold' : 'default'}
           className={cn('transition-[border-color,box-shadow] duration-500', perfect && 'shadow-glow')}
         >
-          <DaySummary dayState={dayState} offset={offset} />
+          <DaySummary dayState={dayState} offset={offset} rest={rest} milestone={goodDay} />
           {daily.length > 0 && (
             // Die erste Zeile liegt unter der Bilanz, nicht an der Kartenkante: oben keine Rundung.
-            <div className="border-t border-border/70 [&>ul>li:first-child]:rounded-t-none">{renderRows(daily)}</div>
+            <div
+              className={cn(
+                'border-t border-border/70 [&>ul>li:first-child]:rounded-t-none',
+                footer !== undefined && '[&>ul>li:last-child]:rounded-b-none',
+              )}
+            >
+              {renderRows(daily)}
+            </div>
           )}
+          {footer}
         </Card>
       </section>
       {weekly.length > 0 && (

@@ -231,6 +231,15 @@ describe('isRequiredOn', () => {
     const habit = makeHabit({ id: 'h', schedule: { type: 'weekly', times: 7 } })
     expect(isRequiredOn(habit, '2026-11-03')).toBe(false)
   })
+
+  it('an Ruhetagen ist keine Quest Pflicht – sichtbar bleibt sie trotzdem (freiwillig, XP zählen)', () => {
+    const habit = makeHabit({ id: 'h', createdDay: '2026-11-01' })
+    const restDays = daySet('2026-11-03')
+    expect(isRequiredOn(habit, '2026-11-03', restDays)).toBe(false)
+    expect(isRequiredOn(habit, '2026-11-04', restDays)).toBe(true)
+    expect(isRequiredOn(habit, '2026-11-03')).toBe(true)
+    expect(isVisibleOn(habit, '2026-11-03')).toBe(true)
+  })
 })
 
 describe('isVisibleOn', () => {

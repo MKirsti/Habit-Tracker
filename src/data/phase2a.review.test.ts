@@ -80,7 +80,7 @@ describe('Gold über echte Abläufe', () => {
     await expect(purchaseReward(headphones.id, TODAY, database)).rejects.toThrow('Diese Belohnung hast du schon eingelöst.')
     expect(await database.purchases.count()).toBe(1)
 
-    await undoPurchase(purchase.id, database)
+    await undoPurchase(purchase.id, TODAY, database)
     const undone = (await stateOf(database)).gold
     expect(undone.spent).toBe(0)
     // Der Erfolg „erste Einlösung“ bleibt nur, wenn er gespeichert wurde – hier nicht: Guthaben wie vorher
@@ -174,7 +174,7 @@ describe('Upgrade einer Version-2-Datenbank mit echtem Verlauf', () => {
     const database = new QuestlogDB(name)
     await database.open()
     try {
-      expect(database.verno).toBe(3)
+      expect(database.verno).toBe(4)
       const state = await stateOf(database)
       // Perfekter Tag: an den Tagen der Wochenquest steigt der Bonus mit (06.: 11 + 40 = 51 → 13; 13.: 14 + 42 = 56 → 14)
       // statt 3 bzw. 4 → +10 und +10 gegenüber der Tagesquest allein

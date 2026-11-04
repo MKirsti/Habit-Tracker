@@ -16,13 +16,16 @@
  *   Zeit als Pause (`pauses`) gespeichert. So gehen verdiente XP, Perfekte Tage und Streaks nie verloren.
  *   Wird eine Quest gelöscht, bleibt ein Grabstein (`DeletedHabit`) mit ihrem Zeitplan zurück, damit kein
  *   vergangener Tag nachträglich perfekt wird.
+ * - Lebenspunkte (Phase 2b): Abgerechnete Tage (`hpLedger`) werden nur angehängt, nie geändert. Rast & Urlaub
+ *   lassen sich nur für Tage anlegen, ändern oder löschen, die noch nicht vorbei bzw. abgerechnet sind.
  */
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { BALANCING, DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
 import { CAMPAIGN_LIMIT_MESSAGE, CAMPAIGN_RESTORE_LIMIT_MESSAGE, isCampaignActive } from '../domain/campaigns'
-import { compareDays, isValidDayKey, toDayKey } from '../domain/dates'
+import { addDays, compareDays, diffDays, formatDay, isValidDayKey, toDayKey } from '../domain/dates'
 import { habitTombstone, withTombstone } from '../domain/deletion'
 import { deriveGameState, evaluateMainQuests } from '../domain/engine'
+import { canUndoItemPurchase, settleDays } from '../domain/hp'
 import { habitTarget, isArchivedOn, isDone, mergePauses, reachesTarget, sameSchedule } from '../domain/schedule'
 import type {
   AchievementUnlock,
@@ -30,6 +33,7 @@ import type {
   BlueprintRef,
   Chapter,
   ChapterCriterion,
+  ChapterMetric,
   CharacterProfile,
   Completion,
   DayKey,
@@ -38,10 +42,13 @@ import type {
   GameData,
   Habit,
   HabitPause,
+  HpLedgerEntry,
   IsoWeekday,
+  ItemId,
   MainQuest,
   Measure,
   Purchase,
+  RestPeriod,
   Reward,
   Schedule,
   ScheduleHistoryEntry,
@@ -70,6 +77,19 @@ export const DEFAULT_REWARD_ICON = '🎁'
 export const DEFAULT_SIDE_QUEST_ICON = '📜'
 /** Höchster Preis einer Belohnung in Gold. */
 export const MAX_REWARD_PRICE = 1_000_000
+/** Eine Rast (Ruhetag bzw. Urlaub) dauert höchstens so viele Tage am Stück. */
+export const MAX_REST_PERIOD_DAYS = 60
+
+/**
+ * Gegenstände der Schatzkammer (Phase 2b): Name, Icon und Preis – so landen sie als Momentaufnahme in der Chronik.
+ * Preise und Wirkung kommen aus `BALANCING.items`.
+ */
+export const ITEMS: Record<ItemId, { title: string; icon: string; price: number }> = {
+  streakFreeze: { title: 'Streak-Schutz', icon: '❄️', price: BALANCING.items.streakFreeze.price },
+  healingPotion: { title: 'Heiltrank', icon: '🧪', price: BALANCING.items.healingPotion.price },
+}
+/** Alle Gegenstände in Anzeigereihenfolge (die von `ITEMS`). */
+export const ITEM_IDS = Object.keys(ITEMS) as readonly ItemId[]
 
 /** Die bearbeitbaren Felder einer Quest. Verlauf (`scheduleHistory`) und Pausen pflegt das Repository selbst. */
 export type HabitDraft = Omit<Habit, 'id' | 'order' | 'createdDay' | 'archivedDay' | 'scheduleHistory' | 'pauses'>
@@ -78,8 +98,11 @@ export type MainQuestDraft = Omit<MainQuest, 'id' | 'createdAt'>
 export type RewardDraft = Omit<Reward, 'id' | 'order' | 'createdAt' | 'archived'>
 /** Die bearbeitbaren Felder einer Nebenquest. Erledigt wird sie über `completeSideQuest`/`reopenSideQuest`. */
 export type SideQuestDraft = Omit<SideQuest, 'id' | 'order' | 'createdDay' | 'doneDay'>
+/** Die bearbeitbaren Felder einer Rast (Ruhetag bzw. Urlaub, `from`/`until` inklusive). */
+export type RestPeriodDraft = Omit<RestPeriod, 'id' | 'createdAt'>
 
-const HABIT_METRICS = ['completions', 'total', 'streak'] as const
+/** Alle Messgrößen automatischer Kapitel – `satisfies` hält die Liste vollständig zu `ChapterMetric`. */
+const HABIT_METRICS = { completions: true, total: true, streak: true, best: true } satisfies Record<ChapterMetric, true>
 
 const MSG = {
   habitNotFound: 'Diese Quest gibt es nicht (mehr).',
@@ -91,6 +114,17 @@ const MSG = {
   rewardAlreadyPurchased: 'Diese Belohnung hast du schon eingelöst.',
   rewardPrice: `Der Preis muss eine ganze Zahl zwischen 1 und ${MAX_REWARD_PRICE.toLocaleString('de-DE')} Gold sein.`,
   sideQuestNotFound: 'Diese Nebenquest gibt es nicht (mehr).',
+  itemNotFound: 'Diesen Gegenstand gibt es nicht.',
+  freezeStockFull: `Du hast schon ${BALANCING.items.streakFreeze.max} Streak-Schutz im Vorrat – mehr passen nicht in deinen Beutel.`,
+  potionGentle: 'Im Sanften Modus gibt es keine Lebenspunkte – ein Heiltrank hätte nichts zu heilen.',
+  potionFull: 'Deine Lebenspunkte sind schon voll – du brauchst gerade keinen Heiltrank.',
+  itemUndoOtherDay: 'Gegenstände kannst du nur am Tag des Kaufs zurückgeben.',
+  itemUndoFreezeUsed: 'Dieser Streak-Schutz ist schon im Einsatz und lässt sich nicht mehr zurückgeben.',
+  itemUndoSettled: 'Dieser Tag ist schon abgerechnet – der Kauf lässt sich nicht mehr zurückgeben.',
+  restNotFound: 'Diese Rast gibt es nicht (mehr).',
+  restOrder: 'Eine Rast kann nicht enden, bevor sie beginnt.',
+  restTooLong: `Eine Rast dauert höchstens ${MAX_REST_PERIOD_DAYS} Tage am Stück.`,
+  restOver: 'Diese Rast ist schon vorbei – vergangene Rasttage bleiben erhalten.',
 } as const
 
 /** Meldung, wenn das Gold für eine Belohnung nicht reicht, z. B. "Dafür fehlen dir noch 150 Gold." */
@@ -110,6 +144,9 @@ export function missingGoldMessage(missing: number): string {
  * - `deletedHabits` (Grabsteine gelöschter Quests) geprüft und normalisiert; fehlt, wenn es keine gibt
  * - Phase 2a: `rewards` nach `order`, `purchases` nach `createdAt`, `sideQuests` nach `order`,
  *   `achievementUnlocks` nach Tag – jeweils nur, wenn es welche gibt (fehlt = keine)
+ * - Phase 2b: `hpLedger` nach Tag, `restPeriods` nach `from` (dann `until`, Anlagezeit) – ebenso nur, wenn es
+ *   welche gibt. `settings.penalties` fehlt, solange nie etwas gespeichert wurde: Das heißt „Lebenspunkte an,
+ *   noch nie abgerechnet“ (`penaltiesEnabled` aus `domain/hp.ts`); `since` setzt erst `settleHpDays`.
  */
 export async function loadGameData(database: QuestlogDB = db): Promise<GameData> {
   return database.transaction('r', allTables(database), async () => {
@@ -124,6 +161,8 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
       purchases,
       sideQuests,
       achievementUnlocks,
+      hpLedger,
+      restPeriods,
     ] = await Promise.all([
       database.habits.toArray(),
       database.completions.toArray(),
@@ -135,6 +174,8 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
       database.purchases.toArray(),
       database.sideQuests.toArray(),
       database.achievementUnlocks.toArray(),
+      database.hpLedger.toArray(),
+      database.restPeriods.toArray(),
     ])
 
     const data: GameData = {
@@ -151,6 +192,8 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
     if (purchases.length > 0) data.purchases = purchases.sort(comparePurchases)
     if (sideQuests.length > 0) data.sideQuests = sideQuests.sort(compareSideQuestOrder)
     if (achievementUnlocks.length > 0) data.achievementUnlocks = achievementUnlocks.sort(compareUnlocks)
+    if (hpLedger.length > 0) data.hpLedger = hpLedger.sort((a, b) => compareDays(a.day, b.day))
+    if (restPeriods.length > 0) data.restPeriods = restPeriods.sort(compareRestPeriods)
     return data
   })
 }
@@ -175,6 +218,9 @@ export async function saveProfile(profile: CharacterProfile, database: QuestlogD
  * Ändert einzelne Einstellungen. Gespeichert werden nur explizit gesetzte Werte –
  * nicht gesetzte fallen beim Laden auf `DEFAULT_SETTINGS` zurück.
  * `dayStartHour` wird auf eine ganze Stunde zwischen 0 und 12 begrenzt.
+ *
+ * Phase 2b: `hpIntroSeen` wird übernommen; von `penalties` nur `enabled` – `since` bleibt immer, wie es ist (nie
+ * rückwirkend abrechnen). Zum Umschalten der Lebenspunkte besser `setPenaltiesEnabled` (mit Spieltag) verwenden.
  */
 export async function updateSettings(patch: Partial<Settings>, database: QuestlogDB = db): Promise<void> {
   const changes: Partial<Settings> = {}
@@ -183,12 +229,94 @@ export async function updateSettings(patch: Partial<Settings>, database: Questlo
     changes.dayStartHour = clamp(Math.round(patch.dayStartHour), 0, 12)
   }
   if (patch.effects !== undefined) changes.effects = Boolean(patch.effects)
+  if (patch.hpIntroSeen !== undefined) changes.hpIntroSeen = Boolean(patch.hpIntroSeen)
+  const penalties = patch.penalties
 
-  await database.transaction('rw', database.kv, async () => {
+  await updateStoredSettings(database, (stored) =>
+    penalties === undefined || penalties === null
+      ? changes
+      : { ...changes, penalties: withPenaltiesEnabled(stored.penalties, Boolean(penalties.enabled)) },
+  )
+}
+
+/**
+ * Lesen → ändern → schreiben der gespeicherten Einstellungen in einer Transaktion. `change` bekommt die gültigen
+ * gespeicherten Werte (ohne Standardwerte) und liefert die zu überschreibenden.
+ */
+async function updateStoredSettings(
+  database: QuestlogDB,
+  change: (stored: Partial<Settings>) => Partial<Settings>,
+): Promise<Partial<Settings>> {
+  return database.transaction('rw', database.kv, async () => {
     const entry = await database.kv.get(KV_KEYS.settings)
     const stored = pickValidSettings(entry?.value)
-    await database.kv.put({ key: KV_KEYS.settings, value: { ...stored, ...changes } })
+    const next = { ...stored, ...change(stored) }
+    await database.kv.put({ key: KV_KEYS.settings, value: next })
+    return next
   })
+}
+
+/** Lebenspunkte an/aus mit unverändertem `since` (fehlt es, bleibt es weg – außer `since` wird übergeben). */
+function withPenaltiesEnabled(
+  current: Settings['penalties'],
+  enabled: boolean,
+  sinceIfUnset?: DayKey,
+): NonNullable<Settings['penalties']> {
+  const penalties: NonNullable<Settings['penalties']> = { enabled }
+  const since = current?.since ?? sinceIfUnset
+  if (since !== undefined) penalties.since = since
+  return penalties
+}
+
+// ---------------------------------------------------------------------------
+// Lebenspunkte (Phase 2b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Rechnet alle Tage ab, die nicht mehr nachgetragen werden können (bis `today − backfillDays − 1`), und hängt sie
+ * an das Ledger an – alles in **einer** Transaktion (`settleDays` aus `domain/hp.ts`):
+ * - Fehlt `settings.penalties.since`, wird es auf `today` gesetzt – abgerechnet wird nie rückwirkend (auch nicht
+ *   nach dem Update auf Phase 2b). `enabled` bleibt dabei, wie es ist (Standard: an).
+ * - Gespeicherte Einträge ändern sich nie; es kommen nur neue Tage dazu.
+ * - Idempotent: Ein zweiter Aufruf (auch gleichzeitig, auch aus einem anderen Tab – die Transaktionen laufen
+ *   nacheinander) findet nichts Neues und liefert `[]`.
+ * - Ohne Held (vor dem Onboarding) passiert nichts.
+ * @returns die neu abgerechneten Einträge (chronologisch) – z. B. für eine Meldung über eine Niederlage.
+ */
+export async function settleHpDays(today: DayKey, database: QuestlogDB = db): Promise<HpLedgerEntry[]> {
+  assertDayKey(today)
+  return database.transaction('rw', allTables(database), async () => {
+    const data = await loadGameData(database)
+    if (data.profile === undefined) return []
+    let settings = data.settings
+    if (settings.penalties?.since === undefined) {
+      const stored = await updateStoredSettings(database, (current) => ({
+        penalties: withPenaltiesEnabled(current.penalties, current.penalties?.enabled ?? true, today),
+      }))
+      settings = { ...settings, penalties: stored.penalties }
+    }
+    const entries = settleDays({ ...data, settings }, today)
+    if (entries.length > 0) await database.hpLedger.bulkAdd(entries)
+    return entries
+  })
+}
+
+/**
+ * Schaltet die Lebenspunkte am Spieltag `today` an oder aus (aus = Sanfter Modus: keine HP, kein Schaden, keine
+ * Niederlage; Streak-Schutz wirkt weiter). `since` bleibt; fehlt es noch, setzt das Einschalten es auf `today`.
+ * Nach einer Zeit im Sanften Modus starten die HP beim nächsten abgerechneten Tag wieder voll (`settleDays`).
+ */
+export async function setPenaltiesEnabled(enabled: boolean, today: DayKey, database: QuestlogDB = db): Promise<void> {
+  assertDayKey(today)
+  const on = enabled === true
+  await updateStoredSettings(database, (stored) => ({
+    penalties: withPenaltiesEnabled(stored.penalties, on, on ? today : undefined),
+  }))
+}
+
+/** Merkt sich, dass die Einführung „Neu: Lebenspunkte“ gesehen wurde (`settings.hpIntroSeen`). */
+export async function markHpIntroSeen(database: QuestlogDB = db): Promise<void> {
+  await updateStoredSettings(database, () => ({ hpIntroSeen: true }))
 }
 
 // ---------------------------------------------------------------------------
@@ -927,9 +1055,214 @@ export async function purchaseReward(rewardId: string, today: DayKey, database: 
  * Macht eine Einlösung rückgängig (z. B. versehentlich getippt): Sie verschwindet aus der Chronik, das Gold ist
  * wieder da, eine einmalige Belohnung ist wieder einlösbar. Eine unbekannte (schon rückgängig gemachte)
  * Einlösung ändert nichts.
+ *
+ * Gegenstände (Phase 2b) nur am Kauftag `today` und nur, solange sie nicht verbraucht bzw. abgerechnet sind
+ * (`canUndoItemPurchase` aus `domain/hp.ts`) – sonst ein Fehler, nichts wird geändert. `today` sollte übergeben
+ * werden; fehlt er, gilt der Spieltag laut Uhr und gespeichertem Tageswechsel. Belohnungen gehen immer.
  */
-export async function undoPurchase(purchaseId: string, database: QuestlogDB = db): Promise<void> {
-  await database.purchases.delete(purchaseId)
+export async function undoPurchase(purchaseId: string, today?: DayKey, database: QuestlogDB = db): Promise<void> {
+  if (today !== undefined) assertDayKey(today)
+  await database.transaction('rw', allTables(database), async () => {
+    const purchase = await database.purchases.get(purchaseId)
+    if (!purchase) return
+    if (purchase.kind === 'item') {
+      const day = today ?? toDayKey(new Date(), await storedDayStartHour(database))
+      const data = await loadGameData(database)
+      if (!canUndoItemPurchase(data, purchase, day)) throw new Error(itemUndoMessage(data, purchase, day))
+    }
+    await database.purchases.delete(purchaseId)
+  })
+}
+
+/** Warum sich ein Gegenstands-Kauf am Tag `today` nicht mehr zurückgeben lässt. */
+function itemUndoMessage(data: GameData, purchase: Purchase, today: DayKey): string {
+  if (purchase.day !== today) return MSG.itemUndoOtherDay
+  const settled = (data.hpLedger ?? []).some((entry) => compareDays(entry.day, purchase.day) >= 0)
+  return settled || purchase.itemId !== 'streakFreeze' ? MSG.itemUndoSettled : MSG.itemUndoFreezeUsed
+}
+
+// ---------------------------------------------------------------------------
+// Schatzkammer: Gegenstände (Phase 2b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Kauft einen Gegenstand am Spieltag `today`. Alles in **einer** Transaktion über `allTables` (gleichzeitige
+ * Käufe laufen nacheinander – nie mehr ausgegeben als da ist, nie mehr Vorrat als erlaubt). Geprüft wird mit
+ * `deriveGameState(loadGameData(), today)`:
+ * - unbekannter Gegenstand → „Diesen Gegenstand gibt es nicht.“
+ * - ❄️ Streak-Schutz: Vorrat (`inventory.streakFreezes`) schon `items.streakFreeze.max` (5) → Fehler
+ * - 🧪 Heiltrank (wird sofort getrunken): nur mit Lebenspunkten (nicht im Sanften Modus) und wenn HP < Max
+ * - Guthaben kleiner als der Preis → `missingGoldMessage`
+ * Gespeichert wird `{ kind: 'item', itemId, title, icon, price (Momentaufnahmen aus ITEMS), day: today, createdAt }`.
+ */
+export async function purchaseItem(itemId: ItemId, today: DayKey, database: QuestlogDB = db): Promise<Purchase> {
+  assertDayKey(today)
+  if (typeof itemId !== 'string' || !Object.hasOwn(ITEMS, itemId)) throw new Error(MSG.itemNotFound)
+  const item = ITEMS[itemId]
+  return database.transaction('rw', allTables(database), async () => {
+    const state = deriveGameState(await loadGameData(database), today)
+    if (itemId === 'streakFreeze' && state.inventory.streakFreezes >= BALANCING.items.streakFreeze.max) {
+      throw new Error(MSG.freezeStockFull)
+    }
+    if (itemId === 'healingPotion') {
+      if (!state.hp.enabled) throw new Error(MSG.potionGentle)
+      if (state.hp.current >= state.hp.max) throw new Error(MSG.potionFull)
+    }
+    const balance = state.gold.balance
+    if (balance < item.price) throw new Error(missingGoldMessage(item.price - balance))
+    const purchase: Purchase = {
+      id: newId(),
+      kind: 'item',
+      itemId,
+      title: item.title,
+      icon: item.icon,
+      price: item.price,
+      day: today,
+      createdAt: Date.now(),
+    }
+    await database.purchases.add(purchase)
+    return purchase
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Rast & Urlaub (Phase 2b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Erster Tag, den eine Rast (neu) abdecken darf: `today − backfillDays` (gestern lässt sich noch nachtragen),
+ * aber nie ein schon abgerechneter Tag (nach dem letzten Ledger-Eintrag). Frühere Tage sind fest – eine Rast
+ * dort würde vergangene Perfekte Tage, Streaks und Lebenspunkte umschreiben. Für die UI (z. B. frühestes Datum).
+ */
+export function firstEditableRestDay(data: Pick<GameData, 'hpLedger'>, today: DayKey): DayKey {
+  let earliest = addDays(today, -BALANCING.backfillDays)
+  for (const entry of data.hpLedger ?? []) {
+    if (!isValidDayKey(entry.day)) continue
+    const next = addDays(entry.day, 1)
+    if (compareDays(next, earliest) > 0) earliest = next
+  }
+  return earliest
+}
+
+/**
+ * Plant eine Rast (Ruhetag bzw. Urlaub) von `from` bis `until` (inklusive): An diesen Tagen ist keine Quest Pflicht,
+ * Streaks überstehen sie, keine HP-Wirkung. Geprüft wird: gültige Tage, `from ≤ until`, höchstens
+ * `MAX_REST_PERIOD_DAYS` (60) Tage, Beginn frühestens `firstEditableRestDay` (gestern; auch in der Zukunft
+ * erlaubt), keine Überschneidung mit einer anderen Rast. Die Notiz ist optional (leer = keine).
+ */
+export async function addRestPeriod(draft: RestPeriodDraft, today: DayKey, database: QuestlogDB = db): Promise<RestPeriod> {
+  assertDayKey(today)
+  const clean = normalizeRestPeriodDraft(draft)
+  return database.transaction('rw', database.restPeriods, database.hpLedger, async () => {
+    const [periods, hpLedger] = await Promise.all([database.restPeriods.toArray(), database.hpLedger.toArray()])
+    const earliest = firstEditableRestDay({ hpLedger }, today)
+    if (compareDays(clean.from, earliest) < 0) throw new Error(restStartMessage(earliest, today))
+    assertNoRestOverlap(periods, clean)
+    const period: RestPeriod = { id: newId(), ...clean, createdAt: Date.now() }
+    await database.restPeriods.add(period)
+    return period
+  })
+}
+
+/**
+ * Ändert eine Rast am Spieltag `today` (Felder im Patch; `note: undefined`/leer entfernt die Notiz). Tage vor
+ * `firstEditableRestDay` bleiben, wie sie waren: Eine laufende Rast lässt sich verlängern oder verkürzen, ihr
+ * vergangener Teil (und eine schon vorbei gegangene Rast) nicht – außer der Notiz. Sonst gleiche Prüfungen wie
+ * `addRestPeriod` (die andere Rast zählt dabei nicht als Überschneidung).
+ */
+export async function updateRestPeriod(
+  id: string,
+  patch: Partial<RestPeriodDraft>,
+  today: DayKey,
+  database: QuestlogDB = db,
+): Promise<void> {
+  assertDayKey(today)
+  await database.transaction('rw', database.restPeriods, database.hpLedger, async () => {
+    const existing = await database.restPeriods.get(id)
+    if (!existing) throw new Error(MSG.restNotFound)
+    const clean = normalizeRestPeriodDraft({
+      from: patch.from ?? existing.from,
+      until: patch.until ?? existing.until,
+      note: Object.hasOwn(patch, 'note') ? patch.note : existing.note,
+    })
+    const [periods, hpLedger] = await Promise.all([database.restPeriods.toArray(), database.hpLedger.toArray()])
+    const earliest = firstEditableRestDay({ hpLedger }, today)
+    const fixedThrough = addDays(earliest, -1)
+    const before = fixedPart(existing, fixedThrough)
+    const after = fixedPart(clean, fixedThrough)
+    if (before?.from !== after?.from || before?.until !== after?.until) {
+      throw new Error(before === undefined ? restStartMessage(earliest, today) : restPastMessage(earliest, today))
+    }
+    assertNoRestOverlap(
+      periods.filter((period) => period.id !== id),
+      clean,
+    )
+    const next: RestPeriod = { id: existing.id, ...clean, createdAt: existing.createdAt }
+    await database.restPeriods.put(next)
+  })
+}
+
+/**
+ * Löscht eine Rast am Spieltag `today` – aber nur ihre Tage ab `firstEditableRestDay`:
+ * - beginnt sie dort oder später → endgültig gelöscht (`'deleted'`; unbekannte ID: nichts passiert, `'deleted'`)
+ * - läuft sie gerade (begann vorher) → endet sie am Tag davor (`'shortened'`, z. B. Urlaub vorzeitig beendet)
+ * - ist sie schon vorbei → Fehler, nichts geändert (vergangene Rasttage bleiben).
+ */
+export async function deleteRestPeriod(
+  id: string,
+  today: DayKey,
+  database: QuestlogDB = db,
+): Promise<'deleted' | 'shortened'> {
+  assertDayKey(today)
+  return database.transaction('rw', database.restPeriods, database.hpLedger, async () => {
+    const existing = await database.restPeriods.get(id)
+    if (!existing) return 'deleted'
+    const earliest = firstEditableRestDay({ hpLedger: await database.hpLedger.toArray() }, today)
+    if (compareDays(existing.from, earliest) >= 0) {
+      await database.restPeriods.delete(id)
+      return 'deleted'
+    }
+    if (compareDays(existing.until, earliest) < 0) throw new Error(MSG.restOver)
+    await database.restPeriods.put({ ...existing, until: addDays(earliest, -1) })
+    return 'shortened'
+  })
+}
+
+/** Teil einer Rast bis einschließlich `fixedThrough` (unveränderliche Vergangenheit), `undefined`, wenn keiner. */
+function fixedPart(period: Pick<RestPeriod, 'from' | 'until'>, fixedThrough: DayKey): { from: DayKey; until: DayKey } | undefined {
+  if (compareDays(period.from, fixedThrough) > 0) return undefined
+  return { from: period.from, until: compareDays(period.until, fixedThrough) < 0 ? period.until : fixedThrough }
+}
+
+/** „gestern“, „heute“ bzw. „dem 3. Nov.“ – für Meldungen zum frühesten Rast-Tag. */
+function restDayText(day: DayKey, today: DayKey): string {
+  if (day === today) return 'heute'
+  if (day === addDays(today, -1)) return 'gestern'
+  if (day === addDays(today, 1)) return 'morgen'
+  return `dem ${formatDay(day, 'short')}`
+}
+
+function restStartMessage(earliest: DayKey, today: DayKey): string {
+  return earliest === addDays(today, -1)
+    ? 'Eine Rast kannst du höchstens ab gestern rückwirkend eintragen.'
+    : `Eine Rast kannst du frühestens ab ${restDayText(earliest, today)} eintragen.`
+}
+
+function restPastMessage(earliest: DayKey, today: DayKey): string {
+  return `Vergangene Rasttage lassen sich nicht mehr ändern – nur die ab ${restDayText(earliest, today)}.`
+}
+
+/** Wirft, wenn `period` sich mit einer der `others` überschneidet (mit freundlicher Angabe des Zeitraums). */
+function assertNoRestOverlap(others: readonly RestPeriod[], period: Pick<RestPeriod, 'from' | 'until'>): void {
+  const clash = others
+    .filter((other) => compareDays(other.from, period.until) <= 0 && compareDays(period.from, other.until) <= 0)
+    .sort(compareRestPeriods)[0]
+  if (clash === undefined) return
+  const range =
+    clash.from === clash.until
+      ? formatDay(clash.from, 'short')
+      : `${formatDay(clash.from, 'short')} – ${formatDay(clash.until, 'short')}`
+  throw new Error(`An diesen Tagen rastest du schon (${range}).`)
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,7 +1384,7 @@ export async function recordAchievementUnlocks(
 
 /**
  * Löscht ALLE Daten (Profil, Einstellungen, Quests, Erledigungen, Kampagnen, Belohnungen, Einlösungen,
- * Nebenquests, Erfolge) in einer Transaktion.
+ * Nebenquests, Erfolge, abgerechnete Tage, Rast & Urlaub) in einer Transaktion.
  */
 export async function resetAllData(database: QuestlogDB = db): Promise<void> {
   const tables = allTables(database)
@@ -1082,6 +1415,11 @@ function comparePurchases(a: Purchase, b: Purchase): number {
 /** Sortierung von Nebenquests: `order`, dann Titel, dann ID (wie Quests). */
 function compareSideQuestOrder(a: SideQuest, b: SideQuest): number {
   return a.order - b.order || a.title.localeCompare(b.title, 'de') || compareIds(a.id, b.id)
+}
+
+/** Sortierung der Rast-Zeiträume: Beginn, Ende, Anlagezeit, ID. */
+function compareRestPeriods(a: RestPeriod, b: RestPeriod): number {
+  return compareDays(a.from, b.from) || compareDays(a.until, b.until) || a.createdAt - b.createdAt || compareIds(a.id, b.id)
 }
 
 /** Sortierung freigeschalteter Erfolge: Tag, dann ID. */
@@ -1254,11 +1592,16 @@ async function storedDayStartHour(database: QuestlogDB): Promise<number> {
 function pickValidSettings(stored: unknown): Partial<Settings> {
   const result: Partial<Settings> = {}
   if (!isRecord(stored)) return result
-  const { dayStartHour, effects } = stored
+  const { dayStartHour, effects, penalties, hpIntroSeen } = stored
   if (typeof dayStartHour === 'number' && Number.isInteger(dayStartHour) && dayStartHour >= 0 && dayStartHour <= 12) {
     result.dayStartHour = dayStartHour
   }
   if (typeof effects === 'boolean') result.effects = effects
+  if (isRecord(penalties) && typeof penalties.enabled === 'boolean') {
+    result.penalties = { enabled: penalties.enabled }
+    if (isDayKeyValue(penalties.since)) result.penalties.since = penalties.since
+  }
+  if (typeof hpIntroSeen === 'boolean') result.hpIntroSeen = hpIntroSeen
   return result
 }
 
@@ -1470,7 +1813,7 @@ function normalizeCriterion(criterion: ChapterCriterion): ChapterCriterion {
     case 'habit': {
       const habitId = optionalId(criterion.habitId)
       if (habitId === undefined) throw new Error('Wähle eine Quest für das Kapitel.')
-      if (!HABIT_METRICS.includes(criterion.metric)) throw new Error('Unbekannte Kapitel-Messgröße.')
+      if (!Object.hasOwn(HABIT_METRICS, criterion.metric)) throw new Error('Unbekannte Kapitel-Messgröße.')
       return { type: 'habit', habitId, metric: criterion.metric, target: requirePositive(criterion.target, targetMessage) }
     }
     default:
@@ -1552,6 +1895,20 @@ function normalizeSideQuestDraft(draft: SideQuestDraft): SideQuestDraft {
     assertDayKey(dueDay, 'Datum für den Termin')
     result.dueDay = dueDay
   }
+  return result
+}
+
+/** Validiert eine Rast: gültige Tage, `from ≤ until`, höchstens `MAX_REST_PERIOD_DAYS` Tage; leere Notiz entfällt. */
+function normalizeRestPeriodDraft(draft: RestPeriodDraft): RestPeriodDraft {
+  const from: unknown = draft?.from
+  const until: unknown = draft?.until
+  assertDayKey(from, 'Startdatum')
+  assertDayKey(until, 'Enddatum')
+  if (compareDays(until, from) < 0) throw new Error(MSG.restOrder)
+  if (diffDays(from, until) + 1 > MAX_REST_PERIOD_DAYS) throw new Error(MSG.restTooLong)
+  const result: RestPeriodDraft = { from, until }
+  const note = optionalText(draft.note)
+  if (note !== undefined) result.note = note
   return result
 }
 

@@ -1,15 +1,18 @@
-import { Crown, ScrollText, Trophy } from 'lucide-react'
+import { Coins, Crown, ScrollText, Sunrise, Trophy } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useId, useRef } from 'react'
 import type { ReactNode, RefObject } from 'react'
-import { Badge, Button, Ornament, XpBar, cn, formatNumber } from '../../ui'
+import type { DayKey } from '../../domain/types'
+import { Badge, Button, Ornament, ProgressBar, XpBar, cn, formatNumber } from '../../ui'
 // Die Modal-Hilfen (Dialog-Stapel, Scroll-Sperre, Fokusfalle) teilt sich die Szene mit `Dialog`, damit
 // Esc/Tab auch bei einem darunter offenen Dialog nur die oberste Ebene betreffen.
 import { isTopModal, lockBodyScroll, makeAppInert, pushModal, trapTabKey } from '../../ui/modal'
 import { accentVars } from '../campaignTheme'
 import type { Celebration } from './celebrations'
 import type { CampaignCompletedEvent, LevelUpEvent } from './feedbackEvents'
-import { rankHint, xpLabel } from './feedbackText'
+import { defeatSceneText, hpLabel, rankHint, xpLabel } from './feedbackText'
+import type { DefeatEvent } from './hpFeedback'
+import { HP_COLOR } from './hpTheme'
 
 export interface CelebrationOverlayProps {
   celebration: Celebration
@@ -23,10 +26,15 @@ export interface CelebrationOverlayProps {
    * Kampagnen-Titel; Pokal, XP, Belohnung und „Weiter“ bleiben golden. Ohne: alles golden (wie beim Level-Up).
    */
   accent?: string
+  /** Heutiger Spieltag – für Texte wie „am Montag“ (Niederlage). */
+  today?: DayKey
 }
 
-/** Farbstimmung der Szene: golden (Level-Up) oder in der Kampagnenfarbe. */
-type SceneTone = 'gold' | 'accent'
+/**
+ * Farbstimmung der Szene: golden (Level-Up), in der Kampagnenfarbe oder ruhig (Niederlage: gedämpftes Karmesin,
+ * keine Lichtstrahlen, keine Schockwelle, kein Konfetti – würdevoll statt dramatisch).
+ */
+type SceneTone = 'gold' | 'accent' | 'calm'
 
 /** Klassen je Farbstimmung – die Kampagnenfarbe kommt als CSS-Variablen (`accentVars`) von der Szene. */
 const SCENE_TONES: Record<
@@ -49,6 +57,14 @@ const SCENE_TONES: Record<
     ring: 'border-(--accent-60) shadow-[0_0_0_6px_var(--accent-10),0_0_56px_-6px_var(--accent-60),inset_0_2px_0_rgb(255_236_200/0.1),inset_0_-10px_24px_rgb(0_0_0/0.5)]',
     innerRing: 'border-(--accent-35)',
   },
+  calm: {
+    backdrop: 'bg-[radial-gradient(70%_50%_at_50%_32%,rgb(185_70_90/0.14),transparent_70%)]',
+    rays: 'none',
+    glow: 'bg-[radial-gradient(closest-side,rgb(185_70_90/0.3),rgb(185_70_90/0.08)_55%,transparent)]',
+    shockwave: 'border-transparent',
+    ring: 'border-[rgb(185_70_90/0.6)] shadow-[0_0_0_6px_rgb(185_70_90/0.07),0_0_48px_-8px_rgb(185_70_90/0.5),inset_0_2px_0_rgb(255_236_200/0.1),inset_0_-10px_24px_rgb(0_0_0/0.5)]',
+    innerRing: 'border-[rgb(185_70_90/0.3)]',
+  },
 }
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
@@ -58,11 +74,11 @@ const HEADING =
   'font-display text-[clamp(1.625rem,4.4dvh,1.875rem)] leading-tight font-bold tracking-wide text-balance text-parchment'
 
 /**
- * Bildschirmfüllende Feier-Szene (Level-Up bzw. Kampagne gemeistert) als modaler Dialog:
+ * Bildschirmfüllende Szene (Level-Up, Kampagne gemeistert bzw. – ruhig – die Niederlage) als modaler Dialog:
  * Fokus startet auf „Weiter“, Esc und ein Tipp neben den Inhalt schließen, Tab bleibt in der Szene,
  * danach kehrt der Fokus zurück. Liegt über Toasts und Dialogen.
  */
-export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, accent }: CelebrationOverlayProps) {
+export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, accent, today }: CelebrationOverlayProps) {
   const titleId = useId()
   const descriptionId = useId()
   const panelRef = useRef<HTMLDivElement>(null)
@@ -84,27 +100,47 @@ export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, acce
     })
   }, [])
 
-  const tone: SceneTone = celebration.kind === 'campaign' && accent !== undefined ? 'accent' : 'gold'
+  const tone: SceneTone =
+    celebration.kind === 'defeat' ? 'calm' : celebration.kind === 'campaign' && accent !== undefined ? 'accent' : 'gold'
 
-  const content =
-    celebration.kind === 'level-up' ? (
-      <LevelUpContent
-        event={celebration.event}
-        fancy={fancy}
-        titleId={titleId}
-        descriptionId={descriptionId}
-        medallionRef={medallionRef}
-      />
-    ) : (
-      <CampaignContent
-        event={celebration.event}
-        fancy={fancy}
-        titleId={titleId}
-        descriptionId={descriptionId}
-        medallionRef={medallionRef}
-        tone={tone}
-      />
-    )
+  let content: ReactNode
+  switch (celebration.kind) {
+    case 'level-up':
+      content = (
+        <LevelUpContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+        />
+      )
+      break
+    case 'campaign':
+      content = (
+        <CampaignContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+          tone={tone}
+        />
+      )
+      break
+    case 'defeat':
+      content = (
+        <DefeatContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+          today={today ?? celebration.event.day}
+        />
+      )
+      break
+  }
 
   return (
     <motion.div
@@ -148,7 +184,7 @@ export function CelebrationOverlay({ celebration, fancy, onClose, onReveal, acce
           >
             {content}
             <Button ref={buttonRef} size="lg" onClick={onClose} className="mt-[clamp(1.25rem,3.5dvh,1.75rem)] w-full sm:w-60">
-              Weiter
+              {celebration.kind === 'defeat' ? 'Wieder aufstehen' : 'Weiter'}
             </Button>
           </motion.div>
         </div>
@@ -298,6 +334,64 @@ function CampaignContent({
   )
 }
 
+/**
+ * Niederlage: würdevoll und ermutigend – „Du bist gefallen – und stehst wieder auf“, das verlorene Gold (als Lohn des
+ * Heilers), was bleibt (Level, XP, Serien), die wieder vollen Lebenspunkte und leise der Sanfte Modus. Ein
+ * Sonnenaufgang statt Totenkopf, keine Strahlen.
+ */
+function DefeatContent({
+  event,
+  fancy,
+  titleId,
+  descriptionId,
+  medallionRef,
+  today,
+}: ContentProps<DefeatEvent> & { today: DayKey }) {
+  const text = defeatSceneText(event, today)
+  const ratio = event.max > 0 ? event.hp / event.max : 1
+  return (
+    <>
+      <Eyebrow>{text.eyebrow}</Eyebrow>
+      <Medallion fancy={fancy} medallionRef={medallionRef} tone="calm">
+        <motion.span
+          className="relative text-gold-bright drop-shadow-[0_4px_12px_rgb(0_0_0/0.6)] [&_svg]:size-[clamp(3rem,8dvh,3.75rem)]"
+          initial={fancy ? { opacity: 0, y: 14 } : { opacity: 0 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={fancy ? { duration: 0.9, delay: 0.2, ease: EASE_OUT } : { duration: 0.2, delay: 0.05 }}
+        >
+          <Sunrise aria-hidden strokeWidth={1.6} />
+        </motion.span>
+      </Medallion>
+
+      <h2 id={titleId} className={cn(HEADING, 'mt-[clamp(1.25rem,4dvh,2rem)]')}>
+        {text.title}
+      </h2>
+      <Ornament className="mt-2 h-3.5 w-24" />
+      <div id={descriptionId} className="mt-3 flex flex-col items-center gap-2.5">
+        <p className="text-[0.9375rem] leading-relaxed text-muted">{text.body}</p>
+        {event.goldLost > 0 && (
+          <Badge tone="neutral" size="md" icon={<Coins />}>
+            −{formatNumber(event.goldLost)} Gold
+          </Badge>
+        )}
+      </div>
+
+      <div className="mt-[clamp(1rem,3dvh,1.5rem)] w-full rounded-2xl border border-border bg-surface/80 px-4 pt-3.5 pb-4 text-left shadow-card">
+        <ProgressBar
+          value={ratio}
+          color={HP_COLOR}
+          label="Lebenspunkte"
+          valueLabel={hpLabel(event.hp, event.max)}
+          valueText={`${hpLabel(event.hp, event.max)} – ${text.hpLine}`}
+        />
+        <p className="mt-2 text-sm text-parchment">{text.hpLine}</p>
+      </div>
+      <p className="mt-3 text-sm text-parchment/90">{text.encouragement}</p>
+      <p className="mt-1.5 text-xs text-muted">{text.gentleHint}</p>
+    </>
+  )
+}
+
 function Eyebrow({ children }: { children: ReactNode }) {
   return (
     <p className="flex items-center gap-2 text-xs font-semibold tracking-[0.2em] whitespace-nowrap text-gold uppercase sm:gap-2.5 sm:tracking-[0.26em]">
@@ -324,13 +418,15 @@ function Medallion({
   children: ReactNode
 }) {
   const styles = SCENE_TONES[tone]
+  // Ruhige Szene (Niederlage): kein Strahlenkranz und keine Schockwelle, auch mit vollen Effekten.
+  const dramatic = fancy && tone !== 'calm'
   return (
     <div
       ref={medallionRef}
       data-medallion={tone}
       className="relative mt-[clamp(1rem,3dvh,1.5rem)] grid size-[clamp(7rem,19dvh,10rem)] place-items-center"
     >
-      {fancy && (
+      {dramatic && (
         <motion.span
           aria-hidden="true"
           className="pointer-events-none absolute top-1/2 left-1/2 -z-10 size-[56rem] rounded-full sm:size-[76rem]"
@@ -355,12 +451,14 @@ function Medallion({
         aria-hidden="true"
         className={cn('pointer-events-none absolute -inset-14 -z-10 rounded-full', styles.glow)}
         initial={{ opacity: 0 }}
-        animate={fancy ? { opacity: [0, 1, 0.75, 1] } : { opacity: 0.8 }}
+        animate={dramatic ? { opacity: [0, 1, 0.75, 1] } : { opacity: 0.8 }}
         transition={
-          fancy ? { duration: 3.2, times: [0, 0.25, 0.6, 1], repeat: Infinity, repeatType: 'mirror' } : { duration: 0.2 }
+          dramatic
+            ? { duration: 3.2, times: [0, 0.25, 0.6, 1], repeat: Infinity, repeatType: 'mirror' }
+            : { duration: fancy ? 0.8 : 0.2 }
         }
       />
-      {fancy && (
+      {dramatic && (
         <motion.span
           aria-hidden="true"
           className={cn('pointer-events-none absolute inset-0 rounded-full border-2', styles.shockwave)}

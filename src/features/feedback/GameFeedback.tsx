@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useGameContext } from '../../app/gameContext'
 import { ATTRIBUTES } from '../../domain/attributes'
-import type { CharacterProfile, Completion, GameState, SideQuest } from '../../domain/types'
+import type { CharacterProfile, Completion, GameState, HpLedgerEntry, Purchase, SideQuest } from '../../domain/types'
 import { useMediaQuery, useToast } from '../../ui'
 import type { ToastApi, ToastOptions } from '../../ui'
 import { accentVars } from '../campaignTheme'
@@ -42,9 +42,12 @@ import {
   attributeToastText,
   bonusGrowthToastText,
   chapterToastText,
+  freezeToastText,
   perfectDayToastText,
+  potionToastText,
   xpToastText,
 } from './feedbackText'
+import { hpFeedbackEvents } from './hpFeedback'
 import { nextXpSession } from './xpSession'
 import type { XpSession } from './xpSession'
 
@@ -52,6 +55,8 @@ import type { XpSession } from './xpSession'
 const HIGHLIGHT_TOAST_MS = 5000
 /** Kurzer Hinweis „Tagesbonus steigt auf …“ (wie ein XP-Toast). */
 const BONUS_GROWTH_TOAST_MS = 3500
+/** Hinweise zu den Lebenspunkten (Streak-Schutz eingesetzt, Heiltrank) – ruhig, aber lange genug zum Lesen. */
+const HP_TOAST_MS = 5000
 
 /** Konfetti, das zu einer Änderung passt: Stärke und ggf. die Kampagnenfarbe (Kapitel). */
 type ConfettiChoice = Pick<ConfettiBurstSpec, 'intensity' | 'accent'>
@@ -78,6 +83,9 @@ type ConfettiChoice = Pick<ConfettiBurstSpec, 'intensity' | 'accent'>
  * - Kampagnenfarbe: Kapitel-Toast (Icon-Rahmen), Kapitel-Konfetti und die Szene „Kampagne gemeistert“ tragen die
  *   Hauptfarbe der Kampagne (`campaignAccentById`); XP, Belohnung und Pokal bleiben golden. Ohne Attribut bleibt
  *   alles golden.
+ * - Lebenspunkte (`hpFeedback.ts`): Eine neu abgerechnete Niederlage zeigt eine ruhige, würdevolle Szene (ohne
+ *   Konfetti) mit verlorenem Gold und vollen HP; ein eingesetzter Streak-Schutz und ein getrunkener Heiltrank je
+ *   eine kleine Meldung. Der übliche Tagesschaden der Abrechnung bleibt still (er steht im Helden-Kopf).
  */
 export function GameFeedback() {
   const { data, state } = useGameContext()
@@ -108,18 +116,29 @@ export function GameFeedback() {
     profile: string
     completions: readonly Completion[]
     sideQuests: readonly SideQuest[] | undefined
+    hpLedger: readonly HpLedgerEntry[] | undefined
+    purchases: readonly Purchase[] | undefined
   }>({
     state,
     profile: profileKey(data.profile),
     completions: data.completions,
     sideQuests: data.sideQuests,
+    hpLedger: data.hpLedger,
+    purchases: data.purchases,
   })
   const memory = useRef(celebrationMemoryOf(state))
 
   useEffect(() => {
     const previous = baseline.current
     const profile = profileKey(data.profile)
-    baseline.current = { state, profile, completions: data.completions, sideQuests: data.sideQuests }
+    baseline.current = {
+      state,
+      profile,
+      completions: data.completions,
+      sideQuests: data.sideQuests,
+      hpLedger: data.hpLedger,
+      purchases: data.purchases,
+    }
     if (previous.state === state) return
 
     // Rückgängig gemacht: Toasts und Szenen, die nicht mehr stimmen, verschwinden.
@@ -141,7 +160,11 @@ export function GameFeedback() {
       ...creditedCompletions(previous.completions, data.completions, data.habits, state.today),
       ...creditedSideQuests(previous.sideQuests, data.sideQuests, state.today),
     ]
-    const events = withoutCelebrated(diffGameStates(previous.state, state, credits), memory.current)
+    const hpEvents = hpFeedbackEvents(
+      { ledger: previous.hpLedger, purchases: previous.purchases, state: previous.state },
+      { ledger: data.hpLedger, purchases: data.purchases, state },
+    )
+    const events = withoutCelebrated([...diffGameStates(previous.state, state, credits), ...hpEvents], memory.current)
     if (events.length === 0) return
 
     const celebrate = hasCelebration(events)
@@ -162,6 +185,8 @@ export function GameFeedback() {
     data.completions,
     data.habits,
     data.sideQuests,
+    data.hpLedger,
+    data.purchases,
     fancy,
     present,
     revoke,
@@ -193,7 +218,8 @@ export function GameFeedback() {
   const burstFor = useRef<number | undefined>(undefined)
   const reveal = useCallback(
     (id: number, origin: { x: number; y: number }, accent: string | undefined) => {
-      if (!fancy || burstFor.current === id) return
+      // Die Niederlage-Szene bleibt ruhig – kein Konfetti.
+      if (!fancy || burstFor.current === id || queueRef.current.find((item) => item.id === id)?.kind === 'defeat') return
       burstFor.current = id
       addBurst({ mode: 'burst', intensity: 'full', accent, ...origin })
     },
@@ -216,6 +242,7 @@ export function GameFeedback() {
                 onClose={() => close(current.id)}
                 onReveal={(origin) => reveal(current.id, origin, accent)}
                 accent={accent}
+                today={state.today}
               />
             )}
           </AnimatePresence>,
@@ -464,8 +491,18 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
             }
             break
           }
+          case 'freeze-used':
+            claim(
+              toast({ tone: 'info', icon: '❄️', duration: HP_TOAST_MS, ...freezeToastText(event, state.today) }),
+              [event],
+            )
+            break
+          case 'potion-healed':
+            claim(toast({ tone: 'success', icon: '🧪', duration: HP_TOAST_MS, ...potionToastText(event) }), [event])
+            break
           case 'level-up':
           case 'campaign-completed':
+          case 'defeat':
             break
         }
       }

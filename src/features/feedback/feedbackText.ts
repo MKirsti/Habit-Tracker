@@ -3,7 +3,8 @@
  */
 import { ACHIEVEMENT_TIER_LABELS } from '../../domain/achievements/definitions'
 import { ATTRIBUTES } from '../../domain/attributes'
-import { RANKS } from '../../domain/balancing'
+import { BALANCING, RANKS } from '../../domain/balancing'
+import type { DayKey } from '../../domain/types'
 import { formatNumber } from '../../ui'
 import type {
   AchievementUnlockedEvent,
@@ -12,6 +13,8 @@ import type {
   PerfectDayEvent,
   XpQuest,
 } from './feedbackEvents'
+import { settledDayName } from './hpFeedback'
+import type { DefeatEvent, FreezeUsedEvent, PotionHealedEvent } from './hpFeedback'
 
 export interface ToastText {
   title: string
@@ -132,4 +135,79 @@ export function rankHint(level: number, rank: string): string {
   return levels === 1
     ? `Nur noch 1 Level bis zum Rang ${upcoming.title}`
     : `Noch ${formatNumber(levels)} Level bis zum Rang ${upcoming.title}`
+}
+
+// ---------------------------------------------------------------------------
+// Lebenspunkte (Phase 2b)
+// ---------------------------------------------------------------------------
+
+/** "42 / 55 HP" */
+export function hpLabel(hp: number, max: number): string {
+  return `${formatNumber(hp)} / ${formatNumber(max)} HP`
+}
+
+/**
+ * Streak-Schutz eingesetzt: "Streak-Schutz eingesetzt" · "Er hat Montag aufgefangen – keine HP verloren, deine Serien
+ * bleiben bestehen." (mehrere: "2× Streak-Schutz eingesetzt" · "Sie haben Montag und Dienstag aufgefangen …").
+ */
+export function freezeToastText(event: Pick<FreezeUsedEvent, 'days'>, today: DayKey): ToastText {
+  const count = event.days.length
+  const names = joinTitles(event.days.map((day) => settledDayName(day, today)))
+  return {
+    title: count === 1 ? 'Streak-Schutz eingesetzt' : `${formatNumber(count)}× Streak-Schutz eingesetzt`,
+    description: `${count === 1 ? 'Er hat' : 'Sie haben'} ${names} aufgefangen – keine HP verloren, deine Serien bleiben bestehen.`,
+  }
+}
+
+/** Heiltrank getrunken: "Heiltrank getrunken · +20 HP" · "Lebenspunkte: 42 / 55 HP" (bzw. "… wieder voll: …"). */
+export function potionToastText(event: Pick<PotionHealedEvent, 'count' | 'healed' | 'hp' | 'max'>): ToastText {
+  const drunk = event.count === 1 ? 'Heiltrank getrunken' : `${formatNumber(event.count)} Heiltränke getrunken`
+  return {
+    title: event.healed > 0 ? `${drunk} · +${formatNumber(event.healed)} HP` : drunk,
+    description:
+      event.max > 0 && event.hp >= event.max
+        ? `Lebenspunkte wieder voll: ${hpLabel(event.hp, event.max)}`
+        : `Lebenspunkte: ${hpLabel(event.hp, event.max)}`,
+  }
+}
+
+export interface DefeatSceneText {
+  eyebrow: string
+  title: string
+  /** Was passiert ist – würdevoll, ohne Vorwurf. */
+  body: string
+  /** Zeile unter dem HP-Balken (die Zahlen stehen darüber). */
+  hpLine: string
+  /** Ermutigung zum Schluss. */
+  encouragement: string
+  /** Leiser Hinweis auf den Sanften Modus – für den Fall, dass gerade alles zu viel ist. */
+  gentleHint: string
+}
+
+/**
+ * Texte der Niederlage-Szene: „Du bist gefallen – und stehst wieder auf“, das verlorene Gold als Lohn des Heilers
+ * (eine Geschichte statt einer Strafe), was bleibt (Level, XP, Serien), die vollen Lebenspunkte und ein leiser Hinweis
+ * auf den Sanften Modus. Nie beschämend.
+ */
+export function defeatSceneText(event: DefeatEvent, today: DayKey): DefeatSceneText {
+  const onDay = `am ${settledDayName(event.day, today)}`
+  const healer =
+    event.goldLost > 0
+      ? `Ein Heiler hat dich wieder auf die Beine gebracht – sein Lohn: ${formatNumber(event.goldLost)} Gold.`
+      : 'Ein Heiler hat dich wieder auf die Beine gebracht – diesmal ganz ohne Lohn.'
+  const times = event.count > 1 ? ` – ${formatNumber(event.count)}× in den letzten Tagen` : ''
+  const full = event.max > 0 && event.hp >= event.max
+  return {
+    eyebrow: 'Ein harter Kampf',
+    // Geschütztes Leerzeichen vor dem Gedankenstrich: Er beginnt nie eine Zeile.
+    title: 'Du bist gefallen\u00a0– und stehst wieder auf',
+    body: `Deine Lebenspunkte sind ${onDay} auf 0 gesunken${times}. ${healer} Level, XP und Serien bleiben dir.`,
+    hpLine: full
+      ? 'Du stehst mit vollen Lebenspunkten wieder auf.'
+      : 'Seitdem hast du weitergekämpft – so stehst du heute da.',
+    encouragement: full
+      ? 'Heute ist ein neuer Tag – schon eine erledigte Quest ist ein guter Neuanfang.'
+      : `Heute ist ein neuer Tag – ein Perfekter Tag heilt +${formatNumber(BALANCING.hpByScore.perfect)} HP.`,
+    gentleHint: 'Gerade alles zu viel? Im Sanften Modus (Einstellungen) spielst du ganz ohne Lebenspunkte weiter.',
+  }
 }

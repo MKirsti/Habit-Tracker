@@ -4,8 +4,10 @@ import type {
   BlueprintRef,
   Completion,
   Habit,
+  HpLedgerEntry,
   MainQuest,
   Purchase,
+  RestPeriod,
   Reward,
   SideQuest,
 } from '../domain/types'
@@ -46,6 +48,13 @@ const SCHEMA_V3 = {
   achievementUnlocks: '&id',
 } as const
 
+/** Ab Version 4 (Phase 2b): abgerechnete Tage (Lebenspunkte) und Rast & Urlaub. */
+const SCHEMA_V4 = {
+  ...SCHEMA_V3,
+  hpLedger: '&day',
+  restPeriods: '&id, from',
+} as const
+
 /** Titel der Kampagne, die das Onboarding vor der Kampagnen-Bibliothek angelegt hat. */
 const LEGACY_SCHOLAR_TITLE = 'Der Weg des Gelehrten'
 
@@ -66,6 +75,7 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  * - `habits`: `order` (Sortierung), `mainQuestId` (Verknüpfung mit Kampagnen)
  * - `completions`: `habitId` (Kaskaden-Löschen), `day`
  * - `rewards`, `sideQuests`: `order` (Sortierung); `purchases`: `day`
+ * - `hpLedger`: Primärschlüssel `day` (höchstens ein abgerechneter Eintrag pro Spieltag); `restPeriods`: `from`
  *
  * Schemaänderungen immer über eine neue `version(n)` mit Upgrade-Funktion – niemals `version(1)` ändern.
  *
@@ -77,6 +87,10 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  * 3. Phase 2a: neue Tabellen `rewards` (Belohnungen der Schatzkammer), `purchases` (Gold-Ausgaben),
  *    `sideQuests` (Nebenquests) und `achievementUnlocks` (freigeschaltete Erfolge). Sie starten leer;
  *    vorhandene Daten bleiben unverändert.
+ * 4. Phase 2b: neue Tabellen `hpLedger` (endgültig abgerechnete Tage: Tageswertung, Lebenspunkte, Streak-Schutz,
+ *    Niederlagen – ein Eintrag pro Tag, Schlüssel `day`) und `restPeriods` (Rast & Urlaub). Sie starten leer;
+ *    vorhandene Daten bleiben unverändert. Abgerechnet wird erst ab dem ersten Start danach
+ *    (`settings.penalties.since`, gesetzt von `settleHpDays`) – nie rückwirkend.
  */
 export class QuestlogDB extends Dexie {
   habits!: Table<Habit, string>
@@ -87,6 +101,8 @@ export class QuestlogDB extends Dexie {
   purchases!: Table<Purchase, string>
   sideQuests!: Table<SideQuest, string>
   achievementUnlocks!: Table<AchievementUnlock, string>
+  hpLedger!: Table<HpLedgerEntry, string>
+  restPeriods!: Table<RestPeriod, string>
 
   /** @param name Datenbankname – Tests verwenden pro Test einen eigenen Namen. */
   constructor(name: string = DEFAULT_DB_NAME) {
@@ -104,6 +120,7 @@ export class QuestlogDB extends Dexie {
           }),
       )
     this.version(3).stores(SCHEMA_V3)
+    this.version(4).stores(SCHEMA_V4)
   }
 }
 
@@ -122,6 +139,8 @@ export function allTables(database: QuestlogDB) {
     database.purchases,
     database.sideQuests,
     database.achievementUnlocks,
+    database.hpLedger,
+    database.restPeriods,
   ]
 }
 

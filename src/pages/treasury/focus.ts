@@ -16,6 +16,16 @@ export function rewardRedeemButtonId(rewardId: string): string {
   return `reward-redeem-${rewardId}`
 }
 
+/** DOM-ID des Kaufen-Knopfs eines Gegenstands (Phase 2b). */
+export function itemBuyButtonId(itemId: string): string {
+  return `item-buy-${itemId}`
+}
+
+/** DOM-ID des Vorrats- bzw. HP-Felds eines Gegenstands – Fokusziel, wenn „Kaufen“ nach dem Kauf gesperrt ist. */
+export function itemStatusId(itemId: string): string {
+  return `item-status-${itemId}`
+}
+
 /** DOM-ID des Rückgängig-Knopfs einer Einlösung in der Chronik. */
 export function purchaseUndoButtonId(purchaseId: string): string {
   return `purchase-undo-${purchaseId}`

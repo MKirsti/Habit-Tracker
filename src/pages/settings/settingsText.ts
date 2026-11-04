@@ -44,3 +44,9 @@ export const RESET_CONFIRM_WORD = 'LÖSCHEN'
 export function matchesConfirmWord(input: string): boolean {
   return input.normalize('NFC').trim().toLocaleUpperCase('de-DE') === RESET_CONFIRM_WORD
 }
+
+/** Abschnitt der Einstellungen, den `?bereich=` ansteuert (z. B. aus „Urlaub planen“ auf der Tagesübersicht). */
+export const SETTINGS_SECTION_PARAM = 'bereich'
+
+/** „Rast & Urlaub“ in den Einstellungen – die Seite scrollt beim Öffnen dorthin. */
+export const REST_SETTINGS_PATH = `/einstellungen?${SETTINGS_SECTION_PARAM}=rast`

@@ -391,6 +391,7 @@ function referenceStreak(
   asOf: DayKey,
   from?: DayKey,
   unit: Streak['unit'] = habit.schedule.type === 'weekly' ? 'week' : 'day',
+  free: ReadonlySet<DayKey> = new Set(),
 ): Streak {
   const start = from !== undefined && compareDays(from, habit.createdDay) > 0 ? from : habit.createdDay
   let end = asOf
@@ -417,9 +418,10 @@ function referenceStreak(
         return
       }
       // Offen: die Woche von asOf, eine durch Archivierung abgeschnittene letzte Woche oder eine Woche mit Pause
+      // bzw. Schontag
       const open =
         (i === mondays.length - 1 && (monday === startOfWeek(asOf) || isoWeekday(end) !== 7)) ||
-        days.some((day) => isPausedOn(habit, day))
+        days.some((day) => isPausedOn(habit, day) || free.has(day))
       units.push(open ? null : false)
     })
   } else {
@@ -428,7 +430,7 @@ function referenceStreak(
       const daySchedule = scheduleOn(habit, day)
       const planned =
         daySchedule.type === 'daily' || (daySchedule.type === 'weekdays' && daySchedule.days.includes(isoWeekday(day)))
-      if (planned) units.push(done.has(day) ? true : day === asOf ? null : false)
+      if (planned) units.push(done.has(day) ? true : day === asOf || free.has(day) ? null : false)
     }
   }
 
@@ -527,6 +529,86 @@ describe('computeStreak – Referenzmodell (Zufallstests)', () => {
         }
       }
       expect(streakReachedDay(habit, done, target, asOf, from), `#${i} Ziel ${target}`).toBe(expected)
+    }
+  })
+})
+
+/** Zufällige Schontage (Ruhetage, vom Streak-Schutz aufgefangene Tage) rund um einen Zufallsfall. */
+function randomFreeDays(random: () => number, around: DayKey): Set<DayKey> {
+  const density = [0, 0.05, 0.2][Math.floor(random() * 3)]
+  return new Set(dayRange(addDays(around, -30), addDays(around, 130)).filter(() => random() < density))
+}
+
+describe('Schontage (Phase 2b: Ruhetage, Streak-Schutz)', () => {
+  const done = daySet('2026-11-01', '2026-11-02', '2026-11-04', '2026-11-05')
+
+  it('Tages-Einheit: ein verpasster Schontag bricht nichts, eine Erledigung am Schontag zählt mit', () => {
+    expect(computeStreak(daily, done, '2026-11-05')).toEqual({ current: 2, best: 2, unit: 'day' })
+    expect(computeStreak(daily, done, '2026-11-05', undefined, daySet('2026-11-03'))).toEqual({ current: 4, best: 4, unit: 'day' })
+    // Erledigt an einem Schontag: zählt (kein Serientag geht verloren).
+    const all = daySetRange('2026-11-01', '2026-11-05')
+    expect(computeStreak(daily, all, '2026-11-05', undefined, daySet('2026-11-03'))).toEqual({ current: 5, best: 5, unit: 'day' })
+    // Nicht-Plantage bleiben Nicht-Plantage.
+    expect(computeStreak(monWedFri, daySet('2026-11-02', '2026-11-06'), '2026-11-06', undefined, daySet('2026-11-04')).current).toBe(2)
+  })
+
+  it('Wochen-Einheit: eine Woche mit Schontag bricht nie, zählt aber nur erfüllt – Erledigungen am Schontag zählen', () => {
+    const weekly = makeHabit({ id: 'w', createdDay: '2026-11-02', schedule: { type: 'weekly', times: 2 } })
+    // KW 45 erfüllt, KW 46 nur 1×, KW 47 erfüllt
+    const weeks = daySet('2026-11-02', '2026-11-03', '2026-11-10', '2026-11-16', '2026-11-17')
+    expect(computeStreak(weekly, weeks, '2026-11-18').current).toBe(1)
+    expect(computeStreak(weekly, weeks, '2026-11-18', undefined, daySet('2026-11-12'))).toEqual({ current: 2, best: 2, unit: 'week' })
+    const withFreeDone = new Set([...weeks, '2026-11-12'])
+    expect(computeStreak(weekly, withFreeDone, '2026-11-18', undefined, daySet('2026-11-12')).current).toBe(3)
+  })
+
+  it('streakRunsBefore / bestStreakIn / streakReachedDay berücksichtigen Schontage gleich', () => {
+    const free = daySet('2026-11-03')
+    const days = ['2026-11-04', '2026-11-05', '2026-11-06']
+    expect(streakRunsBefore(daily, done, days)).toEqual([0, 1, 2])
+    expect(streakRunsBefore(daily, done, days, free)).toEqual([2, 3, 4])
+    expect(bestStreakIn(daily, done, 'day', '2026-11-05', undefined, free)).toBe(4)
+    expect(streakReachedDay(daily, done, 3, '2026-11-05', undefined, 'day', free)).toBe('2026-11-04')
+    expect(streakReachedDay(daily, done, 3, '2026-11-05')).toBeUndefined()
+  })
+
+  it('ungültige Einträge werden ignoriert; ein später gewachsenes Set wird neu umgerechnet', () => {
+    const free = new Set<DayKey>(['kaputt', '2026-11-31'])
+    expect(computeStreak(daily, done, '2026-11-05', undefined, free).current).toBe(2)
+    free.add('2026-11-03')
+    expect(computeStreak(daily, done, '2026-11-05', undefined, free).current).toBe(4)
+  })
+
+  it('stimmt in 2.000 zufälligen Fällen (mit Verlauf, Pausen und Schontagen) mit dem Referenzmodell überein', () => {
+    const random = seededRandom(20261104)
+    for (let i = 0; i < 2000; i++) {
+      const { habit, done: doneDays, from, asOf } = randomCase(random, random() < 0.5)
+      const free = randomFreeDays(random, habit.createdDay)
+      const label = `#${i} ${JSON.stringify({ habit, from, asOf, free: [...free] })}`
+      expect(computeStreak(habit, doneDays, asOf, from, free), label).toEqual(
+        referenceStreak(habit, doneDays, asOf, from, undefined, free),
+      )
+    }
+  })
+
+  it('streakRunsBefore entspricht computeStreak auch mit Schontagen', () => {
+    const random = seededRandom(7_2026)
+    const before = (doneDays: ReadonlySet<DayKey>, day: DayKey) => new Set([...doneDays].filter((d) => compareDays(d, day) < 0))
+    for (let i = 0; i < 200; i++) {
+      const { habit, done: doneDays } = randomCase(random, true)
+      const free = randomFreeDays(random, habit.createdDay)
+      const days = dayRange(addDays(habit.createdDay, -3), addDays(habit.createdDay, 90))
+      const runs = streakRunsBefore(habit, doneDays, days, free)
+      days.forEach((day, k) => {
+        const view: Habit = { ...habit, schedule: scheduleOn(habit, day) }
+        if (habit.scheduleHistory) view.scheduleHistory = habit.scheduleHistory.filter((entry) => compareDays(entry.until, day) <= 0)
+        const monday = startOfWeek(day)
+        const expected =
+          view.schedule.type === 'weekly'
+            ? computeStreak(view, before(doneDays, monday), monday, undefined, free).current
+            : computeStreak(view, before(doneDays, day), day, undefined, free).current
+        expect(runs[k], `#${i} ${day}`).toBe(expected)
+      })
     }
   })
 })

@@ -11,6 +11,7 @@ import { applyHabitDeletion } from '../domain/deletion'
 import { createBackup, parseBackup } from './backup'
 import { KV_KEYS, QuestlogDB } from './db'
 import {
+  addRestPeriod,
   archiveHabit,
   completionId,
   createHabit,
@@ -18,6 +19,7 @@ import {
   deleteHabit,
   deleteMainQuest,
   loadGameData,
+  markHpIntroSeen,
   moveHabit,
   resetAllData,
   restoreHabit,
@@ -25,6 +27,7 @@ import {
   setChapterCounter,
   setChapterManual,
   setCompletionValue,
+  settleHpDays,
   toggleCompletion,
   updateHabit,
   updateMainQuest,
@@ -1256,7 +1259,27 @@ describe('Kampagnen', () => {
         database,
       ),
     ).rejects.toThrow('größer als 0')
+    await expect(
+      createMainQuest(
+        questDraft({
+          chapters: [{ id: 'x', title: 'X', criterion: { type: 'habit', habitId: 'h1', metric: 'fastest' as 'best', target: 3 } }],
+        }),
+        database,
+      ),
+    ).rejects.toThrow('Unbekannte Kapitel-Messgröße.')
     expect(await database.mainQuests.count()).toBe(0)
+  })
+
+  it('kennt die Kapitel-Messgröße „Bestwert“ (Phase 2b)', async () => {
+    const best: Chapter = {
+      id: 'ch-best',
+      title: '30 Minuten am Stück',
+      criterion: { type: 'habit', habitId: 'h1', metric: 'best', target: 30 },
+    }
+    const quest = await createMainQuest(questDraft({ chapters: [best] }), database)
+    expect((await storedQuest(quest.id)).chapters).toStrictEqual([best])
+    await updateMainQuest(quest.id, { chapters: [{ ...best, criterion: { ...best.criterion, target: 45 } as Chapter['criterion'] }] }, database)
+    expect((await storedQuest(quest.id)).chapters[0].criterion).toStrictEqual({ type: 'habit', habitId: 'h1', metric: 'best', target: 45 })
   })
 
   it('updateMainQuest entfernt optionale Felder per undefined und behält id/createdAt', async () => {
@@ -1392,6 +1415,12 @@ describe('resetAllData', () => {
     const habit = await createHabit(checkDraft(), DAY, database)
     await toggleCompletion(habit.id, DAY, database)
     await createMainQuest(questDraft(), database)
+    // Phase 2b: Abrechnung, Rast, Einführung
+    await settleHpDays(DAY, database)
+    await settleHpDays(addDays(DAY, 5), database)
+    await addRestPeriod({ from: addDays(DAY, 6), until: addDays(DAY, 8) }, addDays(DAY, 5), database)
+    await markHpIntroSeen(database)
+    expect(await database.hpLedger.count()).toBe(4)
 
     await resetAllData(database)
 

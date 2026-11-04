@@ -9,7 +9,7 @@ import { ArchivedRewards } from './treasury/ArchivedRewards'
 import { errorMessage } from './treasury/errors'
 import { enabledElementById, rewardEditButtonId, rewardRedeemButtonId, usePendingFocus } from './treasury/focus'
 import { GoldBalance } from './treasury/GoldBalance'
-import { ItemsTeaser } from './treasury/ItemsTeaser'
+import { ItemShop } from './treasury/ItemShop'
 import { PurchaseHistory } from './treasury/PurchaseHistory'
 import { RewardCard } from './treasury/RewardCard'
 import type { RewardMoveDirection } from './treasury/RewardCard'
@@ -36,8 +36,8 @@ interface MovedReward {
 
 /**
  * „Schatzkammer“ (`/schatzkammer`): Gold-Guthaben, eigene echte Belohnungen einlösen, anlegen, bearbeiten,
- * sortieren und ausblenden, Ideen übernehmen, Chronik der Einlösungen (mit „Rückgängig“) und ein Platz für die
- * Gegenstände, die später dazukommen.
+ * sortieren und ausblenden, Gegenstände (❄️ Streak-Schutz, 🧪 Heiltrank) kaufen, Ideen übernehmen und die Chronik
+ * der Einlösungen und Käufe (mit „Rückgängig“).
  */
 export function TreasuryPage() {
   const { data, state, today } = useGameContext()
@@ -241,11 +241,15 @@ export function TreasuryPage() {
           />
         </section>
 
+        <ItemShop
+          onPurchased={() => {
+            if (effects) setPulse((current) => current + 1)
+          }}
+        />
+
         <RewardSuggestions suggestions={suggestions} onPick={(suggestion) => openCreate(suggestion)} />
 
         <PurchaseHistory purchases={purchases} />
-
-        <ItemsTeaser />
       </div>
 
       <RewardFormDialog

@@ -27,6 +27,15 @@
  * - Erfolge: aus den Kennzahlen (`AchievementStats`, hier berechnet) und den gespeicherten Freischaltungen
  *   (`achievements/evaluate.ts`); einmal freigeschaltet bleibt freigeschaltet.
  *
+ * Phase 2b (ARCHITECTURE.md „Phase 2b … (Vertrag)“, Regeln in `hpRules.ts`, Abrechnung in `hp.ts`):
+ * - Ruhetage/Urlaub (`data.restPeriods`): keine Quest ist Pflicht (kein Perfekter Tag, Wertung `rest`), die Quests
+ *   bleiben sichtbar und bringen erledigt XP.
+ * - Schontage (`HpCalendar.freeDays`: Ruhetage, abgerechnete `frozen`-Tage und ein vom Streak-Schutz geretteter,
+ *   noch offener Vortag) brechen keine Serie – in Streaks, Streak-Bonus, Bestwerten und Streak-Kapiteln.
+ * - `GameState.hp` (Lebenspunkte), `inventory` (Streak-Schutz-Vorrat), `restToday`; `gold.lostToDefeats` aus dem
+ *   Ledger; Kennzahlen `defeats`, `perfectDaysAfterDefeat`, `freezesUsed`.
+ * - Für die Abrechnung exportiert: `dayFactsOf` (Tagesfakten) und `totalXpTimeline` (Gesamt-XP am Ende jedes Tages).
+ *
  * Pflicht/Sichtbarkeit eines Tages richten sich nach dem an diesem Tag gültigen Rhythmus (`scheduleOn`)
  * und berücksichtigen Pausen. Bearbeiten, Archivieren und Zurückholen einer Quest ändern so nie
  * nachträglich die Vergangenheit – verdiente XP und Perfekte Tage bleiben erhalten.
@@ -42,6 +51,16 @@ import { BALANCING } from './balancing'
 import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
 import { compareDays, diffDays, isValidDayKey, startOfWeek } from './dates'
+import {
+  firstDefeatDay,
+  freezesUsedIn,
+  goldLostToDefeats,
+  hpCalendar,
+  hpStateOf,
+  inventoryOf,
+  restDaySet,
+} from './hpRules'
+import type { DayFacts, HpCalendar } from './hpRules'
 import { attributeLevelFromXp, levelFromXp, rankForLevel } from './leveling'
 import {
   doneDaysInWeek,
@@ -177,9 +196,14 @@ interface StreakBonusTable {
  * - `scope: 'day'` (ein Tageszustand): nur für die Completions dieses Tages, und nur für Quests, die an dem Tag
  *   sichtbar sind oder eine Erledigung haben.
  * Weil der Bonus eines Tages nur von den Tagen davor (und dem Rhythmus des Tages) abhängt, liefern beide
- * Varianten für denselben Tag dieselben Werte.
+ * Varianten für denselben Tag dieselben Werte. `freeDays`: Schontage (brechen keine Serie, siehe `streaks.ts`).
  */
-function streakBonusTable(index: GameIndex, day: DayKey, scope: 'history' | 'day'): StreakBonusTable {
+function streakBonusTable(
+  index: GameIndex,
+  day: DayKey,
+  scope: 'history' | 'day',
+  freeDays: ReadonlySet<DayKey>,
+): StreakBonusTable {
   const completionXp = new Map<Completion, number>()
   const bonusByHabit = new Map<string, number>()
   const dayCompletions = index.completionsByDay.get(day)
@@ -195,7 +219,7 @@ function streakBonusTable(index: GameIndex, day: DayKey, scope: 'history' | 'day
       if (credited.length === 0 && !isVisibleOn(habit, day)) continue
     }
     const doneDays = index.doneDaysByHabit.get(habit.id) ?? NO_DAYS
-    const runs = streakRunsBefore(habit, doneDays, [...credited.map((completion) => completion.day), day])
+    const runs = streakRunsBefore(habit, doneDays, [...credited.map((completion) => completion.day), day], freeDays)
     credited.forEach((completion, i) => {
       completionXp.set(completion, xpWithStreakBonus(questXp(completion.difficulty), streakBonusForRun(runs[i])))
     })
@@ -214,20 +238,19 @@ function streakBonusTable(index: GameIndex, day: DayKey, scope: 'history' | 'day
 type DaySummary = Pick<DayState, 'requiredCount' | 'requiredDone' | 'perfect' | 'questXp' | 'perfectBonusXp'>
 
 /**
- * Pflicht-Quests, Perfekter Tag und verdiente XP eines Tages.
- * Wird von `getDayState` und `deriveGameState` gemeinsam genutzt, damit beide garantiert gleich rechnen.
- * Grabsteine gelöschter Quests zählen als Pflicht, wenn die Quest an dem Tag Pflicht war – erledigt sind
- * sie nie (ihre Erledigungen wurden mit ihr gelöscht).
- * @param xpOf XP einer erledigten Completion inklusive Streak-Bonus.
+ * Pflicht-Quests eines Tages und wie viele davon erledigt sind. Grabsteine gelöschter Quests zählen als
+ * Pflicht, wenn die Quest an dem Tag Pflicht war – erledigt sind sie nie (ihre Erledigungen wurden mit ihr
+ * gelöscht). An Ruhetagen ist nichts Pflicht.
  */
-function summarizeDay(
+function countRequired(
   index: GameIndex,
   dayCompletions: ReadonlyMap<string, Completion> | undefined,
   day: DayKey,
-  xpOf: (completion: Completion) => number,
-): DaySummary {
+  restDays: ReadonlySet<DayKey>,
+): { requiredCount: number; requiredDone: number } {
   let requiredCount = 0
   let requiredDone = 0
+  if (restDays.has(day)) return { requiredCount, requiredDone }
   for (const habit of index.habits) {
     if (!isRequiredOn(habit, day)) continue
     requiredCount++
@@ -237,6 +260,23 @@ function summarizeDay(
   for (const tombstone of index.deletedHabits) {
     if (isRequiredOn(tombstone, day)) requiredCount++
   }
+  return { requiredCount, requiredDone }
+}
+
+/**
+ * Pflicht-Quests, Perfekter Tag und verdiente XP eines Tages.
+ * Wird von `getDayState`, `deriveGameState` und `totalXpTimeline` gemeinsam genutzt, damit alle garantiert gleich
+ * rechnen. Pflicht-Quests siehe `countRequired` (an Ruhetagen keine – also kein Perfekter Tag).
+ * @param xpOf XP einer erledigten Completion inklusive Streak-Bonus.
+ */
+function summarizeDay(
+  index: GameIndex,
+  dayCompletions: ReadonlyMap<string, Completion> | undefined,
+  day: DayKey,
+  xpOf: (completion: Completion) => number,
+  restDays: ReadonlySet<DayKey>,
+): DaySummary {
+  const { requiredCount, requiredDone } = countRequired(index, dayCompletions, day, restDays)
 
   // Quest-XP des Tages (inkl. Streak-Bonus): alle erledigten Quests, auch Wochenquests und Quests außerhalb
   // ihres Plans.
@@ -267,6 +307,7 @@ function buildHabitStatus(
   doneDays: ReadonlySet<DayKey>,
   streak: Streak,
   streakBonus: number,
+  restDays: ReadonlySet<DayKey>,
 ): HabitStatus {
   const done = completion ? isDone(completion) : false
   // Erledigt: die gutgeschriebenen XP (Schnappschuss der Erledigung) – so passt die Anzeige immer zur
@@ -275,7 +316,7 @@ function buildHabitStatus(
   const baseXp = questXp(done && completion ? completion.difficulty : habit.difficulty)
   const status: HabitStatus = {
     habit,
-    required: isRequiredOn(habit, day),
+    required: isRequiredOn(habit, day, restDays),
     value: completion?.value ?? 0,
     target: completion?.target ?? habitTarget(habit),
     done,
@@ -304,6 +345,7 @@ function buildDayState(
   day: DayKey,
   streakOf: (habit: Habit) => Streak,
   bonus: StreakBonusTable,
+  restDays: ReadonlySet<DayKey>,
 ): DayState {
   const dayCompletions = index.completionsByDay.get(day)
   const habits: HabitStatus[] = []
@@ -311,24 +353,58 @@ function buildDayState(
     if (!isVisibleOn(habit, day)) continue
     const doneDays = index.doneDaysByHabit.get(habit.id) ?? NO_DAYS
     habits.push(
-      buildHabitStatus(habit, day, dayCompletions?.get(habit.id), doneDays, streakOf(habit), bonus.bonusOf(habit)),
+      buildHabitStatus(
+        habit,
+        day,
+        dayCompletions?.get(habit.id),
+        doneDays,
+        streakOf(habit),
+        bonus.bonusOf(habit),
+        restDays,
+      ),
     )
   }
   habits.sort((a, b) => compareHabits(a.habit, b.habit))
-  return { day, habits, ...summarizeDay(index, dayCompletions, day, bonus.xpOf) }
+  return { day, habits, ...summarizeDay(index, dayCompletions, day, bonus.xpOf, restDays) }
+}
+
+/** Tagesfakten für die Tageswertung (`hpRules.ts`): Pflicht/erledigt (an Ruhetagen 0) und ob etwas erledigt ist. */
+function dayFactsFromIndex(index: GameIndex, restDays: ReadonlySet<DayKey>): (day: DayKey) => DayFacts {
+  return (day) => {
+    const dayCompletions = index.completionsByDay.get(day)
+    let active = false
+    if (dayCompletions !== undefined) {
+      for (const completion of dayCompletions.values()) {
+        if (isDone(completion)) {
+          active = true
+          break
+        }
+      }
+    }
+    return { ...countRequired(index, dayCompletions, day, restDays), active }
+  }
+}
+
+/** Ruhetage und Kalender (Schontage, Vorschau) zum Stichtag `asOf`. */
+function calendarFor(data: GameData, index: GameIndex, asOf: DayKey): HpCalendar {
+  const restDays = restDaySet(data.restPeriods)
+  return hpCalendar(data, asOf, restDays, dayFactsFromIndex(index, restDays))
 }
 
 /**
  * Zustand eines einzelnen Spieltags: sichtbare Quests mit Status, Pflicht-Fortschritt, Perfekter Tag, XP
- * (inklusive Streak-Bonus). Streaks werden zum Stichtag `day` berechnet.
+ * (inklusive Streak-Bonus). Streaks werden zum Stichtag `day` berechnet – mit den Schontagen, die zu Beginn von
+ * `day` gelten (Ruhetage, abgerechnete und vorab gerettete Streak-Schutz-Tage, siehe `hpCalendar`).
  */
 export function getDayState(data: GameData, day: DayKey): DayState {
   const index = buildIndex(data)
+  const { restDays, freeDays } = calendarFor(data, index, day)
   return buildDayState(
     index,
     day,
-    (habit) => computeStreak(habit, index.doneDaysByHabit.get(habit.id) ?? NO_DAYS, day),
-    streakBonusTable(index, day, 'day'),
+    (habit) => computeStreak(habit, index.doneDaysByHabit.get(habit.id) ?? NO_DAYS, day, undefined, freeDays),
+    streakBonusTable(index, day, 'day', freeDays),
+    restDays,
   )
 }
 
@@ -464,13 +540,28 @@ function buildMainQuestState(quest: MainQuest, index: GameIndex, ctx: ChapterCon
   return state
 }
 
-/** Alle Kampagnen (aktive und archivierte) in gespeicherter Reihenfolge, ausgewertet zum Tag `today`. */
-function buildMainQuestStates(data: GameData, index: GameIndex, today: DayKey): MainQuestState[] {
-  const ctx: ChapterContext = {
+/**
+ * Kontext für die Kapitel-Auswertung. `freeDays` (Schontage) reicht die Engine für Streak-Kapitel mit – gleiche
+ * Regeln wie bei den Quest-Streaks (`computeStreak`/`bestStreakIn`/`streakReachedDay` mit `freeDays`).
+ */
+function chapterContext(index: GameIndex, today: DayKey, freeDays: ReadonlySet<DayKey>): ChapterContext {
+  const ctx = {
     habitsById: index.habitsById,
     completionsByHabit: index.completionsByHabit,
     today,
+    freeDays,
   }
+  return ctx
+}
+
+/** Alle Kampagnen (aktive und archivierte) in gespeicherter Reihenfolge, ausgewertet zum Tag `today`. */
+function buildMainQuestStates(
+  data: GameData,
+  index: GameIndex,
+  today: DayKey,
+  freeDays: ReadonlySet<DayKey>,
+): MainQuestState[] {
+  const ctx = chapterContext(index, today, freeDays)
   return data.mainQuests.map((quest) => buildMainQuestState(quest, index, ctx, today))
 }
 
@@ -480,7 +571,8 @@ function buildMainQuestStates(data: GameData, index: GameIndex, today: DayKey): 
  * Für Prüfungen wie das Limit aktiver Kampagnen (`domain/campaigns.ts`).
  */
 export function evaluateMainQuests(data: GameData, today: DayKey): MainQuestState[] {
-  return buildMainQuestStates(data, buildIndex(data, today), today)
+  const index = buildIndex(data, today)
+  return buildMainQuestStates(data, index, today, calendarFor(data, index, today).freeDays)
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +591,10 @@ export interface DeriveOptions {
  */
 export function deriveGameState(data: GameData, today: DayKey, options: DeriveOptions = {}): GameState {
   const index = buildIndex(data, today)
-  const bonus = streakBonusTable(index, today, 'history')
+  // Phase 2b: Ruhetage, Abrechnung, Vorschau für gestern – daraus die Schontage für alle Streaks.
+  const calendar = calendarFor(data, index, today)
+  const { restDays, freeDays } = calendar
+  const bonus = streakBonusTable(index, today, 'history', freeDays)
 
   // --- Regeln 1 + 2: Quest-XP (inkl. Streak-Bonus), Attribut-XP, Perfekte Tage ---------------
   // Perfekte Tage werden nur an Tagen mit Completions gesucht: Ein Tag ohne erledigte Quest kann nie
@@ -516,7 +611,7 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   let xpFromStreakBonus = 0
   let xpFromPerfectDays = 0
   let questsCompleted = 0
-  let perfectDays = 0
+  const perfectDayList: DayKey[] = []
   const activeDays: DayKey[] = []
   for (const [day, dayCompletions] of index.completionsByDay) {
     let anyDone = false
@@ -531,12 +626,13 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     }
     if (anyDone) activeDays.push(day)
 
-    const summary = summarizeDay(index, dayCompletions, day, bonus.xpOf)
+    const summary = summarizeDay(index, dayCompletions, day, bonus.xpOf, restDays)
     if (summary.perfect) {
-      perfectDays++
+      perfectDayList.push(day)
       xpFromPerfectDays += summary.perfectBonusXp
     }
   }
+  const perfectDays = perfectDayList.length
 
   // --- Nebenquests: XP ohne Streak-Bonus, nie Teil des Perfekten Tags ---------------------------
   let xpFromSideQuests = 0
@@ -560,12 +656,13 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   let bestWeekStreak = 0
   for (const habit of index.habits) {
     const doneDays = index.doneDaysByHabit.get(habit.id) ?? NO_DAYS
-    const streak = computeStreak(habit, doneDays, today)
+    const streak = computeStreak(habit, doneDays, today, undefined, freeDays)
     streakByHabit.set(habit.id, streak)
     // Bestwerte in beiden Einheiten: Nach einer Umstellung zwischen Tages- und Wochenquest bleibt die in der
     // früheren Einheit erreichte Serie erhalten (ohne solche Umstellung kostet das nichts, siehe bestStreakIn).
-    const dayBest = streak.unit === 'day' ? streak.best : bestStreakIn(habit, doneDays, 'day', today)
-    const weekBest = streak.unit === 'week' ? streak.best : bestStreakIn(habit, doneDays, 'week', today)
+    const dayBest = streak.unit === 'day' ? streak.best : bestStreakIn(habit, doneDays, 'day', today, undefined, freeDays)
+    const weekBest =
+      streak.unit === 'week' ? streak.best : bestStreakIn(habit, doneDays, 'week', today, undefined, freeDays)
     bestDayStreak = Math.max(bestDayStreak, dayBest)
     bestWeekStreak = Math.max(bestWeekStreak, weekBest)
   }
@@ -577,7 +674,7 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   let activeCampaigns = 0
   const mainQuests: MainQuestState[] = []
   const archivedMainQuests: MainQuestState[] = []
-  for (const state of buildMainQuestStates(data, index, today)) {
+  for (const state of buildMainQuestStates(data, index, today, freeDays)) {
     const doneChapters = state.chapters.filter((chapter) => chapter.done).length
     chaptersCompleted += doneChapters
     xpFromChapters += doneChapters * BALANCING.chapterXp
@@ -616,6 +713,13 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     sideQuestsCompleted,
   }
 
+  // --- Phase 2b: Lebenspunkte, Vorrat, Niederlagen -------------------------------------------
+  const hp = hpStateOf(data, calendar, today, level.level)
+  const inventory = inventoryOf(data, calendar, today)
+  const firstDefeat = firstDefeatDay(calendar.ledger)
+  const perfectDaysAfterDefeat =
+    firstDefeat === undefined ? 0 : perfectDayList.filter((day) => compareDays(day, firstDefeat) > 0).length
+
   // --- Gold & Erfolge -------------------------------------------------------------------------
   const fromXp = goldFromXp(level.totalXp)
   const attributeLevels = {} as Record<AttributeId, number>
@@ -634,9 +738,15 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     campaignsCompleted,
     activeCampaigns,
     sideQuestsCompleted,
-    purchases: (data.purchases ?? []).filter((purchase) => compareDays(purchase.day, today) <= 0).length,
+    // Eingelöste Belohnungen – Gegenstände (Streak-Schutz, Heiltrank) sind keine Einlösungen.
+    purchases: (data.purchases ?? []).filter(
+      (purchase) => purchase.kind !== 'item' && compareDays(purchase.day, today) <= 0,
+    ).length,
     goldFromXp: fromXp,
     comebacks: countComebacks(activeDays),
+    defeats: hp.defeats,
+    perfectDaysAfterDefeat,
+    freezesUsed: freezesUsedIn(calendar.ledger),
   }
   const achievements = evaluateAchievements(
     options.achievements ?? ACHIEVEMENTS,
@@ -646,19 +756,22 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   )
   const fromAchievements = achievementGold(achievements)
   const spent = goldSpent(data)
+  const lostToDefeats = goldLostToDefeats(calendar.ledger)
   const gold: GoldState = {
     fromXp,
     fromAchievements,
     earned: fromXp + fromAchievements,
     spent,
-    balance: fromXp + fromAchievements - spent,
+    lostToDefeats,
+    balance: fromXp + fromAchievements - spent - lostToDefeats,
   }
 
   const todayState = buildDayState(
     index,
     today,
-    (habit) => streakByHabit.get(habit.id) ?? computeStreak(habit, NO_DAYS, today),
+    (habit) => streakByHabit.get(habit.id) ?? computeStreak(habit, NO_DAYS, today, undefined, freeDays),
     bonus,
+    restDays,
   )
 
   return {
@@ -674,5 +787,100 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     gold,
     achievements,
     sideQuests,
+    hp,
+    inventory,
+    restToday: restDays.has(today),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Für die HP-Abrechnung (`hp.ts`): Tagesfakten und XP-Verlauf
+// ---------------------------------------------------------------------------
+
+/**
+ * Tagesfakten für die Tageswertung (`hpRules.ts` → `scoreDays`): Pflicht-Quests (inkl. Grabsteinen, an Ruhetagen
+ * keine), davon erledigt, und ob überhaupt eine Quest erledigt wurde – exakt wie beim Perfekten Tag gezählt.
+ * Completions nach `today` zählen nicht.
+ */
+export function dayFactsOf(data: GameData, today: DayKey, restDays: ReadonlySet<DayKey>): (day: DayKey) => DayFacts {
+  return dayFactsFromIndex(buildIndex(data, today), restDays)
+}
+
+/** XP-Verlauf: Gesamt-XP am Ende jedes Tages. */
+export interface XpTimeline {
+  /**
+   * Gesamt-XP aller Quellen am Ende des Tages `day` (Tage ≤ `today`): Quest-XP inkl. Streak-Bonus und
+   * Perfekter-Tag-Bonus am Tag der Erledigung, Nebenquests am Erledigungstag, Kapitel am `doneDay`, Kampagnen am
+   * Tag ihres letzten Kapitels. Abschlüsse ohne bekannten Tag zählen von Anfang an.
+   * Bei gleichen Schontagen gilt `totalXpAt(d) = deriveGameState(data, d).level.totalXp`.
+   */
+  totalXpAt(day: DayKey): number
+}
+
+/**
+ * Ein Durchlauf über den ganzen Verlauf (gleiche Bausteine wie `deriveGameState`) statt `deriveGameState` pro
+ * Tag – Grundlage für das Level am Ende jedes abgerechneten Tages (Level-Up heilt voll, Max-HP hängt am Level).
+ * @param days Ruhetage (keine Pflicht, kein Perfekter Tag) und Schontage (Streak-Bonus, Streak-Kapitel).
+ */
+export function totalXpTimeline(
+  data: GameData,
+  today: DayKey,
+  days: { restDays: ReadonlySet<DayKey>; freeDays: ReadonlySet<DayKey> },
+): XpTimeline {
+  const index = buildIndex(data, today)
+  const bonus = streakBonusTable(index, today, 'history', days.freeDays)
+  const xpByDay = new Map<DayKey, number>()
+  let base = 0
+  const add = (day: DayKey | undefined, xp: number) => {
+    if (day === undefined || !isValidDayKey(day)) base += xp
+    else xpByDay.set(day, (xpByDay.get(day) ?? 0) + xp)
+  }
+
+  for (const [day, dayCompletions] of index.completionsByDay) {
+    const summary = summarizeDay(index, dayCompletions, day, bonus.xpOf, days.restDays)
+    add(day, summary.questXp + summary.perfectBonusXp)
+  }
+  for (const quest of data.sideQuests ?? []) {
+    if (isSideQuestDone(quest, today)) add(quest.doneDay, questXp(quest.difficulty))
+  }
+  const ctx = chapterContext(index, today, days.freeDays)
+  for (const quest of data.mainQuests) {
+    const chapters = quest.chapters.map((chapter) => evaluateChapter(chapter, quest, ctx))
+    let completedOn: DayKey | undefined
+    for (const chapter of chapters) {
+      if (!chapter.done) continue
+      const doneDay = chapter.doneDay !== undefined && isValidDayKey(chapter.doneDay) ? chapter.doneDay : undefined
+      add(doneDay, BALANCING.chapterXp)
+      if (doneDay !== undefined && (completedOn === undefined || compareDays(doneDay, completedOn) > 0)) {
+        completedOn = doneDay
+      }
+    }
+    if (chapters.length > 0 && chapters.every((chapter) => chapter.done)) add(completedOn, BALANCING.mainQuestXp)
+  }
+
+  const sortedDays = [...xpByDay.keys()].sort(compareDays)
+  const totals: number[] = []
+  let running = base
+  for (const day of sortedDays) {
+    running += xpByDay.get(day) ?? 0
+    totals.push(running)
+  }
+  return {
+    totalXpAt(day) {
+      // Letzter Tag ≤ day per Binärsuche.
+      let low = 0
+      let high = sortedDays.length - 1
+      let found = -1
+      while (low <= high) {
+        const mid = (low + high) >> 1
+        if (compareDays(sortedDays[mid], day) <= 0) {
+          found = mid
+          low = mid + 1
+        } else {
+          high = mid - 1
+        }
+      }
+      return found === -1 ? base : totals[found]
+    },
   }
 }
