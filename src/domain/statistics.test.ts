@@ -83,9 +83,9 @@ describe('dayHistory', () => {
     expect(sun).toMatchObject({ required: 2, requiredDone: 2, done: 2, questXp: 30, perfectBonusXp: 8, xp: 38, totalXp: 38, perfect: true, score: 'perfect' })
     // Mo: 1 von 2 → gut; a hat eine Serie von 1 → +5 % → 21 XP
     expect(mon).toMatchObject({ required: 2, requiredDone: 1, done: 1, questXp: 21, perfectBonusXp: 0, xp: 21, totalXp: 59, perfect: false, score: 'good' })
-    // Di: nur die Wochenquest (zählt nie für die Wertung) → verpasst, aber 40 XP
-    expect(tue).toMatchObject({ required: 2, requiredDone: 0, done: 1, questXp: 40, totalXp: 99, score: 'missed' })
-    // Mi (heute): noch nichts
+    // Di: keine Tagesquest, nur die Wochenquest → „schwach“ statt verpasst, 40 XP
+    expect(tue).toMatchObject({ required: 2, requiredDone: 0, done: 1, questXp: 40, totalXp: 99, score: 'weak' })
+    // Mi (heute): noch nichts → verpasst (erst Tag 1 ohne Erledigung)
     expect(wed).toMatchObject({ required: 2, requiredDone: 0, done: 0, xp: 0, totalXp: 99, score: 'missed' })
     for (const stat of history.days) {
       expect(stat).toMatchObject({ rest: false, settled: false, frozen: false, level: levelFromXp(stat.totalXp).level })
@@ -138,27 +138,28 @@ describe('dayHistory – Tageswertung', () => {
       habits: [...habits, weekly],
       completions: [...doneOn(D(-10), 4), ...doneOn(D(-9), 2), ...doneOn(D(-8), 1), makeCompletion(weekly, D(-7))],
     })
-    const scores = dayHistory(data, TODAY).days.slice(0, 4).map((stat) => stat.score)
-    expect(scores).toEqual(['perfect', 'good', 'weak', 'missed'])
+    const scores = dayHistory(data, TODAY).days.slice(0, 5).map((stat) => stat.score)
+    // 4/4 · 2/4 · 1/4 · 0/4, aber die Wochenquest (→ schwach statt verpasst) · 0/4 und nichts sonst
+    expect(scores).toEqual(['perfect', 'good', 'weak', 'weak', 'missed'])
     // 3 von 4 ist gut (≥ 50 %), 1 von 3 schwach.
     const onlyWeekly = makeGameData({ profile: profile(D(-3)), habits: [{ ...weekly, createdDay: D(-3) }], completions: [] })
     expect(dayHistory(onlyWeekly, TODAY).days.map((stat) => stat.score)).toEqual(['none', 'none', 'none', 'none'])
   })
 
-  it('Abwesenheit: ab dem 8. Tag in Folge ohne jede erledigte Quest – Ruhetage zählen nicht mit', () => {
+  it('Abwesenheit: ab dem 4. Tag in Folge ohne jede erledigte Quest – Ruhetage zählen nicht mit', () => {
     const habit = makeHabit({ id: 'h', createdDay: D(-12) })
     const base = makeGameData({ profile: profile(D(-12)), habits: [habit], completions: [makeCompletion(habit, D(-2))] })
     const scores = dayHistory(base, TODAY).days.map((stat) => stat.score)
-    // D(-12) … D(-6): 7 Tage verpasst, D(-5) … D(-3) abwesend, D(-2) perfekt, danach wieder verpasst
-    expect(scores).toEqual([...Array(7).fill('missed'), 'absent', 'absent', 'absent', 'perfect', 'missed', 'missed'])
+    // D(-12) … D(-10): Tag 1–3 verpasst, D(-9) … D(-3): abwesend (Tag 4–10), D(-2) perfekt, danach wieder verpasst
+    expect(scores).toEqual([...Array(3).fill('missed'), ...Array(7).fill('absent'), 'perfect', 'missed', 'missed'])
 
-    const withRest = { ...base, restPeriods: [{ id: 'r', from: D(-9), until: D(-8), createdAt: 0 }] }
+    const withRest = { ...base, restPeriods: [{ id: 'r', from: D(-11), until: D(-10), createdAt: 0 }] }
     const restScores = dayHistory(withRest, TODAY).days.map((stat) => stat.score)
     expect(restScores).toEqual([
-      'missed', 'missed', 'missed', // D(-12) … D(-10)
-      'rest', 'rest', // D(-9), D(-8) zählen nicht mit
-      'missed', 'missed', 'missed', 'missed', // D(-7) … D(-4): Tage 4–7
-      'absent', // D(-3): Tag 8
+      'missed', // D(-12): Tag 1
+      'rest', 'rest', // D(-11), D(-10) zählen nicht mit
+      'missed', 'missed', // D(-9), D(-8): Tag 2 und 3 (zählten Ruhetage mit, wäre D(-9) schon Tag 4)
+      'absent', 'absent', 'absent', 'absent', 'absent', // D(-7) … D(-3): Tag 4–8 (Ruhetage brechen die Zählung nicht)
       'perfect', 'missed', 'missed',
     ])
   })
@@ -485,7 +486,7 @@ describe('weeklyXp, xpTimeline, heatmap, scoreCounts', () => {
     expect(grid[1][6].day).toBe('2026-11-08')
     expect(grid[0].slice(0, 6).map((cell) => cell.kind)).toEqual(Array(6).fill('outside'))
     expect(grid[0][6]).toMatchObject({ day: '2026-11-01', kind: 'tracked', level: 4, stat: { score: 'perfect' } })
-    // Mo: 1 von 2 (gut) → 2 · Di: nur die Wochenquest → 1 · Mi (heute): nichts → 0
+    // Mo: 1 von 2 (gut) → 2 · Di: nur die Wochenquest (schwach) → 1 · Mi (heute): nichts → 0
     expect(grid[1].slice(0, 3).map((cell) => [cell.kind, cell.level])).toEqual([
       ['tracked', 2],
       ['tracked', 1],
@@ -496,8 +497,9 @@ describe('weeklyXp, xpTimeline, heatmap, scoreCounts', () => {
   })
 
   it('scoreCounts: zählt die Wertungen (optional ab einem Tag)', () => {
-    expect(scoreCounts(history)).toEqual({ perfect: 1, good: 1, weak: 0, missed: 2, rest: 0, none: 0, absent: 0 })
-    expect(scoreCounts(history, '2026-11-03')).toEqual({ perfect: 0, good: 0, weak: 0, missed: 2, rest: 0, none: 0, absent: 0 })
+    // So perfekt · Mo gut · Di schwach (nur die Wochenquest) · Mi verpasst
+    expect(scoreCounts(history)).toEqual({ perfect: 1, good: 1, weak: 1, missed: 1, rest: 0, none: 0, absent: 0 })
+    expect(scoreCounts(history, '2026-11-03')).toEqual({ perfect: 0, good: 0, weak: 1, missed: 1, rest: 0, none: 0, absent: 0 })
   })
 })
 

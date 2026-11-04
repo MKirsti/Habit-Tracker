@@ -24,7 +24,7 @@ import {
 const TODAY = '2026-11-04'
 
 function entry(day: string, extra: Partial<HpLedgerEntry> = {}): HpLedgerEntry {
-  return { day, score: 'weak', frozen: false, hpDelta: -3, hpAfter: 52, maxHp: 55, penalties: true, ...extra }
+  return { day, score: 'weak', frozen: false, hpDelta: -1, hpAfter: 54, maxHp: 55, penalties: true, ...extra }
 }
 
 const HP: Pick<HpState, 'enabled' | 'settledThrough'> = { enabled: true, settledThrough: '2026-11-02' }
@@ -62,8 +62,8 @@ describe('settlementNote – die letzte Abrechnung ruhig im Helden-Kopf', () => 
   it('zeigt den Tagesschaden bzw. die Heilung mit Wochentag', () => {
     expect(settlementNote(HP, [entry('2026-11-01'), entry('2026-11-02')], TODAY)).toEqual({
       day: '2026-11-02',
-      text: nb('Montag: −3 HP'),
-      spoken: 'Montag abgerechnet: minus 3 Lebenspunkte',
+      text: nb('Montag: −1 HP'),
+      spoken: 'Montag abgerechnet: minus 1 Lebenspunkt',
       tone: 'down',
     })
     // Erfolge werden beim Namen genannt, Verluste bleiben eine leise Zahl.
@@ -138,8 +138,8 @@ describe('yesterdayPreview – Vorschau für den noch offenen Vortag', () => {
   })
 
   it('zeigt beim Nachtragen den laufenden Stand', () => {
-    expect(backfillStanding({ day: '2026-11-03', score: 'weak', threatenedDelta: -3, savedByFreeze: false })).toBe(
-      nb('Stand jetzt: −3 HP · Ein Anfang'),
+    expect(backfillStanding({ day: '2026-11-03', score: 'weak', threatenedDelta: -1, savedByFreeze: false })).toBe(
+      nb('Stand jetzt: −1 HP · Ein Anfang'),
     )
     expect(backfillStanding({ day: '2026-11-03', score: 'perfect', threatenedDelta: 10, savedByFreeze: false })).toBe(
       nb('Stand jetzt: +10 HP · Perfekter Tag'),
@@ -194,11 +194,14 @@ describe('hpIntroPoints – Einführung „Neu: Lebenspunkte“', () => {
     expect(text).toContain('Ein Perfekter Tag heilt +10 HP, die Hälfte bringt +2 HP, sonst höchstens −6 HP')
     // Das Gute steht vor dem Höchstverlust.
     expect(text.indexOf('+10 HP')).toBeLessThan(text.indexOf('−6 HP'))
-    expect(text).toContain('Wochenquests kosten nie Lebenspunkte')
+    // Wochenquests kosten nie etwas – eine allein macht aus einem leeren Tag „Ein Anfang“ (−1 statt −6).
+    expect(text).toContain('Wochenquests kosten nie Lebenspunkte – schon eine macht aus einem leeren Tag „Ein Anfang“ (−1 HP).')
     expect(text).toContain('Gnadenfrist')
     expect(text).toContain('Ein Ruhetag schont Lebenspunkte und Serien')
-    expect(text).toContain('ab dem 8. Tag')
-    expect(text).toContain('stehst du mit vollen Lebenspunkten wieder auf. 15 % deines Goldes')
+    // absentAfterDays = 3: ab dem 4. Tag ohne Quest ruhen die Lebenspunkte (Serien schützt nur der Ruhetag).
+    expect(text).toContain('ab dem 4. Tag ohne Quest ruhen die Lebenspunkte ohnehin')
+    // 15 %, höchstens 100 Gold.
+    expect(text).toContain('stehst du mit vollen Lebenspunkten wieder auf. 15 % deines Goldes (höchstens 100 Gold) sind dann weg')
     expect(text).toContain('Level, XP und Serien bleiben')
   })
 })

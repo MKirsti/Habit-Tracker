@@ -40,14 +40,18 @@ export function shortDayLabel(day: DayKey): string {
 
 /**
  * Was an einem Tag los war – für Tooltip und Tabelle (ohne Datum), z. B.
- * "Perfekter Tag · 4 von 4 Tagesquests · +85 XP" oder "Heute · 1 von 3 Tagesquests · läuft noch".
+ * "Perfekter Tag · 4 von 4 Tagesquests · +85 XP", "Ein Anfang · 0 von 3 Tagesquests, dafür 1 andere Quest · +10 XP"
+ * (nur eine Wochenquest) oder "Heute · 1 von 3 Tagesquests · läuft noch".
  */
 export function dayStatDetails(stat: DayStat, today: DayKey): string {
   const isToday = stat.day === today
   // Heute ist noch nichts entschieden – außer, er ist schon perfekt.
   const parts: string[] = [isToday && stat.score !== 'perfect' && stat.score !== 'rest' ? 'Heute' : SCORE_LABELS[stat.score]]
   if (COUNTED_SCORES.has(stat.score) && stat.required > 0) {
-    parts.push(`${formatNumber(stat.requiredDone)} von ${plural(stat.required, 'Tagesquest', 'Tagesquests')}`)
+    const daily = `${formatNumber(stat.requiredDone)} von ${plural(stat.required, 'Tagesquest', 'Tagesquests')}`
+    // Keine Tagesquest, aber eine andere Quest (etwa eine Wochenquest) – deshalb „Ein Anfang“ statt „Nichts erledigt“.
+    const others = stat.requiredDone === 0 && stat.done > 0 ? `, dafür ${plural(stat.done, 'andere Quest', 'andere Quests')}` : ''
+    parts.push(`${daily}${others}`)
   } else if (stat.done > 0) {
     parts.push(`${plural(stat.done, 'Quest', 'Quests')} erledigt`)
   }

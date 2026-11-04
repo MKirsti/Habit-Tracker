@@ -255,9 +255,10 @@ export interface GameData {
 
 /**
  * Wertung eines Spieltags (eine Wertung pro Tag, egal wie viele Quests/Kampagnen):
- * - perfect: Perfekter Tag · good: ≥ 50 % der Tagesquests · weak: > 0 und < 50 % · missed: keine erledigt
+ * - perfect: Perfekter Tag · good: ≥ 50 % der Tagesquests · weak: > 0 und < 50 % (oder keine, aber eine andere
+ *   Quest erledigt, z. B. eine Wochenquest) · missed: gar keine Quest erledigt
  * - rest: Ruhetag/Urlaub · none: keine Tagesquest fällig (nur Wochenquests o. Ä.) · absent: Abwesenheit
- *   (ab dem 8. Tag in Folge ohne jede erledigte Quest – kein weiterer Schaden)
+ *   (ab dem 4. Tag in Folge ohne jede erledigte Quest – kein weiterer Schaden)
  */
 export type DayScore = 'perfect' | 'good' | 'weak' | 'missed' | 'rest' | 'none' | 'absent'
 

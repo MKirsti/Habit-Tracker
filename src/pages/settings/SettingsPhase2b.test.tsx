@@ -100,18 +100,19 @@ describe('Einstellungen: Lebenspunkte', () => {
     expect(rows.map(plain)).toEqual([
       'Perfekter Tagalle Tagesquests erledigt+10 HP',
       'Gut geschafftmindestens die Hälfte deiner Tagesquests+2 HP',
-      'Ein Anfangweniger als die Hälfte, aber mindestens eine−3 HP',
-      'Nichts erledigtkeine Tagesquest erledigt−6 HP',
+      'Ein Anfangweniger als die Hälfte, aber mindestens eine – oder immerhin eine Wochenquest−1 HP',
+      'Nichts erledigtgar keine Quest erledigt, auch keine Wochenquest−6 HP',
       'RuhetagRuhetag oder Urlaub – nichts ist Pflicht±0 HP',
       'Keine Tagesquestskeine Tagesquest fällig (etwa nur Wochenquests)±0 HP',
-      'Längere Pauseab dem 8. Tag in Folge ohne erledigte Quest – dann ruhen deine Lebenspunkte±0 HP',
+      'Längere Pauseab dem 4. Tag in Folge ohne erledigte Quest – dann ruhen deine Lebenspunkte±0 HP',
     ])
-    expect(BALANCING.hpByScore).toMatchObject({ perfect: 10, good: 2, weak: -3, missed: -6 })
+    expect(BALANCING.hpByScore).toMatchObject({ perfect: 10, good: 2, weak: -1, missed: -6 })
+    expect(BALANCING).toMatchObject({ absentAfterDays: 3, defeatGoldLoss: 0.15, defeatGoldLossMax: 100 })
     const text = plain(section)
     expect(text).toContain('höchstens −6 HP, egal wie viele Quests und Kampagnen du führst.')
-    expect(text).toContain('Wochenquests kosten nie Lebenspunkte.')
+    expect(text).toContain('Wochenquests kosten nie Lebenspunkte – sie helfen sogar')
     expect(text).toContain('Gestern kannst du noch nachtragen')
-    expect(text).toContain('Bei 0 HP verlierst du 15 % deines Goldes')
+    expect(text).toContain('Bei 0 HP verlierst du 15 % deines Goldes, höchstens 100 Gold, und stehst')
     expect(text).toContain('Du kannst jederzeit wechseln. Rückwirkend zählt nichts')
     expect(text).toContain('Nach einer Zeit im Sanften Modus startest du wieder mit vollen Lebenspunkten.')
     // Die Wege nach oben und zum Schutz stehen vor der Niederlage.

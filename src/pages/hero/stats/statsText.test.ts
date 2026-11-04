@@ -68,6 +68,19 @@ describe('Tage der Heatmap', () => {
     )
   })
 
+  it('nennt bei „Ein Anfang“ ohne Tagesquest die andere erledigte Quest (etwa eine Wochenquest)', () => {
+    expect(dayStatDetails(stat({ score: 'weak', requiredDone: 0, done: 1, questXp: 10, perfectBonusXp: 0, xp: 10 }), TODAY)).toBe(
+      'Ein Anfang · 0 von 3 Tagesquests, dafür 1 andere Quest · +10 XP',
+    )
+    expect(dayStatDetails(stat({ score: 'weak', requiredDone: 0, done: 2, xp: 30 }), TODAY)).toBe(
+      'Ein Anfang · 0 von 3 Tagesquests, dafür 2 andere Quests · +30 XP',
+    )
+    // Mit erledigter Tagesquest bleibt es bei der Zählung der Tagesquests.
+    expect(dayStatDetails(stat({ score: 'weak', requiredDone: 1, done: 2, xp: 30 }), TODAY)).toBe(
+      'Ein Anfang · 1 von 3 Tagesquests · +30 XP',
+    )
+  })
+
   it('bleibt freundlich bei Tagen ohne Erledigung und nennt den Streak-Schutz', () => {
     expect(dayStatDetails(stat({ score: 'missed', requiredDone: 0, done: 0, xp: 0, frozen: true }), TODAY)).toBe(
       'Nichts erledigt · 0 von 3 Tagesquests · ❄️ vom Streak-Schutz aufgefangen',

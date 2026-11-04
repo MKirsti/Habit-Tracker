@@ -171,6 +171,42 @@ describe('Dashboard – Vorschau für gestern', () => {
     expect((await loadGameData()).completions.some((c) => c.habitId === reading.id && c.day === YESTERDAY)).toBe(true)
   })
 
+  it('gestern nur eine Wochenquest: „Ein Anfang“ mit −1 HP statt −6', async () => {
+    await markHpIntroSeen()
+    await createHabit(READING, '2026-10-20')
+    const running = await createHabit(
+      { ...MEDITATION, title: 'Laufen', icon: '🏃', schedule: { type: 'weekly', times: 2 } },
+      '2026-10-20',
+    )
+    await setCompletionValue(running.id, YESTERDAY, 1)
+    await settled(SETTLED)
+    const { user } = await renderDashboard()
+
+    // Die Tagesquest fehlt noch, aber eine Quest ist erledigt: schwach (−1), nicht verpasst (−6).
+    expect(screen.getByText('Gestern ist noch offen')).toBeInTheDocument()
+    expect(screen.getByText('Bleibt es so: −1 HP')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Nachtragen' }))
+    expect(await screen.findByText('Stand jetzt: −1 HP · Ein Anfang')).toBeInTheDocument()
+  })
+
+  it('ab dem 4. Tag ohne erledigte Quest ruhen die Lebenspunkte – dann droht gestern nichts', async () => {
+    await markHpIntroSeen()
+    const reading = await createHabit(READING, '2026-10-20')
+    // Zuletzt am 30. Oktober erledigt: 31. Oktober, 1. November, gestern = 1.–3. Tag ohne Quest → verpasst (−6).
+    await setCompletionValue(reading.id, '2026-10-30', 1)
+    await settled(SETTLED)
+    const view = await renderDashboard()
+    expect(screen.getByText('Bleibt es so: −6 HP')).toBeInTheDocument()
+    view.unmount()
+
+    // Zuletzt am 29. Oktober: gestern ist der 4. Tag ohne Quest → Pause (±0), keine Vorschau.
+    await setCompletionValue(reading.id, '2026-10-30', 0)
+    await setCompletionValue(reading.id, '2026-10-29', 1)
+    await renderDashboard()
+    expect(screen.queryByText('Gestern ist noch offen')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Bleibt es so/)).not.toBeInTheDocument()
+  })
+
   it('erscheint nicht, wenn gestern gut lief, und nennt sonst den rettenden Streak-Schutz', async () => {
     await markHpIntroSeen()
     const reading = await createHabit(READING, '2026-10-20')

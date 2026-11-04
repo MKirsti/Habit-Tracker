@@ -7,7 +7,8 @@
  * Abrechnung. So entsteht kein Import-Kreis (`hp.ts` → `engine.ts` → `hpRules.ts`).
  *
  * Grundidee (vom Spieler gewünscht): **eine** Wertung pro Spieltag, egal wie viele Quests und Kampagnen laufen.
- * Höchstens −6 HP pro Tag, Wochenquests wirken nie, Abwesenheit kostet ab dem 8. Tag nichts mehr, Ruhetage nie.
+ * Höchstens −6 HP pro Tag, Wochenquests kosten nie etwas (eine erledigte macht aus `missed` höchstens `weak`),
+ * Abwesenheit kostet ab dem 4. Tag nichts mehr, Ruhetage nie.
  */
 import { BALANCING } from './balancing'
 import { addDays, compareDays, fromEpochDay, isValidDayKey, toEpochDay } from './dates'
@@ -39,7 +40,7 @@ export function penaltiesEnabled(settings: Pick<Settings, 'penalties'>): boolean
   return settings.penalties?.enabled !== false
 }
 
-/** HP-Wirkung einer Tageswertung (`BALANCING.hpByScore`, +10 / +2 / −3 / −6 / 0); unbekannte Wertung → 0. */
+/** HP-Wirkung einer Tageswertung (`BALANCING.hpByScore`, +10 / +2 / −1 / −6 / 0); unbekannte Wertung → 0. */
 export function hpDeltaForScore(score: DayScore): number {
   return Object.hasOwn(BALANCING.hpByScore, score) ? BALANCING.hpByScore[score] : 0
 }
@@ -189,13 +190,17 @@ export function scoreByProgress(requiredCount: number, requiredDone: number): Da
 
 /**
  * Wertung eines Tages in der Reihenfolge des Vertrags: Ruhetag → `rest`; keine Tagesquest fällig → `none`;
- * abwesend → `absent`; sonst nach Anteil (`scoreByProgress`). Wochenquests wirken nie.
+ * abwesend → `absent`; sonst nach Anteil (`scoreByProgress`) – mit einer Ausnahme zugunsten des Helden: Ist keine
+ * Tagesquest erledigt, aber eine andere Quest (z. B. eine Wochenquest), gilt der Tag als `weak` statt `missed`.
  */
 export function classifyDay(facts: DayFacts, flags: { rest: boolean; absent: boolean }): DayScore {
   if (flags.rest) return 'rest'
   if (!(facts.requiredCount > 0)) return 'none'
   if (flags.absent) return 'absent'
-  return scoreByProgress(facts.requiredCount, facts.requiredDone)
+  const score = scoreByProgress(facts.requiredCount, facts.requiredDone)
+  // Wer an dem Tag immerhin eine Quest erledigt hat (z. B. nur eine Wochenquest), hat etwas getan – das ist
+  // „Ein Anfang“, nie „Nichts erledigt“. Wochenquests kosten so nie HP, sie können nur helfen.
+  return score === 'missed' && facts.active ? 'weak' : score
 }
 
 /** Ein (vorab) gewerteter Tag: Schritte 1–2 der Abrechnung, noch ohne HP. */
@@ -243,7 +248,7 @@ function inactiveRunBefore(input: ScoreDaysInput): number {
 /**
  * Wertung und Streak-Schutz für die Tage `from … to` (chronologisch) – Schritte 1–2 der Abrechnung:
  * 1. Wertung (`classifyDay`); abwesend ist ein Tag, wenn er (Ruhetage nicht mitgezählt) der mehr als
- *    `absentAfterDays`-te Tag in Folge ohne jede erledigte Quest ist – ab dem 8. Tag also kein weiterer Schaden.
+ *    `absentAfterDays`-te Tag in Folge ohne jede erledigte Quest ist – ab dem 4. Tag also kein weiterer Schaden.
  * 2. Streak-Schutz bei `weak`/`missed`, wenn der Vorrat reicht: gekaufte mit Kauftag ≤ Tag minus bereits
  *    verbrauchte (ältester zuerst). Ein nach dem Tag gekaufter Streak-Schutz kann ihn nicht mehr retten.
  * Die Abrechnung (`settleDays`) und die Vorschau für gestern (`hpCalendar`) nutzen genau diese Funktion.

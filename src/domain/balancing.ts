@@ -30,12 +30,14 @@ export const BALANCING = {
   /** Lebenspunkte (Phase 2b): Max-HP = hpBase + hpPerLevel × Level (Level 1 → 50). */
   hpBase: 45,
   hpPerLevel: 5,
-  /** HP-Wirkung je Tageswertung (eine Wertung pro Tag; Wochenquests wirken nie). */
-  hpByScore: { perfect: 10, good: 2, weak: -3, missed: -6, rest: 0, none: 0, absent: 0 },
-  /** Ab so vielen Tagen in Folge ohne jede erledigte Quest gilt der Held als abwesend (kein weiterer Schaden). */
-  absentAfterDays: 7,
+  /** HP-Wirkung je Tageswertung (eine Wertung pro Tag; Wochenquests kosten nie etwas). */
+  hpByScore: { perfect: 10, good: 2, weak: -1, missed: -6, rest: 0, none: 0, absent: 0 },
+  /** Nach so vielen Tagen in Folge ohne jede erledigte Quest gilt der Held als abwesend (ab dem 4. kein Schaden mehr). */
+  absentAfterDays: 3,
   /** Anteil des Gold-Guthabens, der bei einer Niederlage verloren geht. */
   defeatGoldLoss: 0.15,
+  /** Höchstens so viel Gold kostet eine Niederlage. */
+  defeatGoldLossMax: 100,
   /** Gegenstände der Schatzkammer. */
   items: {
     streakFreeze: { price: 150, max: 5 },

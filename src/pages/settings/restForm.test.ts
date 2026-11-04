@@ -147,15 +147,21 @@ describe('Lebenspunkte: Erklärung der Tageswertung', () => {
     const rows = dayScoreRows()
     expect(rows.map((row) => row.score)).toEqual(['perfect', 'good', 'weak', 'missed', 'rest', 'none', 'absent'])
     for (const row of rows) expect(row.delta).toBe(BALANCING.hpByScore[row.score])
-    expect(rows.map((row) => row.deltaLabel.replaceAll('\u00a0', ' '))).toEqual(['+10 HP', '+2 HP', '−3 HP', '−6 HP', '±0 HP', '±0 HP', '±0 HP'])
-    expect(rows.find((row) => row.score === 'absent')?.when).toContain('ab dem 8. Tag')
+    expect(rows.map((row) => row.deltaLabel.replaceAll('\u00a0', ' '))).toEqual(['+10 HP', '+2 HP', '−1 HP', '−6 HP', '±0 HP', '±0 HP', '±0 HP'])
+    // absentAfterDays = 3 → ab dem 4. Tag in Folge ohne Quest ist Pause.
+    expect(rows.find((row) => row.score === 'absent')?.when).toContain('ab dem 4. Tag')
+    // Eine Wochenquest allein macht den Tag zu „Ein Anfang“; „Nichts erledigt“ heißt wirklich gar nichts.
+    expect(rows.find((row) => row.score === 'weak')?.when).toContain('oder immerhin eine Wochenquest')
+    expect(rows.find((row) => row.score === 'missed')?.when).toBe('gar keine Quest erledigt, auch keine Wochenquest')
     // Regeln statt eines offenen Tages: ohne „Noch“, ohne „Schaden“.
     expect(rows.find((row) => row.score === 'missed')?.label).toBe('Nichts erledigt')
     expect(rows.map((row) => row.when).join(' ')).not.toMatch(/Schaden/)
     const notes = hpRuleNotes().join(' ').replaceAll('\u00a0', ' ')
     expect(notes).toContain('höchstens −6 HP')
-    expect(notes).toContain('Wochenquests kosten nie Lebenspunkte.')
+    expect(notes).toContain(
+      'Wochenquests kosten nie Lebenspunkte – sie helfen sogar: Erledigst du an einem Tag statt deiner Tagesquests nur eine Wochenquest, zählt er als „Ein Anfang“ (−1 HP) statt „Nichts erledigt“ (−6 HP).',
+    )
     expect(notes).toContain('45 + 5 je Level (Level 1: 50 HP)')
-    expect(notes).toContain('15 % deines Goldes')
+    expect(notes).toContain('15 % deines Goldes, höchstens 100 Gold,')
   })
 })

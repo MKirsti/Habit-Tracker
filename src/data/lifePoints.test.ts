@@ -165,10 +165,10 @@ describe('settleHpDays', () => {
   it('rechnet ab dem Beginn bis vorgestern ab – gestern bleibt in der Gnadenfrist', async () => {
     const habits = await hero()
     await settleHpDays(START, database) // Beginn = START
-    await complete(habits, '2026-10-01', 3) // perfect
-    await complete(habits, '2026-10-02', 2) // good
-    await complete(habits, '2026-10-03', 1) // weak
-    // 4. Oktober: nichts → missed; 5. Oktober (gestern): noch offen
+    await complete(habits, '2026-10-01', 3) // perfect: +10, schon voll → 50
+    await complete(habits, '2026-10-02', 2) // good: +2, schon voll → 50
+    await complete(habits, '2026-10-03', 1) // weak: 50 − 1 = 49
+    // 4. Oktober: nichts → missed: 49 − 6 = 43; 5. Oktober (gestern): noch offen
     const today = '2026-10-06'
     const expected = settleDays(await loadGameData(database), today)
 
@@ -176,11 +176,11 @@ describe('settleHpDays', () => {
     expect(entries).toStrictEqual(expected)
     expect(entries.map((entry) => entry.day)).toEqual(dayRange('2026-10-01', '2026-10-04'))
     expect(entries.map((entry) => entry.score)).toEqual(['perfect', 'good', 'weak', 'missed'])
-    expect(entries.map((entry) => entry.hpAfter)).toEqual([50, 50, 47, 41])
+    expect(entries.map((entry) => entry.hpAfter)).toEqual([50, 50, 49, 43])
     expect((await loadGameData(database)).hpLedger).toStrictEqual(entries)
 
     const hp = (await state(today)).hp
-    expect(hp).toMatchObject({ current: 41, max: 50, settledThrough: '2026-10-04' })
+    expect(hp).toMatchObject({ current: 43, max: 50, settledThrough: '2026-10-04' })
     expect(hp.yesterday).toMatchObject({ day: '2026-10-05', score: 'missed', threatenedDelta: BALANCING.hpByScore.missed })
   })
 
@@ -229,22 +229,31 @@ describe('settleHpDays', () => {
     const habits = await hero()
     await settleHpDays(START, database)
     const loot = await createSideQuest({ title: 'Schatz', icon: '💰', attribute: 'strength', difficulty: 'hard' }, START, database)
-    await completeSideQuest(loot.id, START, database)
-    await complete(habits, '2026-10-01', 1) // weak: 47
-    // 2.–7. Oktober verpasst (6 Tage, noch keine Abwesenheit): 11
-    await complete(habits, '2026-10-08', 1) // weak: 8
-    // 9. Oktober verpasst: 2, 10. Oktober verpasst: 0 → Niederlage
+    await completeSideQuest(loot.id, START, database) // Nebenquests zählen nicht als erledigte Quest
+    // Nie mehr als drei verpasste Tage am Stück – ab dem 4. Tag ohne Quest wäre Pause (kein Schaden mehr):
+    // 1.–3. Oktober verpasst: 50 − 3 × 6 = 32
+    await complete(habits, '2026-10-04', 1) // weak: 32 − 1 = 31 (die Zählung der Abwesenheit beginnt neu)
+    // 5.–7. Oktober verpasst: 31 − 3 × 6 = 13
+    await complete(habits, '2026-10-08', 1) // weak: 13 − 1 = 12
+    // 9. Oktober verpasst: 6, 10. Oktober verpasst: 0 → Niederlage
     const defeatDay = '2026-10-10'
     const before = await loadGameData(database)
     const balanceAtDefeat = deriveGameState(before, defeatDay).gold.balance
     const stateBefore = deriveGameState(before, '2026-10-12')
 
     const entries = await settleHpDays('2026-10-12', database)
-    expect(entries.map((entry) => entry.hpAfter)).toEqual([47, 41, 35, 29, 23, 17, 11, 8, 2, 50])
+    expect(entries.map((entry) => entry.score)).toEqual([
+      ...['missed', 'missed', 'missed', 'weak'],
+      ...['missed', 'missed', 'missed', 'weak'],
+      ...['missed', 'missed'],
+    ])
+    expect(entries.map((entry) => entry.hpAfter)).toEqual([44, 38, 32, 31, 25, 19, 13, 12, 6, 50])
     const defeat = entries.at(-1)
-    expect(defeat).toMatchObject({ day: defeatDay, score: 'missed', hpAfter: 50, penalties: true })
-    const goldLost = Math.floor(balanceAtDefeat * BALANCING.defeatGoldLoss)
+    expect(defeat).toMatchObject({ day: defeatDay, score: 'missed', hpDelta: -6, hpAfter: 50, penalties: true })
+    // Kleines Guthaben (40 XP + 2 × 10 XP → 30 Gold plus Erfolgs-Gold): 15 %, weit unter der Obergrenze.
+    const goldLost = Math.floor(balanceAtDefeat * 0.15)
     expect(goldLost).toBeGreaterThan(0)
+    expect(goldLost).toBeLessThan(100)
     expect(defeat?.defeat).toStrictEqual({ goldLost })
 
     const after = await state('2026-10-12')
@@ -255,33 +264,96 @@ describe('settleHpDays', () => {
     expect(after.hp).toMatchObject({ current: 50, defeats: 1, lastDefeat: { day: defeatDay, goldLost } })
   })
 
-  it('reine Abwesenheit führt nie zur Niederlage', async () => {
+  it('reine Abwesenheit führt nie zur Niederlage – ab dem 4. Tag ohne Quest ruhen die Lebenspunkte', async () => {
     const habits = await hero()
     await settleHpDays(START, database)
     await complete(habits, START, 1)
+    // Abgerechnet bis START + 58 (28. November): 59 Tage.
     const entries = await settleHpDays(addDays(START, 60), database)
+    expect(entries).toHaveLength(59)
     expect(entries.some((entry) => entry.defeat !== undefined)).toBe(false)
-    expect(entries.filter((entry) => entry.score === 'absent').length).toBeGreaterThan(40)
-    expect(Math.min(...entries.map((entry) => entry.hpAfter))).toBe(50 - 3 - 7 * 6)
+    // 1. Oktober weak (49), 2.–4. Oktober verpasst (1.–3. Tag ohne Quest: 43, 37, 31), ab dem 5. Oktober Pause.
+    expect(entries.slice(0, 5).map((entry) => [entry.score, entry.hpAfter])).toEqual([
+      ['weak', 49],
+      ['missed', 43],
+      ['missed', 37],
+      ['missed', 31],
+      ['absent', 31],
+    ])
+    expect(entries.filter((entry) => entry.score === 'absent')).toHaveLength(59 - 4)
+    // Eine Pause kostet höchstens 3 × −6 = −18 HP: 50 − 1 − 18 = 31.
+    expect(Math.min(...entries.map((entry) => entry.hpAfter))).toBe(31)
+  })
+
+  it('eine Wochenquest allein macht aus einem leeren Tag „Ein Anfang“ (−1 statt −6) und beendet die Pause', async () => {
+    const habits = await hero(1)
+    const weekly = await createHabit(
+      { title: 'Laufen', icon: '🏃', attribute: 'vitality', difficulty: 'easy', schedule: { type: 'weekly', times: 2 } },
+      START,
+      database,
+    )
+    await settleHpDays(START, database)
+    await toggleCompletion(weekly.id, '2026-10-01', database) // nur die Wochenquest: weak, 50 − 1 = 49
+    // 2.–4. Oktober nichts: 43, 37, 31; 5.–7. Oktober nichts: Pause (4.–6. Tag ohne Quest), bleibt 31
+    await toggleCompletion(weekly.id, '2026-10-08', database) // wieder nur die Wochenquest: weak, 31 − 1 = 30
+    await toggleCompletion(habits[0].id, '2026-10-09', database) // die Tagesquest: perfect, 30 + 10 = 40
+    // 10. Oktober nichts: 1. Tag ohne Quest → missed, 40 − 6 = 34
+    const entries = await settleHpDays('2026-10-12', database)
+    expect(entries.map((entry) => [entry.day, entry.score, entry.hpDelta, entry.hpAfter])).toEqual([
+      ['2026-10-01', 'weak', -1, 49],
+      ['2026-10-02', 'missed', -6, 43],
+      ['2026-10-03', 'missed', -6, 37],
+      ['2026-10-04', 'missed', -6, 31],
+      ['2026-10-05', 'absent', 0, 31],
+      ['2026-10-06', 'absent', 0, 31],
+      ['2026-10-07', 'absent', 0, 31],
+      ['2026-10-08', 'weak', -1, 30],
+      ['2026-10-09', 'perfect', 10, 40],
+      ['2026-10-10', 'missed', -6, 34],
+    ])
+  })
+
+  it('eine Niederlage kostet höchstens 100 Gold – bei großem Guthaben nicht 15 %', async () => {
+    await hero()
+    await settleHpDays(START, database)
+    // 20 epische Nebenquests am START: 1.600 XP → 800 Gold (plus Erfolgs-Gold); 15 % wären über 100.
+    for (let i = 1; i <= 20; i++) {
+      const quest = await createSideQuest({ title: `Drache ${i}`, icon: '🐉', attribute: 'strength', difficulty: 'epic' }, START, database)
+      await completeSideQuest(quest.id, START, database)
+    }
+    // Angeschlagen in den 2. Oktober: 5 HP nach dem (schon abgerechneten) START.
+    await database.hpLedger.add(makeLedgerEntry(START, { score: 'missed', hpDelta: -6, hpAfter: 5, maxHp: 65 }))
+    const balanceAtDefeat = deriveGameState(await loadGameData(database), '2026-10-02').gold.balance
+    expect(balanceAtDefeat).toBeGreaterThanOrEqual(800)
+    expect(Math.floor(balanceAtDefeat * 0.15)).toBeGreaterThan(100)
+
+    // 2. Oktober verpasst: 5 − 6 → 0 → Niederlage, 100 Gold statt 15 % weg.
+    const [defeat] = await settleHpDays('2026-10-04', database)
+    expect(defeat).toMatchObject({ day: '2026-10-02', score: 'missed', hpAfter: 65, defeat: { goldLost: 100 } })
+    const after = await state('2026-10-04')
+    expect(after.gold.lostToDefeats).toBe(100)
+    expect(after.gold.balance).toBe(balanceAtDefeat - 100)
   })
 
   it('Sanfter Modus: Wertung ja, HP-Wirkung nein; wieder eingeschaltet starten die HP voll', async () => {
     const habits = await hero()
     await settleHpDays(START, database)
     await complete(habits, '2026-10-01', 1)
-    const hurt = await settleHpDays('2026-10-04', database) // 1. und 2. Oktober: 47, 41
-    expect(hurt.map((entry) => entry.hpAfter)).toEqual([47, 41])
+    const hurt = await settleHpDays('2026-10-04', database) // 1. Oktober weak: 49; 2. Oktober verpasst: 43
+    expect(hurt.map((entry) => entry.hpAfter)).toEqual([49, 43])
 
     await setPenaltiesEnabled(false, '2026-10-04', database)
-    const gentle = await settleHpDays('2026-10-07', database) // 3.–5. Oktober verpasst
-    expect(gentle.map((entry) => entry.score)).toEqual(['missed', 'missed', 'missed'])
+    await complete(habits, '2026-10-04', 1)
+    const gentle = await settleHpDays('2026-10-07', database) // 3. Oktober verpasst, 4. Oktober weak, 5. Oktober verpasst
+    expect(gentle.map((entry) => entry.score)).toEqual(['missed', 'weak', 'missed'])
     for (const entry of gentle) expect(entry).toMatchObject({ penalties: false, hpDelta: 0, frozen: false })
     expect((await state('2026-10-07')).hp.enabled).toBe(false)
 
     await setPenaltiesEnabled(true, '2026-10-07', database)
     expect((await loadGameData(database)).settings.penalties).toStrictEqual({ enabled: true, since: START })
     expect((await state('2026-10-07')).hp).toMatchObject({ enabled: true, current: 50 })
-    const back = await settleHpDays('2026-10-08', database) // 6. Oktober verpasst: von voll aus
+    // 6. Oktober verpasst (2. Tag ohne Quest seit dem 4., noch keine Pause): von voll aus 50 − 6 = 44
+    const back = await settleHpDays('2026-10-08', database)
     expect(back).toMatchObject([{ day: '2026-10-06', penalties: true, hpAfter: 44 }])
   })
 

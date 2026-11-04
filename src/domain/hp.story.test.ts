@@ -7,7 +7,10 @@
  *
  * Held: Level 6 (36 epische Nebenquests vor Beginn = 2.880 XP; Level 7 erst ab 4.291 XP) → Max-HP 75.
  * Am Tag 16 bringen 20 epische Nebenquests (+1.600 XP) genau einen Level-Aufstieg (Level 7 → Max-HP 80).
- * Quests: A, B, C täglich (leicht), W 2× pro Woche (leicht). Vor Beginn steht ein Ledger-Eintrag mit 30 HP.
+ * Quests: A, B, C täglich (leicht), W 2× pro Woche (leicht). Vor Beginn steht ein Ledger-Eintrag mit 18 HP.
+ *
+ * Regeln (mild): +10 / +2 / −1 / −6 je Wertung; ein Tag nur mit der Wochenquest ist `weak` (nicht `missed`); ab dem
+ * 4. Tag in Folge ohne jede Erledigung `absent` (0); eine Niederlage kostet 15 % des Guthabens, höchstens 100 Gold.
  */
 import { describe, expect, it } from 'vitest'
 import { BALANCING, DEFAULT_SETTINGS } from './balancing'
@@ -23,6 +26,7 @@ import {
   makeHabit,
   makeItemPurchase,
   makeLedgerEntry,
+  makePurchase,
   makeRestPeriod,
   makeSideQuest,
   seededRandom,
@@ -45,14 +49,8 @@ const PLAN: Record<number, Habit[]> = {
   2: [A],
   3: [W],
   4: [A],
-  5: [W],
-  7: [W],
-  9: [W],
-  10: [A],
-  11: [W],
-  12: [W],
-  13: [W],
-  14: [A],
+  8: [W],
+  12: [A],
   15: [A, B, C],
   18: [A],
   33: [A, B, C],
@@ -61,7 +59,15 @@ const COMPLETIONS: Completion[] = Object.entries(PLAN).flatMap(([n, habits]) =>
   habits.map((habit) => makeCompletion(habit, D(Number(n)))),
 )
 
+/**
+ * Vor Beginn hat sich Mira etwas gegönnt – so liegt ihr Guthaben bei der Niederlage (Tag 14) zwischen 667 und 816
+ * Gold: 15 % davon sind mehr als 100 (die Grenze greift), nach dem Streak-Schutz vom Tag 18 (−150) aber weniger.
+ */
+const TREAT_PRICE = 775
+const TREAT = makePurchase({ id: 'treat', title: 'Ein neues Buch', price: TREAT_PRICE, day: D(-1) })
+
 const PURCHASES: Purchase[] = [
+  TREAT,
   makeItemPurchase('freeze-1', 'streakFreeze', D(4)),
   makeItemPurchase('potion-1', 'healingPotion', D(8)),
   makeItemPurchase('freeze-2', 'streakFreeze', D(18)),
@@ -72,8 +78,8 @@ const SIDE_QUESTS = [
   ...Array.from({ length: 20 }, (_, i) => makeSideQuest({ id: `boost-${i}`, difficulty: 'epic', createdDay: D(16), doneDay: D(16) })),
 ]
 
-/** Vor Beginn schon abgerechnet: angeschlagen mit 30 von 75 HP. */
-const PRIOR = makeLedgerEntry(D(-1), { score: 'good', hpDelta: 2, hpAfter: 30, maxHp: 75 })
+/** Vor Beginn schon abgerechnet: angeschlagen mit 18 von 75 HP. */
+const PRIOR = makeLedgerEntry(D(-1), { score: 'good', hpDelta: 2, hpAfter: 18, maxHp: 75 })
 /** Sanfter Modus galt an den Abrechnungstagen 19 und 20 (also für die Tage 17 und 18). */
 const GENTLE_ON = new Set([D(19), D(20)])
 /** Urlaub von Tag 19 bis Tag 22 – vorab geplant. */
@@ -112,21 +118,21 @@ type Row = [day: number, score: DayScore, frozen: boolean, hpDelta: number, hpAf
 
 /** Von Hand gerechnet (siehe Kommentare). */
 const EXPECTED: Row[] = [
-  [0, 'perfect', false, 10, 40, 75, true], // 30 + 10
-  [1, 'good', false, 2, 42, 75, true], // 2 von 3 ≥ 50 %
-  [2, 'weak', false, -3, 39, 75, true], // 1 von 3
-  [3, 'missed', false, -6, 33, 75, true], // nur die Wochenquest – zählt nie für die Wertung
-  [4, 'weak', true, 0, 33, 75, true], // am selben Tag gekaufter Streak-Schutz fängt auf
-  [5, 'missed', false, -6, 27, 75, true],
-  [6, 'missed', false, -6, 21, 75, true],
-  [7, 'missed', false, -6, 15, 75, true],
-  [8, 'missed', false, 14, 29, 75, true], // −6 + Heiltrank 20
+  [0, 'perfect', false, 10, 28, 75, true], // 18 + 10
+  [1, 'good', false, 2, 30, 75, true], // 2 von 3 ≥ 50 %
+  [2, 'weak', false, -1, 29, 75, true], // 1 von 3
+  [3, 'weak', false, -1, 28, 75, true], // nur die Wochenquest: keine Tagesquest, aber anwesend → weak statt missed
+  [4, 'weak', true, 0, 28, 75, true], // am selben Tag gekaufter Streak-Schutz fängt auf
+  [5, 'missed', false, -6, 22, 75, true], // Tag 1 ohne Erledigung (kein Schutz mehr)
+  [6, 'missed', false, -6, 16, 75, true], // Tag 2
+  [7, 'missed', false, -6, 10, 75, true], // Tag 3 – ein 4. Tag wäre abwesend
+  [8, 'weak', false, 19, 29, 75, true], // Wochenquest (−1) + Heiltrank 20
   [9, 'missed', false, -6, 23, 75, true],
-  [10, 'weak', false, -3, 20, 75, true],
-  [11, 'missed', false, -6, 14, 75, true],
-  [12, 'missed', false, -6, 8, 75, true],
-  [13, 'missed', false, -6, 2, 75, true],
-  [14, 'weak', false, -2, 75, 75, true], // 2 − 3 → 0: Niederlage, danach wieder voll (hpDelta = −Start)
+  [10, 'missed', false, -6, 17, 75, true],
+  [11, 'missed', false, -6, 11, 75, true],
+  [12, 'weak', false, -1, 10, 75, true], // 1 von 3
+  [13, 'missed', false, -6, 4, 75, true],
+  [14, 'missed', false, -4, 75, 75, true], // 4 − 6 → 0: Niederlage, danach wieder voll (hpDelta = −Start)
   [15, 'perfect', false, 0, 75, 75, true], // schon voll
   [16, 'missed', false, 5, 80, 80, true], // Level-Up heilt voll – trotz verpasstem Tag
   [17, 'missed', false, 0, 80, 80, false], // Sanfter Modus (abgerechnet am Tag 19)
@@ -135,18 +141,18 @@ const EXPECTED: Row[] = [
   [20, 'rest', false, 0, 80, 80, true],
   [21, 'rest', false, 0, 80, 80, true],
   [22, 'rest', false, 0, 80, 80, true],
-  // Zehn Tage Abwesenheit (Urlaubstage zählen nicht mit): Tage 1–7 verpasst, ab dem 8. „absent“.
+  // Zehn Tage Abwesenheit (Urlaubstage zählen nicht mit): Tage 1–3 verpasst (3 × −6 = −18), ab dem 4. „absent“.
   [23, 'missed', false, -6, 74, 80, true],
   [24, 'missed', false, -6, 68, 80, true],
   [25, 'missed', false, -6, 62, 80, true],
-  [26, 'missed', false, -6, 56, 80, true],
-  [27, 'missed', false, -6, 50, 80, true],
-  [28, 'missed', false, -6, 44, 80, true],
-  [29, 'missed', false, -6, 38, 80, true],
-  [30, 'absent', false, 0, 38, 80, true],
-  [31, 'absent', false, 0, 38, 80, true],
-  [32, 'absent', false, 0, 38, 80, true],
-  [33, 'perfect', false, 10, 48, 80, true], // zurück: Perfekter Tag
+  [26, 'absent', false, 0, 62, 80, true],
+  [27, 'absent', false, 0, 62, 80, true],
+  [28, 'absent', false, 0, 62, 80, true],
+  [29, 'absent', false, 0, 62, 80, true],
+  [30, 'absent', false, 0, 62, 80, true],
+  [31, 'absent', false, 0, 62, 80, true],
+  [32, 'absent', false, 0, 62, 80, true],
+  [33, 'perfect', false, 10, 72, 80, true], // zurück: Perfekter Tag
 ]
 
 const row = (entry: HpLedgerEntry): Row => [
@@ -176,13 +182,15 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
     expect(settled.map(row)).toStrictEqual(EXPECTED)
   })
 
-  it('Niederlage am Tag 14: 15 % (abgerundet) des Guthabens am Ende des Tages; sonst keine', () => {
+  it('Niederlage am Tag 14: 15 % des Guthabens am Ende des Tages, höchstens 100 Gold; sonst keine', () => {
     const defeats = settled.filter((entry) => entry.defeat !== undefined)
     expect(defeats.map((entry) => entry.day)).toStrictEqual([D(14)])
     const before = ledger.filter((entry) => entry.day < D(14))
     const balance = deriveGameState(dataAt(D(16), before), D(14)).gold.balance
-    expect(balance).toBeGreaterThan(0)
-    expect(defeats[0].defeat).toStrictEqual({ goldLost: Math.floor(balance * 0.15) })
+    // 15 % von mindestens 667 Gold sind mindestens 100 → die Grenze greift: genau 100 Gold.
+    expect(balance).toBeGreaterThanOrEqual(667)
+    expect(Math.floor(balance * 0.15)).toBeGreaterThanOrEqual(BALANCING.defeatGoldLossMax)
+    expect(defeats[0].defeat).toStrictEqual({ goldLost: 100 })
   })
 
   it('der abgeleitete Zustand unterwegs: HP, Vorschau für gestern, Vorrat, Kennzahlen, Gold', () => {
@@ -192,7 +200,7 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
 
     // Tag 5: abgerechnet bis Tag 3; gestern (Tag 4) rettet der am Tag 4 gekaufte Streak-Schutz.
     const day5 = at(D(5))
-    expect(day5.hp).toMatchObject({ enabled: true, current: 33, max: 75, settledThrough: D(3), defeats: 0 })
+    expect(day5.hp).toMatchObject({ enabled: true, current: 28, max: 75, settledThrough: D(3), defeats: 0 })
     expect(day5.hp.yesterday).toStrictEqual({ day: D(4), score: 'weak', threatenedDelta: 0, savedByFreeze: true })
     expect(day5.inventory.streakFreezes).toBe(1) // verbraucht ist er erst mit der Abrechnung
 
@@ -201,16 +209,16 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
     expect(day6.inventory.streakFreezes).toBe(0)
     expect(day6.hp.yesterday).toStrictEqual({ day: D(5), score: 'missed', threatenedDelta: -6, savedByFreeze: false })
 
-    // Tag 8: Heiltrank wirkt sofort im abgeleiteten Zustand (abgerechnet bis Tag 6: 21 HP).
-    expect(at(D(8)).hp.current).toBe(41)
+    // Tag 8: Heiltrank wirkt sofort im abgeleiteten Zustand (abgerechnet bis Tag 6: 16 HP + 20).
+    expect(at(D(8)).hp.current).toBe(36)
 
     // Tag 16: Niederlage abgerechnet; das Level ist heute höher als am Tag 14 → sofort volle (neue) Max-HP.
     const day16 = at(D(16))
-    const goldLost = settled.find((entry) => entry.day === D(14))?.defeat?.goldLost ?? -1
+    const goldLost = 100
     expect(day16.hp).toMatchObject({ current: 80, max: 80, defeats: 1, lastDefeat: { day: D(14), goldLost } })
     expect(day16.gold.lostToDefeats).toBe(goldLost)
     expect(day16.gold.balance).toBe(day16.gold.earned - day16.gold.spent - goldLost)
-    expect(day16.gold.spent).toBe(150 + 80)
+    expect(day16.gold.spent).toBe(TREAT_PRICE + 150 + 80)
     // „Unbeugsam“: Tag 15 war nach der Niederlage perfekt.
     expect(day16.achievements.find((a) => a.definition.id === 'indomitable')?.unlocked).toBe(true)
 
@@ -222,10 +230,10 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
 
     // Ende: alles abgerechnet bis Tag 33.
     const end = at(D(35))
-    expect(end.hp).toMatchObject({ enabled: true, current: 48, max: 80, settledThrough: D(33), defeats: 1 })
+    expect(end.hp).toMatchObject({ enabled: true, current: 72, max: 80, settledThrough: D(33), defeats: 1 })
     expect(end.inventory.streakFreezes).toBe(0)
     expect(end.gold.lostToDefeats).toBe(goldLost)
-    expect(end.gold.spent).toBe(150 + 80 + 150)
+    expect(end.gold.spent).toBe(TREAT_PRICE + 150 + 80 + 150)
   })
 
   it('unregelmäßig geöffnet (Tag 3, 10, 18): bis Tag 16 dieselben Wertungen und HP wie täglich', () => {
@@ -243,7 +251,10 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
     const balanceLate = deriveGameState(dataAt(D(18), irregular.filter((entry) => entry.day < D(14))), D(14)).gold.balance
     const balanceDaily = deriveGameState(dataAt(D(16), settled.filter((entry) => entry.day < D(14))), D(14)).gold.balance
     expect(balanceLate).toBe(balanceDaily - 150)
-    expect(lostDaily).toBe(Math.floor(balanceDaily * 0.15))
+    // Täglich: ≥ 667 Gold → 15 % ≥ 100 → die Grenze (100). Spät: 150 Gold weniger, < 667 → 15 % < 100, keine Grenze.
+    expect(balanceDaily).toBeGreaterThanOrEqual(667)
+    expect(balanceLate).toBeLessThan(667)
+    expect(lostDaily).toBe(100)
     expect(lostLate).toBe(Math.floor(balanceLate * 0.15))
     expect(lostLate).toBeLessThan(lostDaily)
   })
@@ -420,10 +431,11 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
       let score: DayScore
       if (rest.has(day)) score = 'rest'
       else if (state.requiredCount === 0) score = 'none'
-      else if (inactive >= 8) score = 'absent'
+      else if (inactive >= 4) score = 'absent' // der 4. Tag in Folge ohne jede Erledigung
       else if (state.requiredDone === state.requiredCount) score = 'perfect'
       else if (state.requiredDone * 2 >= state.requiredCount) score = 'good'
       else if (state.requiredDone > 0) score = 'weak'
+      else if (activeDays.has(day)) score = 'weak' // keine Tagesquest, aber eine andere Quest erledigt
       else score = 'missed'
       const used = [...ledger, ...entries].filter((entry) => entry.frozen).length
       const bought = (data.purchases ?? []).filter((p) => p.itemId === 'streakFreeze' && p.day <= day).length
@@ -440,12 +452,12 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
         const potions = (data.purchases ?? []).filter(
           (p) => p.itemId === 'healingPotion' && p.day <= day && (previous === undefined ? p.day === day : p.day > previous.day),
         ).length
-        const effect = frozen ? 0 : { perfect: 10, good: 2, weak: -3, missed: -6, rest: 0, none: 0, absent: 0 }[score]
+        const effect = frozen ? 0 : { perfect: 10, good: 2, weak: -1, missed: -6, rest: 0, none: 0, absent: 0 }[score]
         const after = level > levelBefore ? maxHp : Math.min(maxHp, Math.max(0, startHp + effect + 20 * potions))
         entry = { day, score, frozen, hpDelta: after - startHp, hpAfter: after, maxHp, penalties: true }
         if (after <= 0) {
           const balance = deriveGameState({ ...data, hpLedger: soFar }, day).gold.balance
-          entry.defeat = { goldLost: Math.floor(Math.max(0, balance) * 0.15) }
+          entry.defeat = { goldLost: Math.min(100, Math.floor(Math.max(0, balance) * 0.15)) }
           entry.hpAfter = maxHp
         }
       }
@@ -471,8 +483,19 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
     )
     const completions: Completion[] = []
     let chance = rnd()
-    for (const day of dayRange(START, today)) {
-      if (rnd() < 0.15) chance = rnd() < 0.3 ? 0 : rnd()
+    let slump = false
+    for (const [i, day] of dayRange(START, today).entries()) {
+      if (rnd() < 0.15) {
+        chance = rnd() < 0.3 ? 0 : rnd()
+        // Durststrecke: nur an jedem 4. Tag eine einzige Quest – nie abwesend, so kommt es auch mit den milden Regeln
+        // (−1 für schwache Tage, ab dem 4. Tag ohne Erledigung kein Schaden) zu Niederlagen.
+        slump = chance === 0 && rnd() < 0.6
+      }
+      if (slump) {
+        const habit = habits.find((candidate) => candidate.createdDay <= day)
+        if (i % 4 === 0 && habit !== undefined) completions.push(makeCompletion(habit, day))
+        continue
+      }
       for (const habit of habits) if (habit.createdDay <= day && rnd() < chance) completions.push(makeCompletion(habit, day))
     }
     const purchases: Purchase[] = []
@@ -482,7 +505,9 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
     }
     const restPeriods = rnd() < 0.6 ? [makeRestPeriod('r', D(5 + Math.floor(rnd() * 10)), D(15 + Math.floor(rnd() * 5)))] : []
     const sinceOffset = Math.floor(rnd() * 6)
-    const ledger = rnd() < 0.4 ? [makeLedgerEntry(D(sinceOffset), { score: 'good', hpAfter: 5 + Math.floor(rnd() * 40) })] : []
+    // Oft schon angeschlagen – mit den milden Regeln (−1 für schwache Tage, ab dem 4. Tag abwesend) kommt es sonst
+    // kaum zu Niederlagen.
+    const ledger = rnd() < 0.6 ? [makeLedgerEntry(D(sinceOffset), { score: 'good', hpAfter: 1 + Math.floor(rnd() * 10) })] : []
     const data = makeGameData({
       profile: { name: 'Mira', avatar: '🧙', createdDay: START },
       settings: { ...DEFAULT_SETTINGS, penalties: { enabled: rnd() < 0.85, since: D(sinceOffset + (rnd() < 0.3 ? 3 : 0)) } },
@@ -491,23 +516,40 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
       purchases,
       restPeriods,
       hpLedger: ledger,
-      sideQuests: rnd() < 0.3 ? [makeSideQuest({ id: 'boost', difficulty: 'epic', createdDay: START, doneDay: D(10) })] : [],
+      sideQuests: [
+        ...(rnd() < 0.3 ? [makeSideQuest({ id: 'boost', difficulty: 'epic', createdDay: START, doneDay: D(10) })] : []),
+        // Manchmal ein großes Guthaben (40 × 80 XP vor Beginn = 1.600 Gold, abzüglich der Gegenstände): 15 % wären
+        // oft mehr als 100 → die Grenze.
+        ...(rnd() < 0.3
+          ? Array.from({ length: 40 }, (_, i) => makeSideQuest({ id: `rich-${i}`, difficulty: 'epic', createdDay: D(-1), doneDay: D(-1) }))
+          : []),
+      ],
     })
     return { data, today }
   }
 
   it('settleDays = Referenzmodell (60 Zufallsverläufe, inkl. Lücke, Sanfter Modus, Niederlagen)', () => {
     let defeats = 0
+    let capped = 0
     let frozen = 0
+    let absent = 0
+    let weakWithoutDaily = 0
     for (let seed = 1; seed <= 60; seed++) {
       const { data, today } = randomData(seed)
       const actual = settleDays(data, today)
       expect(actual, `seed ${seed}`).toStrictEqual(referenceSettle(data, today))
       defeats += actual.filter((entry) => entry.defeat !== undefined).length
+      capped += actual.filter((entry) => entry.defeat?.goldLost === 100).length
       frozen += actual.filter((entry) => entry.frozen).length
+      absent += actual.filter((entry) => entry.score === 'absent').length
+      weakWithoutDaily += actual.filter((entry) => entry.score === 'weak' && getDayState(data, entry.day).requiredDone === 0).length
     }
-    // Die Zufallsdaten decken auch Niederlagen und Streak-Schutz ab.
-    expect(defeats).toBeGreaterThan(0)
+    // Die Zufallsdaten decken auch Niederlagen (mit und ohne Obergrenze), Streak-Schutz, Abwesenheit und schwache
+    // Tage ohne erledigte Tagesquest (nur eine andere Quest) ab.
+    expect(defeats).toBeGreaterThan(capped)
+    expect(capped).toBeGreaterThan(0)
     expect(frozen).toBeGreaterThan(0)
+    expect(absent).toBeGreaterThan(0)
+    expect(weakWithoutDaily).toBeGreaterThan(0)
   })
 })

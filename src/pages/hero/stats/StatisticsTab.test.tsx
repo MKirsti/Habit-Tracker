@@ -104,7 +104,8 @@ describe('Held → Statistik', () => {
     await user.keyboard('{ArrowUp}')
     expect(liveText(group)).toMatch(/^Montag, 2\. November 2026 – Perfekter Tag · 2 von 2 Tagesquests · \+\d+ XP$/)
     await user.keyboard('{ArrowLeft}')
-    // Seit dem 1. Oktober nichts erledigt: ab dem 8. Tag zählt das als längere Pause (ohne weiteren Schaden).
+    // Seit dem 1. Oktober nichts erledigt: ab dem 4. Tag (hier ab dem 4. Oktober) zählt das als längere Pause
+    // (ohne weiteren Schaden) – der 26. Oktober ist der 26. Tag ohne Quest.
     expect(liveText(group)).toBe('Montag, 26. Oktober 2026 – Längere Pause')
     // In die Zukunft geht es nicht – die Auswahl bleibt stehen.
     await user.keyboard('{End}{ArrowRight}')

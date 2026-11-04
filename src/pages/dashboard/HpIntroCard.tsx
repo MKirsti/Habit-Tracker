@@ -14,8 +14,9 @@ const POINT_ICONS: ReactNode[] = [<CalendarCheck key="day" />, <CalendarRange ke
 
 /**
  * Einmalige Einführung „Neu: Lebenspunkte“ unter dem Helden-Kopf: erklärt die milde Tageswertung (eine Wertung pro
- * Tag – Heilung zuerst, höchstens −6 –, Wochenquests nie, Gnadenfrist, Ruhetag & Pause, Niederlage) und verweist auf
- * den Sanften Modus in den Einstellungen. „Verstanden“ merkt sich das dauerhaft (`markHpIntroSeen`).
+ * Tag – Heilung zuerst, höchstens −6 –, Wochenquests kosten nie, helfen aber, Gnadenfrist, Ruhetag & Pause, Niederlage
+ * mit Gold-Obergrenze) und verweist auf den Sanften Modus in den Einstellungen. „Verstanden“ merkt sich das dauerhaft
+ * (`markHpIntroSeen`).
  */
 export function HpIntroCard() {
   const titleId = useId()

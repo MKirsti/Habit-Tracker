@@ -19,6 +19,7 @@ import {
   saveProfile,
   setPenaltiesEnabled,
   settleHpDays,
+  toggleCompletion,
   undoPurchase,
 } from './repository'
 
@@ -76,17 +77,41 @@ async function earnGold(epicQuests: number, day: DayKey = START): Promise<void> 
   }
 }
 
+/** HP des angeschlagenen Helden (`woundedHero`), von Hand gerechnet. */
+const WOUNDED_HP = 29
+
 /**
- * Angeschlagener Held: sechs epische Nebenquests am START (480 XP → Level 3, 60 HP, das Level-Up heilt am START
- * voll), danach sechs Tage nichts erledigt → am 9. Oktober (abgerechnet bis 7. Oktober) noch 60 − 6 × 6 = 24 HP.
+ * Angeschlagener Held: sechs epische Nebenquests am START (480 XP → Level 3, 60 HP; das Level-Up heilt am START
+ * voll), sonst nur am 4. Oktober eine Wochenquest (Nebenquests zählen nicht als erledigte Quest). Am 9. Oktober
+ * abgerechnet bis zum 7. Oktober:
+ * - 1. Okt.: verpasst (1. Tag ohne Quest), aber Level-Up → 60
+ * - 2./3. Okt.: verpasst (2./3. Tag ohne Quest) → 60 − 6 − 6 = 48
+ * - 4. Okt.: nur die Wochenquest → „Ein Anfang“ statt verpasst → 48 − 1 = 47; die Zählung der Abwesenheit beginnt neu
+ *   (ohne sie wäre der 4. Oktober schon der 4. Tag ohne Quest: Pause, kein Schaden mehr)
+ * - 5.–7. Okt.: verpasst (1.–3. Tag ohne Quest) → 47 − 3 × 6 = 29
  * Das Gold (≥ 240) reicht für mehrere Gegenstände; neue XP gäbe es heute nicht (ein Level-Up würde voll heilen).
  */
 async function woundedHero(): Promise<DayKey> {
   await hero()
   await earnGold(6)
+  const weekly = await createHabit(
+    { title: 'Laufen', icon: '🏃', attribute: 'vitality', difficulty: 'easy', schedule: { type: 'weekly', times: 1 } },
+    START,
+    database,
+  )
+  await toggleCompletion(weekly.id, '2026-10-04', database)
   const today = '2026-10-09'
-  await settleHpDays(today, database)
-  expect((await stateOn(today)).hp).toMatchObject({ current: 24, max: 60 })
+  const entries = await settleHpDays(today, database)
+  expect(entries.map((entry) => [entry.day, entry.score, entry.hpAfter])).toEqual([
+    ['2026-10-01', 'missed', 60],
+    ['2026-10-02', 'missed', 54],
+    ['2026-10-03', 'missed', 48],
+    ['2026-10-04', 'weak', 47],
+    ['2026-10-05', 'missed', 41],
+    ['2026-10-06', 'missed', 35],
+    ['2026-10-07', 'missed', WOUNDED_HP],
+  ])
+  expect((await stateOn(today)).hp).toMatchObject({ current: WOUNDED_HP, max: 60 })
   return today
 }
 
@@ -201,7 +226,7 @@ describe('purchaseItem – Heiltrank', () => {
     const potion = await purchaseItem('healingPotion', today, database)
     expect(potion).toMatchObject({ kind: 'item', itemId: 'healingPotion', title: 'Heiltrank', icon: '🧪', price: POTION.price })
     const after = await stateOn(today)
-    expect(after.hp.current).toBe(24 + POTION.heal)
+    expect(after.hp.current).toBe(WOUNDED_HP + POTION.heal) // 29 + 20 = 49
     expect(after.gold.balance).toBe(before.gold.balance - POTION.price)
   })
 
@@ -218,7 +243,7 @@ describe('purchaseItem – Heiltrank', () => {
     const today = await woundedHero()
     await purchaseItem('healingPotion', today, database)
     await purchaseItem('healingPotion', today, database)
-    expect((await stateOn(today)).hp.current).toBe(60)
+    expect((await stateOn(today)).hp.current).toBe(60) // 29 + 2 × 20 = 69, höchstens 60
     await expect(purchaseItem('healingPotion', today, database)).rejects.toThrow(MSG.full)
   })
 })
@@ -237,13 +262,13 @@ describe('undoPurchase – Gegenstände', () => {
     const before = await stateOn(today)
     const freeze = await purchaseItem('streakFreeze', today, database)
     const potion = await purchaseItem('healingPotion', today, database)
-    expect((await stateOn(today)).hp.current).toBe(44)
+    expect((await stateOn(today)).hp.current).toBe(49) // 29 + 20
 
     await undoPurchase(potion.id, today, database)
     await undoPurchase(freeze.id, today, database)
     const after = await stateOn(today)
     expect(after.gold.balance).toBe(before.gold.balance)
-    expect(after.hp.current).toBe(24)
+    expect(after.hp.current).toBe(WOUNDED_HP)
     expect(after.inventory.streakFreezes).toBe(0)
     expect(await database.purchases.count()).toBe(0)
   })

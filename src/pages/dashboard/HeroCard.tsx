@@ -21,7 +21,7 @@ export interface HeroCardProps {
 /**
  * Kopfkarte mit Avatar, Name, Level/Rang, Abenteuertag, XP-Balken, Lebenspunkten (nur mit Lebenspunkten, nicht im
  * Sanften Modus) und Gold-Guthaben. Der übliche Tagesschaden der Abrechnung erscheint hier ruhig als Notiz
- * („Sonntag: −3 HP“) – nicht als Toast.
+ * („Sonntag: −1 HP“) – nicht als Toast.
  * Die ganze Karte ist ein Link zur Heldenseite (unsichtbarer Link über der Fläche); das Gold ist ein eigener
  * Link zur Schatzkammer, der über dieser Fläche liegt.
  * Unter `md` eine flache Leiste (~96 px), damit die heutigen Quests weit oben stehen (PLAN §4): Datum und Gold

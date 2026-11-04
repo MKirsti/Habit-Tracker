@@ -24,7 +24,7 @@
  *   denselben Regeln live bewertet (`classifyDay` in `hpRules.ts`): Ruhetag → `rest`; keine Tagesquest fällig →
  *   `none`; mehr als `absentAfterDays` Tage in Folge (Ruhetage zählen nicht mit) ohne jede erledigte Quest →
  *   `absent`; sonst nach Anteil der erledigten Tagesquests: alle → `perfect`, ≥ 50 % → `good`, > 0 → `weak`,
- *   keine → `missed`. Wochenquests zählen nie für die Wertung.
+ *   keine → `missed` (`weak`, wenn an dem Tag eine andere Quest erledigt ist, z. B. eine Wochenquest).
  * - Ruhetage, Tagesfakten und Schontage kommen aus denselben Bausteinen wie in der Engine (`restDaySet`,
  *   `dayFactsOf`, `hpCalendar`) – die Statistik rechnet also nie anders als der Spielstand.
  *

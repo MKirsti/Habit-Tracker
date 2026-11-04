@@ -135,10 +135,16 @@ describe('Review 2b – Laufzeit mit drei Jahren Verlauf', () => {
       }),
     )
     const completions: Completion[] = []
-    for (const day of dayRange(start, today)) {
-      // Phasen: gute Zeiten, schwache Zeiten (Niederlagen) – mit Wochenquests als Anwesenheit.
-      const phase = Math.floor(dayRange(start, day).length / 40) % 3
-      const chance = phase === 0 ? 0.9 : phase === 1 ? 0.3 : 0.05
+    for (const [i, day] of dayRange(start, today).entries()) {
+      // Phasen à 40 Tage: gute Zeiten, durchwachsene Zeiten, Durststrecken (Niederlagen).
+      const phase = Math.floor(i / 40) % 3
+      if (phase === 2) {
+        // Durststrecke: nur an jedem 4. Tag eine Wochenquest (anwesend → schwach, −1), dazwischen nichts (Tag 1–3
+        // ohne Erledigung, je −6) – je 4 Tage −19 HP, so kommt es auch mit den milden Regeln zu Niederlagen.
+        if (i % 4 === 0) completions.push(makeCompletion(habits[3], day))
+        continue
+      }
+      const chance = phase === 0 ? 0.9 : 0.3
       for (const habit of habits) if (rnd() < chance || (habit.schedule.type === 'weekly' && rnd() < 0.3)) completions.push(makeCompletion(habit, day))
     }
     const purchases = dayRange(start, today)

@@ -96,9 +96,21 @@ describe('Tageswertung (rein)', () => {
     expect(classifyDay(facts, { rest: false, absent: false })).toBe('missed')
   })
 
+  it('keine Tagesquest erledigt, aber eine andere Quest (z. B. eine Wochenquest) → „weak“ statt „missed“', () => {
+    const active = { requiredCount: 3, requiredDone: 0, active: true }
+    expect(classifyDay(active, { rest: false, absent: false })).toBe('weak')
+    expect(classifyDay({ ...active, active: false }, { rest: false, absent: false })).toBe('missed')
+    // Nur „missed“ wird milder – die übrigen Wertungen bleiben, wie sie sind.
+    expect(classifyDay({ ...active, requiredDone: 1 }, { rest: false, absent: false })).toBe('weak')
+    expect(classifyDay({ ...active, requiredDone: 2 }, { rest: false, absent: false })).toBe('good')
+    expect(classifyDay({ ...active, requiredDone: 3 }, { rest: false, absent: false })).toBe('perfect')
+    expect(classifyDay({ ...active, requiredCount: 0 }, { rest: false, absent: false })).toBe('none')
+    expect(classifyDay(active, { rest: true, absent: false })).toBe('rest')
+  })
+
   it('HP-Wirkung je Wertung und Max-HP je Level', () => {
     expect(['perfect', 'good', 'weak', 'missed', 'rest', 'none', 'absent'].map((s) => hpDeltaForScore(s as never))).toEqual([
-      10, 2, -3, -6, 0, 0, 0,
+      10, 2, -1, -6, 0, 0, 0,
     ])
     expect(maxHpForLevel(1)).toBe(50)
     expect(maxHpForLevel(2)).toBe(55)
@@ -155,7 +167,7 @@ describe('settleDays – Wertungen und HP', () => {
   const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((id) => daily(id))
   const weekly = daily('w', { schedule: { type: 'weekly', times: 1 } })
 
-  it('jede Wertung mit ihrer Wirkung: +10 / +2 / −3 / −6; Wochenquests zählen nicht mit', () => {
+  it('jede Wertung mit ihrer Wirkung: +10 / +2 / −1 / −6; ein Tag nur mit einer Wochenquest ist „weak“', () => {
     const data = hero({
       habits: [a, b, c, d, weekly],
       hpLedger: [makeLedgerEntry(D(-1), { hpAfter: 30 })],
@@ -164,16 +176,29 @@ describe('settleDays – Wertungen und HP', () => {
         [D(1)]: [a, b], // 2 / 4 = 50 % → good
         [D(2)]: [a], // 1 / 4 → weak
         [D(3)]: [], // missed
-        [D(4)]: [weekly], // nur die Wochenquest → trotzdem missed
+        [D(4)]: [weekly], // keine Tagesquest, aber die Wochenquest → weak statt missed
       }),
     })
     // XP: 50 + 22 + 11 + 0 + 10 = 93 → kein Level-Up.
+    // HP: 30 + 10 = 40 → + 2 = 42 → − 1 = 41 → − 6 = 35 → − 1 = 34.
     expect(settleThrough(data, D(4))).toEqual([
       { day: D(0), score: 'perfect', frozen: false, hpDelta: 10, hpAfter: 40, maxHp: 50, penalties: true },
       { day: D(1), score: 'good', frozen: false, hpDelta: 2, hpAfter: 42, maxHp: 50, penalties: true },
-      { day: D(2), score: 'weak', frozen: false, hpDelta: -3, hpAfter: 39, maxHp: 50, penalties: true },
-      { day: D(3), score: 'missed', frozen: false, hpDelta: -6, hpAfter: 33, maxHp: 50, penalties: true },
-      { day: D(4), score: 'missed', frozen: false, hpDelta: -6, hpAfter: 27, maxHp: 50, penalties: true },
+      { day: D(2), score: 'weak', frozen: false, hpDelta: -1, hpAfter: 41, maxHp: 50, penalties: true },
+      { day: D(3), score: 'missed', frozen: false, hpDelta: -6, hpAfter: 35, maxHp: 50, penalties: true },
+      { day: D(4), score: 'weak', frozen: false, hpDelta: -1, hpAfter: 34, maxHp: 50, penalties: true },
+    ])
+  })
+
+  it('eine Quest außerhalb ihres Plans erledigt (sonst nichts) zählt wie eine Wochenquest: „weak“ (−1) statt „missed“ (−6)', () => {
+    const monday = daily('mo', { schedule: { type: 'weekdays', days: [1] } })
+    const tuesday = daily('di', { schedule: { type: 'weekdays', days: [2] } })
+    // Di (D1): die Dienstags-Quest bleibt offen, dafür die Montags-Quest erledigt.
+    const data = hero({ habits: [monday, tuesday], completions: doneOn({ [D(0)]: [monday], [D(1)]: [monday] }) })
+    // 50 + 10 → begrenzt auf 50 (hpDelta 0) · 50 − 1 = 49.
+    expect(settleThrough(data, D(1)).map((entry) => [entry.score, entry.hpDelta, entry.hpAfter])).toEqual([
+      ['perfect', 0, 50],
+      ['weak', -1, 49],
     ])
   })
 
@@ -194,8 +219,8 @@ describe('settleDays – Wertungen und HP', () => {
     })
     expect(settleThrough(data, D(2)).map((entry) => [entry.score, entry.hpDelta])).toEqual([
       ['missed', -6], // 0 / 9
-      ['weak', -3], // 1 / 9
-      ['weak', -3], // 4 / 9 = 44 %
+      ['weak', -1], // 1 / 9
+      ['weak', -1], // 4 / 9 = 44 %
     ])
   })
 
@@ -210,9 +235,13 @@ describe('settleDays – Wertungen und HP', () => {
     const monday = daily('mo', { schedule: { type: 'weekdays', days: [1] } })
     const tuesday = daily('di', { schedule: { type: 'weekdays', days: [2] } })
     const data = hero({ habits: [monday, tuesday], completions: doneOn({ [D(1)]: [tuesday] }) })
-    expect(scores(settleThrough(data, D(7)))).toEqual(['missed', 'perfect', 'none', 'none', 'none', 'none', 'none', 'missed'])
-    // Ohne jede Erledigung ist der zweite Montag der 8. Tag in Folge ohne Quest → abwesend, kein Schaden.
-    expect(scores(settleThrough(hero({ habits: [monday] }), D(7))).at(-1)).toBe('absent')
+    // Auch Tage ohne Fälliges zählen als „ohne Erledigung“: Mi–So (D2–D6) sind Tag 1–5, der zweite Montag (D7) ist
+    // der 6. Tag in Folge → abwesend, kein Schaden.
+    expect(scores(settleThrough(data, D(7)))).toEqual(['missed', 'perfect', 'none', 'none', 'none', 'none', 'none', 'absent'])
+    // Am Wochenende eine Wochenquest erledigt (Sa, D5): So ist Tag 1, der zweite Montag Tag 2 → verpasst.
+    const weekend = daily('w', { schedule: { type: 'weekly', times: 1 } })
+    const present = hero({ habits: [monday, tuesday, weekend], completions: doneOn({ [D(1)]: [tuesday], [D(5)]: [weekend] }) })
+    expect(scores(settleThrough(present, D(7)))).toEqual(['missed', 'perfect', 'none', 'none', 'none', 'none', 'none', 'missed'])
   })
 
   it('Grabsteine gelöschter Quests bleiben an ihren Tagen Pflicht (wie beim Perfekten Tag)', () => {
@@ -228,48 +257,60 @@ describe('settleDays – Wertungen und HP', () => {
 describe('settleDays – Abwesenheit', () => {
   const habit = daily('h')
 
-  it('ab dem 8. Tag ohne jede Erledigung „absent“ – reine Abwesenheit führt bei vollen HP nie zur Niederlage', () => {
+  it('ab dem 4. Tag ohne jede Erledigung „absent“ – reine Abwesenheit führt bei vollen HP nie zur Niederlage', () => {
+    expect(BALANCING.absentAfterDays).toBe(3)
     const entries = settleThrough(hero({ habits: [habit] }), D(19))
-    expect(scores(entries)).toEqual([...Array(7).fill('missed'), ...Array(13).fill('absent')])
-    expect(entries.at(-1)?.hpAfter).toBe(50 - 7 * 6)
+    // D0–D2: Tag 1–3 ohne Erledigung (je −6) · ab D3 (Tag 4) abwesend, kein Schaden mehr.
+    expect(scores(entries)).toEqual([...Array(3).fill('missed'), ...Array(17).fill('absent')])
+    expect(hpAfter(entries).slice(0, 5)).toEqual([44, 38, 32, 32, 32])
+    expect(entries.at(-1)?.hpAfter).toBe(50 - 3 * 6) // 32
     expect(entries.some((entry) => entry.defeat !== undefined)).toBe(false)
   })
 
-  it('auch mit 3 Kampagnen: höchstens 7 × −6 = −42', () => {
+  it('auch mit 9 Tagesquests (z. B. 3 Kampagnen): höchstens 3 × −6 = −18', () => {
     const habits = Array.from({ length: 9 }, (_, i) => daily(`q${i}`))
     const entries = settleThrough(hero({ habits }), D(30))
-    expect(Math.min(...hpAfter(entries))).toBe(8)
-    expect(entries.filter((entry) => entry.hpDelta < 0)).toHaveLength(7)
+    expect(Math.min(...hpAfter(entries))).toBe(32) // 50 − 18
+    expect(entries.filter((entry) => entry.hpDelta < 0)).toHaveLength(3)
   })
 
   it('Ruhetage zählen nicht mit (und brechen die Zählung nicht), eine Erledigung beginnt sie neu', () => {
     const data = hero({
       habits: [habit],
-      restPeriods: [makeRestPeriod('urlaub', D(3), D(7))],
-      completions: doneOn({ [D(13)]: [habit] }),
+      restPeriods: [makeRestPeriod('rast', D(1), D(3))],
+      completions: doneOn({ [D(8)]: [habit] }),
     })
-    const entries = settleThrough(data, D(14))
+    const entries = settleThrough(data, D(9))
     expect(scores(entries)).toEqual([
-      'missed', 'missed', 'missed', // D0–D2
-      'rest', 'rest', 'rest', 'rest', 'rest', // D3–D7
-      'missed', 'missed', 'missed', 'missed', // D8–D11: Tag 4–7 ohne Erledigung
-      'absent', // D12: der 8. Tag
-      'perfect', // D13
-      'missed', // D14: Zählung beginnt neu
+      'missed', // D0: Tag 1 ohne Erledigung
+      'rest', 'rest', 'rest', // D1–D3: zählen nicht mit
+      'missed', 'missed', // D4, D5: Tag 2 und 3 (zählten Ruhetage mit, wäre D4 schon Tag 5 → abwesend)
+      'absent', 'absent', // D6, D7: Tag 4 und 5 (brächen Ruhetage die Zählung, wäre D6 erst Tag 3 → verpasst)
+      'perfect', // D8
+      'missed', // D9: Zählung beginnt neu (Tag 1)
     ])
-    expect(hpAfter(entries)).toEqual([44, 38, 32, 32, 32, 32, 32, 32, 26, 20, 14, 8, 8, 18, 12])
+    // 50 − 6 = 44 · Rast 44 · − 6 = 38 · − 6 = 32 · abwesend 32 · + 10 = 42 · − 6 = 36
+    expect(hpAfter(entries)).toEqual([44, 44, 44, 44, 38, 32, 32, 32, 42, 36])
   })
 
-  it('eine erledigte Wochenquest zählt als Anwesenheit', () => {
+  it('eine erledigte Wochenquest zählt als Anwesenheit (und der Tag als „weak“)', () => {
     const weekly = daily('w', { schedule: { type: 'weekly', times: 1 } })
-    const data = hero({ habits: [habit, weekly], completions: doneOn({ [D(6)]: [weekly] }) })
-    const entries = settleThrough(data, D(8))
-    expect(scores(entries)).toEqual(Array(9).fill('missed'))
+    const data = hero({ habits: [habit, weekly], completions: doneOn({ [D(2)]: [weekly] }) })
+    // D0, D1: Tag 1–2 · D2: Wochenquest → weak, Zählung beginnt neu · D3–D5: Tag 1–3 · D6: Tag 4 → abwesend.
+    expect(scores(settleThrough(data, D(6)))).toEqual(['missed', 'missed', 'weak', 'missed', 'missed', 'missed', 'absent'])
+    // Ohne die Wochenquest wäre D3 schon der 4. Tag in Folge.
+    expect(scores(settleThrough(hero({ habits: [habit, weekly] }), D(6)))).toEqual([
+      'missed', 'missed', 'missed', 'absent', 'absent', 'absent', 'absent',
+    ])
   })
 
   it('zählt auch die Tage vor since (seit Abenteuerbeginn), nicht aber die vor dem Abenteuer', () => {
-    const veteran = hero({ habits: [habit], profile: { name: 'Mira', avatar: '🧙', createdDay: D(-10) } })
-    expect(scores(settleThrough(veteran, D(0)))).toEqual(['absent'])
+    const since = (createdDay: DayKey) => hero({ habits: [habit], profile: { name: 'Mira', avatar: '🧙', createdDay } })
+    // Abenteuer seit D(-3): D(-3) … D(-1) sind Tag 1–3, D0 ist Tag 4 → abwesend.
+    expect(scores(settleThrough(since(D(-3)), D(0)))).toEqual(['absent'])
+    // Seit D(-2): D0 ist erst Tag 3 → verpasst.
+    expect(scores(settleThrough(since(D(-2)), D(0)))).toEqual(['missed'])
+    expect(scores(settleThrough(since(D(-10)), D(0)))).toEqual(['absent'])
     // Ein neuer Held ist am ersten Tag nicht abwesend.
     expect(scores(settleThrough(hero({ habits: [habit] }), D(0)))).toEqual(['missed'])
   })
@@ -279,13 +320,13 @@ describe('settleDays – Streak-Schutz', () => {
   const habit = daily('h')
 
   it('wird bei weak/missed verbraucht; ein erst danach gekaufter kann den Tag nicht retten', () => {
-    const data = hero({ habits: [habit], purchases: [makeItemPurchase('f1', 'streakFreeze', D(2))] })
-    const entries = settleThrough(data, D(3))
+    const data = hero({ habits: [habit], purchases: [makeItemPurchase('f1', 'streakFreeze', D(1))] })
+    // D0–D2 sind Tag 1–3 ohne Erledigung (noch nicht abwesend).
+    const entries = settleThrough(data, D(2))
     expect(entries.map((entry) => [entry.day, entry.score, entry.frozen, entry.hpDelta, entry.hpAfter])).toEqual([
-      [D(0), 'missed', false, -6, 44],
-      [D(1), 'missed', false, -6, 38],
-      [D(2), 'missed', true, 0, 38], // am Kauftag nutzbar
-      [D(3), 'missed', false, -6, 32], // Vorrat leer
+      [D(0), 'missed', false, -6, 44], // vor dem Kauf: nicht zu retten
+      [D(1), 'missed', true, 0, 44], // am Kauftag nutzbar
+      [D(2), 'missed', false, -6, 38], // Vorrat leer
     ])
   })
 
@@ -295,17 +336,18 @@ describe('settleDays – Streak-Schutz', () => {
       makeItemPurchase('f2', 'streakFreeze', D(-3)),
       makeItemPurchase('f3', 'streakFreeze', D(4)),
     ]
-    const data = hero({ habits: [habit], purchases })
+    // D3 erledigt – sonst wäre D3 der 4. Tag ohne Erledigung (abwesend), und an abwesenden Tagen wird nichts verbraucht.
+    const data = hero({ habits: [habit], purchases, completions: doneOn({ [D(3)]: [habit] }) })
     const first = settleThrough(data, D(1))
     expect(first.map((entry) => entry.frozen)).toEqual([true, true])
     const settled = withEntries(data, first)
     expect(deriveGameState(settled, D(3)).inventory.streakFreezes).toBe(0)
     const second = settleThrough(settled, D(5))
     expect(second.map((entry) => [entry.day, entry.frozen])).toEqual([
-      [D(2), false],
-      [D(3), false],
-      [D(4), true],
-      [D(5), false],
+      [D(2), false], // verpasst, Vorrat leer (f3 erst am D4 gekauft)
+      [D(3), false], // perfekt
+      [D(4), true], // verpasst, f3
+      [D(5), false], // verpasst, Vorrat wieder leer
     ])
     expect(deriveGameState(withEntries(settled, second), D(7))).toMatchObject({
       inventory: { streakFreezes: 0 },
@@ -334,13 +376,14 @@ describe('settleDays – Streak-Schutz', () => {
     // Wochenquest-only-Tage → „none“, Abwesenheit → kein Verbrauch.
     const weekly = daily('w', { schedule: { type: 'weekly', times: 1 } })
     expect(settleThrough(hero({ habits: [weekly], purchases: freezes }), D(3)).some((e) => e.frozen)).toBe(false)
+    // D0–D2 verpasst (je ein Schutz), ab D3 abwesend (keiner mehr): 8 − 3 = 5 bleiben übrig.
     const absent = settleThrough(hero({ habits: [habit], purchases: freezes }), D(9))
     expect(absent.map((entry) => [entry.score, entry.frozen])).toEqual([
-      ...Array(7).fill(['missed', true]),
-      ...Array(3).fill(['absent', false]),
+      ...Array(3).fill(['missed', true]),
+      ...Array(7).fill(['absent', false]),
     ])
     expect(deriveGameState(withEntries(hero({ habits: [habit], purchases: freezes }), absent), D(11)).inventory).toEqual({
-      streakFreezes: 1,
+      streakFreezes: 5,
     })
   })
 
@@ -470,8 +513,9 @@ describe('settleDays – Niederlage', () => {
   }
 
   it('HP ≤ 0 → 15 % des Guthabens (abgerundet), danach volle HP; Level und XP bleiben', () => {
-    const data = fallen(1000)
+    const data = fallen(600)
     const entries = settleThrough(data, D(1))
+    // D0: 4 − 6 → 0 (Niederlage, hpDelta = −4), 15 % von 600 = 90 Gold, danach 70 · D1: 70 − 6 = 64.
     expect(entries).toEqual([
       {
         day: D(0),
@@ -480,7 +524,7 @@ describe('settleDays – Niederlage', () => {
         hpDelta: -4,
         hpAfter: 70,
         maxHp: 70,
-        defeat: { goldLost: 150 },
+        defeat: { goldLost: 90 },
         penalties: true,
       },
       { day: D(1), score: 'missed', frozen: false, hpDelta: -6, hpAfter: 64, maxHp: 70, penalties: true },
@@ -489,8 +533,25 @@ describe('settleDays – Niederlage', () => {
     const after = deriveGameState(withEntries(data, entries), D(3))
     expect(after.level).toEqual(before.level)
     expect(after.totals).toEqual(before.totals)
-    expect(after.gold).toMatchObject({ lostToDefeats: 150, balance: before.gold.balance - 150 })
-    expect(after.hp).toMatchObject({ defeats: 1, lastDefeat: { day: D(0), goldLost: 150 }, current: 64, max: 70 })
+    expect(after.gold).toMatchObject({ lostToDefeats: 90, balance: before.gold.balance - 90 })
+    expect(after.hp).toMatchObject({ defeats: 1, lastDefeat: { day: D(0), goldLost: 90 }, current: 64, max: 70 })
+  })
+
+  it('höchstens 100 Gold je Niederlage – bei großem Guthaben greift die Grenze, bei kleinem bleibt es bei 15 %', () => {
+    expect(BALANCING.defeatGoldLossMax).toBe(100)
+    // min(100, floor(15 % × Guthaben)):
+    expect(settleThrough(fallen(1000), D(0))[0].defeat).toEqual({ goldLost: 100 }) // 150 → 100
+    expect(settleThrough(fallen(1200), D(0))[0].defeat).toEqual({ goldLost: 100 }) // 180 → 100
+    expect(settleThrough(fallen(667), D(0))[0].defeat).toEqual({ goldLost: 100 }) // 100,05 → 100
+    expect(settleThrough(fallen(666), D(0))[0].defeat).toEqual({ goldLost: 99 }) // 99,9 → 99
+    expect(settleThrough(fallen(200), D(0))[0].defeat).toEqual({ goldLost: 30 }) // 30
+    // Im Spielstand: 1.000 − 100 = 900 übrig.
+    const data = fallen(1000)
+    const entries = settleThrough(data, D(0))
+    expect(deriveGameState(withEntries(data, entries), D(2)).gold).toMatchObject({
+      lostToDefeats: 100,
+      balance: deriveGameState(data, D(2)).gold.balance - 100,
+    })
   })
 
   it('abgerundet: 15 % von 333 = 49,95 → 49', () => {
@@ -520,22 +581,28 @@ describe('settleDays – Niederlage', () => {
 
   it('zwei Niederlagen: die zweite rechnet mit dem Guthaben nach der ersten', () => {
     const [x, y, z] = ['x', 'y', 'z'].map((id) => daily(id))
-    // Jeden Tag nur x von 3 → weak (−3): 4 → 1 → 0 (Niederlage), dann 70 → … → 0 nach 24 weiteren Tagen.
-    const plan = Object.fromEntries(dayRange(D(0), D(25)).map((day) => [day, [x]]))
-    const data = fallen(1000, 4, { habits: [x, y, z], completions: doneOn(plan) })
-    const entries = settleThrough(data, D(25))
+    // Nur an jedem 4. Tag x von 3 (weak, −1), dazwischen nichts (Tag 1–3 ohne Erledigung, je −6 – nie abwesend):
+    // je 4 Tage −19. HP: D0 4 − 1 = 3 · D1 3 − 6 → 0: Niederlage, wieder 70 · D2 64 · D3 58 · D4 57 · D5–D7 51, 45,
+    // 39 · D8 38 · D9–D11 32, 26, 20 · D12 19 · D13–D15 13, 7, 1 · D16 1 − 1 = 0: Niederlage, wieder 70.
+    const xDays = [0, 4, 8, 12, 16]
+    const data = fallen(600, 4, { habits: [x, y, z], completions: doneOn(Object.fromEntries(xDays.map((n) => [D(n), [x]]))) })
+    const entries = settleThrough(data, D(16))
+    expect(hpAfter(entries)).toEqual([3, 70, 64, 58, 57, 51, 45, 39, 38, 32, 26, 20, 19, 13, 7, 1, 70])
+    expect(entries.map((entry) => entry.hpDelta)).toEqual([-1, -3, -6, -6, -1, -6, -6, -6, -1, -6, -6, -6, -1, -6, -6, -6, -1])
     const defeats = entries.filter((entry) => entry.defeat !== undefined)
-    expect(defeats.map((entry) => entry.day)).toEqual([D(1), D(25)])
-    expect(defeats[0].defeat?.goldLost).toBe(150)
-    const ledgerBefore = [...(data.hpLedger ?? []), ...entries.slice(0, 25)]
-    const thenBalance = deriveGameState({ ...data, hpLedger: ledgerBefore }, D(25)).gold.balance
-    expect(thenBalance).toBeGreaterThan(850) // 1.000 − 150 + Gold aus den XP seitdem
-    expect(defeats[1].defeat?.goldLost).toBe(Math.floor(thenBalance * 0.15))
+    expect(defeats.map((entry) => entry.day)).toEqual([D(1), D(16)])
+    // Erste: 15 % von 600 = 90 (die 10 XP vom D0 stecken schon in den 600, D1 bringt nichts).
+    expect(defeats[0].defeat?.goldLost).toBe(90)
+    // Zweite: 600 − 90 + 4 × 5 Gold (je 10 XP an D4, D8, D12, D16; ½ Gold pro XP) = 530 → floor(79,5) = 79.
+    // Ohne die erste Niederlage wären es 620 → 93.
+    const ledgerBefore = [...(data.hpLedger ?? []), ...entries.slice(0, 16)]
+    expect(deriveGameState({ ...data, hpLedger: ledgerBefore }, D(16)).gold.balance).toBe(530)
+    expect(defeats[1].defeat?.goldLost).toBe(79)
     expect(entries.every((entry) => entry.maxHp === 70)).toBe(true) // kein Level-Up in der Zeit
-    const state = deriveGameState(withEntries(data, entries), D(27))
-    expect(state.gold.lostToDefeats).toBe(150 + (defeats[1].defeat?.goldLost ?? 0))
+    const state = deriveGameState(withEntries(data, entries), D(18))
+    expect(state.gold.lostToDefeats).toBe(90 + 79)
     expect(state.hp.defeats).toBe(2)
-    expect(state.hp.lastDefeat?.day).toBe(D(25))
+    expect(state.hp.lastDefeat?.day).toBe(D(16))
   })
 })
 
@@ -562,11 +629,16 @@ describe('Sanfter Modus', () => {
   })
 
   it('wieder eingeschaltet: Die HP starten beim nächsten abgerechneten Tag voll', () => {
-    const gentle = hero({ habits: [habit], hpLedger: [makeLedgerEntry(D(-1), { hpAfter: 8 })] }, { enabled: false, since: START })
+    // D1 erledigt, damit D3 (Tag 2 ohne Erledigung) ein verpasster und kein abwesender Tag ist.
+    const gentle = hero(
+      { habits: [habit], hpLedger: [makeLedgerEntry(D(-1), { hpAfter: 8 })], completions: doneOn({ [D(1)]: [habit] }) },
+      { enabled: false, since: START },
+    )
     const entries = settleThrough(gentle, D(2))
     expect(entries.every((entry) => !entry.penalties)).toBe(true)
     const enabled = withEntries({ ...gentle, settings: { ...gentle.settings, penalties: { enabled: true, since: START } } }, entries)
     expect(deriveGameState(enabled, D(4)).hp).toMatchObject({ enabled: true, current: 50 })
+    // Start voll (50, nicht die 8 von vorher) − 6 = 44.
     expect(settleThrough(enabled, D(3))).toEqual([
       { day: D(3), score: 'missed', frozen: false, hpDelta: -6, hpAfter: 44, maxHp: 50, penalties: true },
     ])
@@ -674,6 +746,12 @@ describe('Vorschau für gestern & Streak-Schutz für die Streaks', () => {
     expect(later.inventory.streakFreezes).toBe(0)
     // Die XP von heute (D6) bleiben dieselben wie in der Vorschau.
     expect(getDayState(settled, D(6)).habits[0]).toMatchObject({ done: true, xp: 13, streakBonus: 0.25 })
+  })
+
+  it('gestern nur eine Wochenquest erledigt: die Vorschau droht nur −1 („weak“ statt „missed“)', () => {
+    const weekly = daily('w', { schedule: { type: 'weekly', times: 1 } })
+    const data = scenario({ habits: [habit, weekly], completions: [...fiveDays, makeCompletion(weekly, D(5))] })
+    expect(deriveGameState(data, D(6)).hp.yesterday).toEqual({ day: D(5), score: 'weak', threatenedDelta: -1, savedByFreeze: false })
   })
 
   it('ein heute gekaufter Streak-Schutz rettet gestern nicht', () => {

@@ -17,7 +17,7 @@ export interface DayScoreRow {
   when: string
   /** HP-Wirkung laut `BALANCING.hpByScore`. */
   delta: number
-  /** „+2 HP“, „−3 HP“, „±0 HP“. */
+  /** „+2 HP“, „−1 HP“, „±0 HP“. */
   deltaLabel: string
 }
 
@@ -29,8 +29,8 @@ export interface DayScoreRow {
 const SCORE_ORDER: { score: DayScore; when: string; label?: string }[] = [
   { score: 'perfect', when: 'alle Tagesquests erledigt' },
   { score: 'good', when: 'mindestens die Hälfte deiner Tagesquests' },
-  { score: 'weak', when: 'weniger als die Hälfte, aber mindestens eine' },
-  { score: 'missed', label: 'Nichts erledigt', when: 'keine Tagesquest erledigt' },
+  { score: 'weak', when: 'weniger als die Hälfte, aber mindestens eine – oder immerhin eine Wochenquest' },
+  { score: 'missed', label: 'Nichts erledigt', when: 'gar keine Quest erledigt, auch keine Wochenquest' },
   { score: 'rest', when: 'Ruhetag oder Urlaub – nichts ist Pflicht' },
   { score: 'none', when: 'keine Tagesquest fällig (etwa nur Wochenquests)' },
   {
@@ -50,18 +50,18 @@ export function dayScoreRows(): DayScoreRow[] {
 
 /**
  * Die wichtigsten Regeln in wenigen Sätzen – das Beruhigende zuerst (Obergrenze, Wochenquests, Gnadenfrist), dann
- * die Wege nach oben und zum Schutz, zum Schluss die Niederlage.
+ * die Wege nach oben und zum Schutz, zum Schluss die Niederlage (mit ihrer Obergrenze in Gold).
  */
 export function hpRuleNotes(): string[] {
-  const { hpByScore, hpBase, hpPerLevel, defeatGoldLoss, items } = BALANCING
+  const { hpByScore, hpBase, hpPerLevel, defeatGoldLoss, defeatGoldLossMax, items } = BALANCING
   return [
     `Eine Wertung pro Tag: höchstens ${hpDeltaLabel(hpByScore.missed)}, egal wie viele Quests und Kampagnen du führst.`,
-    'Wochenquests kosten nie Lebenspunkte.',
+    `Wochenquests kosten nie Lebenspunkte – sie helfen sogar: Erledigst du an einem Tag statt deiner Tagesquests nur eine Wochenquest, zählt er als „${DAY_SCORE_LABELS.weak}“ (${hpDeltaLabel(hpByScore.weak)}) statt „Nichts erledigt“ (${hpDeltaLabel(hpByScore.missed)}).`,
     'Gnadenfrist: Gestern kannst du noch nachtragen – abgerechnet wird ein Tag erst danach.',
     `Heilung: Ein Perfekter Tag heilt ${hpDeltaLabel(hpByScore.perfect)}, ein Level-Aufstieg füllt deine Lebenspunkte ganz auf, ein 🧪 Heiltrank bringt ${hpDeltaLabel(items.healingPotion.heal)}.`,
     'Schutz: Krank oder unterwegs? Ein Ruhetag oder Urlaub (unten unter „Rast & Urlaub“) schont Lebenspunkte und Streaks – auch gestern lässt sich noch als Ruhetag eintragen. Ein ❄️ Streak-Schutz aus der Schatzkammer fängt schwache Tage auf.',
     `Max-HP: ${formatNumber(hpBase)} + ${formatNumber(hpPerLevel)} je Level (Level 1: ${formatNumber(maxHpForLevel(1))} HP).`,
-    `Bei 0 HP verlierst du ${formatNumber(Math.round(defeatGoldLoss * 100))}\u00a0% deines Goldes und stehst mit vollen Lebenspunkten wieder auf – Level, XP und Streaks bleiben immer.`,
+    `Bei 0 HP verlierst du ${formatNumber(Math.round(defeatGoldLoss * 100))}\u00a0% deines Goldes, höchstens ${formatNumber(defeatGoldLossMax)}\u00a0Gold, und stehst mit vollen Lebenspunkten wieder auf – Level, XP und Streaks bleiben immer.`,
   ]
 }
 

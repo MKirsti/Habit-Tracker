@@ -44,7 +44,7 @@ export interface BackfillNoticeProps {
   dayState: DayState
   offset: number
   /**
-   * Lebenspunkte: Stand der (noch offenen) Wertung dieses Tages, z. B. "Stand jetzt: −3 HP · Ein Anfang" –
+   * Lebenspunkte: Stand der (noch offenen) Wertung dieses Tages, z. B. "Stand jetzt: −1 HP · Ein Anfang" –
    * aktualisiert sich beim Nachtragen.
    */
   standing?: string

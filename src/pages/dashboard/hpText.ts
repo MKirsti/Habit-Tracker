@@ -63,12 +63,12 @@ export function weekdayName(day: DayKey): string {
   return weekdayFormatter.format(new Date(`${day}T00:00:00Z`))
 }
 
-/** Ruhige Notiz zur letzten Abrechnung im Helden-Kopf („Sonntag: −3 HP“). */
+/** Ruhige Notiz zur letzten Abrechnung im Helden-Kopf („Sonntag: −1 HP“). */
 export interface SettlementNote {
   day: DayKey
-  /** Sichtbar, z. B. "Sonntag: −3 HP" oder "Sonntag: ❄️ aufgefangen". */
+  /** Sichtbar, z. B. "Sonntag: −6 HP" oder "Sonntag: ❄️ aufgefangen". */
   text: string
-  /** Vorgelesen, z. B. "Sonntag abgerechnet: minus 3 Lebenspunkte". */
+  /** Vorgelesen, z. B. "Sonntag abgerechnet: minus 6 Lebenspunkte". */
   spoken: string
   /** Richtung der Änderung – nur für dezente Tönung (nie Alarm). */
   tone: 'down' | 'up' | 'neutral'
@@ -82,7 +82,7 @@ const NAMED_IN_NOTE: ReadonlySet<DayScore> = new Set(['perfect', 'good'])
  * nur für einen frisch abgerechneten Tag (höchstens drei Tage her) und nur, wenn er etwas bewirkt hat: eine
  * HP-Änderung, ein aufgefangener Tag (Streak-Schutz) oder eine Niederlage (dann „wieder bei voller Kraft“).
  * Bewusst ungleich gewichtet: Ein guter oder perfekter Tag wird beim Namen genannt („Montag: Perfekter Tag · +10 HP“),
- * ein schwächerer Tag bleibt eine ruhige Zahl („Montag: −3 HP“). Nach einer längeren Pause (`absent`) heißt die Notiz
+ * ein schwächerer Tag bleibt eine ruhige Zahl („Montag: −1 HP“). Nach einer längeren Pause (`absent`) heißt die Notiz
  * den Helden willkommen.
  */
 export function settlementNote(
@@ -135,7 +135,7 @@ export function settlementNote(
 export interface YesterdayPreview {
   title: string
   text: string
-  /** Wirkung, falls es so bleibt, z. B. "Bleibt es so: −3 HP" – fehlt, wenn ein Streak-Schutz greift. */
+  /** Wirkung, falls es so bleibt, z. B. "Bleibt es so: −6 HP" – fehlt, wenn ein Streak-Schutz greift. */
   effect?: string
   /** Ein Streak-Schutz würde den Tag auffangen. */
   savedByFreeze: boolean
@@ -214,7 +214,7 @@ export const DAY_SCORE_LABELS: Record<DayScore, string> = {
 }
 
 /**
- * Stand beim Nachtragen für gestern (im Hinweis „Du trägst für gestern nach“): "Stand jetzt: −3 HP",
+ * Stand beim Nachtragen für gestern (im Hinweis „Du trägst für gestern nach“): "Stand jetzt: −1 HP · Ein Anfang",
  * "Stand jetzt: +2 HP" – oder der Streak-Schutz. `undefined` ohne HP-Wirkung (keine Tagesquests, Ruhetag …).
  */
 export function backfillStanding(yesterday: HpState['yesterday']): string | undefined {
@@ -274,10 +274,10 @@ export function canUndoRestToday(period: Pick<RestPeriod, 'from' | 'until'> | un
 
 /**
  * Die Punkte der Einführungskarte – kurz (die Karte steht auf dem Handy über den Quests), Zahlen aus `BALANCING`.
- * Das Gute zuerst: Heilung vor dem Höchstverlust, die Pause vor der Niederlage.
+ * Das Gute zuerst: Heilung vor dem Höchstverlust, die Pause vor der Niederlage (mit ihrer Obergrenze in Gold).
  */
 export function hpIntroPoints(): { title: string; text: string }[] {
-  const { hpByScore, absentAfterDays, defeatGoldLoss } = BALANCING
+  const { hpByScore, absentAfterDays, defeatGoldLoss, defeatGoldLossMax } = BALANCING
   // Geschütztes Leerzeichen: „15 %“ bricht nie auseinander.
   const percent = `${formatNumber(Math.round(defeatGoldLoss * 100))}\u00a0%`
   return [
@@ -287,15 +287,19 @@ export function hpIntroPoints(): { title: string; text: string }[] {
         `egal wie viele Quests: Ein Perfekter Tag heilt ${hpDeltaLabel(hpByScore.perfect)}, die Hälfte bringt ` +
         `${hpDeltaLabel(hpByScore.good)}, sonst höchstens ${hpDeltaLabel(hpByScore.missed)}.`,
     },
-    { title: 'Wochenquests', text: 'kosten nie Lebenspunkte.' },
+    {
+      title: 'Wochenquests',
+      text: `kosten nie Lebenspunkte – schon eine macht aus einem leeren Tag „${DAY_SCORE_LABELS.weak}“ (${hpDeltaLabel(hpByScore.weak)}).`,
+    },
     { title: 'Gnadenfrist', text: 'Gestern kannst du noch nachtragen.' },
     {
       title: 'Pause',
-      text: `Krank oder unterwegs? Ein Ruhetag schont Lebenspunkte und Serien – ab dem ${formatNumber(absentAfterDays + 1)}. Tag ohne Quest ruhen sie ohnehin.`,
+      // Nur die Lebenspunkte ruhen von selbst – Serien schützt allein der Ruhetag.
+      text: `Krank oder unterwegs? Ein Ruhetag schont Lebenspunkte und Serien – ab dem ${formatNumber(absentAfterDays + 1)}. Tag ohne Quest ruhen die Lebenspunkte ohnehin.`,
     },
     {
       title: 'Bei 0 HP',
-      text: `stehst du mit vollen Lebenspunkten wieder auf. ${percent} deines Goldes sind dann weg – Level, XP und Serien bleiben.`,
+      text: `stehst du mit vollen Lebenspunkten wieder auf. ${percent} deines Goldes (höchstens ${formatNumber(defeatGoldLossMax)}\u00a0Gold) sind dann weg – Level, XP und Serien bleiben.`,
     },
   ]
 }

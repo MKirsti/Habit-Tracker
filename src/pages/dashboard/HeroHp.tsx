@@ -7,7 +7,7 @@ import type { SettlementNote } from './hpText'
 
 export interface HeroHpProps {
   hp: HpState
-  /** Notiz zur letzten Abrechnung („Sonntag: −3 HP“), statt eines Toasts. */
+  /** Notiz zur letzten Abrechnung („Sonntag: −1 HP“), statt eines Toasts. */
   note?: SettlementNote
   /** Vorrätige Streak-Schutz-Gegenstände – ab einem als kleines „❄️ 2“ neben den HP: Du bist abgesichert. */
   freezes?: number

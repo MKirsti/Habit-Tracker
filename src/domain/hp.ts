@@ -2,10 +2,10 @@
  * Lebenspunkte (Phase 2b) – öffentlicher Einstieg: alle Regeln aus `hpRules.ts` (Ruhetage, Tageswertung,
  * Streak-Schutz, abgeleiteter Zustand) plus die Abrechnung `settleDays` (ARCHITECTURE.md „Phase 2b … (Vertrag)“).
  *
- * Vom Spieler gewünscht: **eine** Wertung pro Spieltag (nicht pro Quest!), höchstens −6 HP pro Tag,
- * Wochenquests kosten nie etwas, gestern darf noch nachgetragen werden (Gnadenfrist), Abwesenheit kostet ab dem
- * 8. Tag nichts mehr, eine Niederlage kostet 15 % Gold – Level, XP und Streaks bleiben immer. Im Sanften Modus gibt
- * es gar keine HP-Wirkung.
+ * Vom Spieler gewünscht: **eine** Wertung pro Spieltag (nicht pro Quest!), höchstens −6 HP pro Tag, Wochenquests
+ * kosten nie etwas (eine erledigte macht aus „verpasst“ höchstens „schwach“, −1), gestern darf noch nachgetragen
+ * werden (Gnadenfrist), Abwesenheit kostet ab dem 4. Tag nichts mehr, eine Niederlage kostet 15 % Gold, höchstens
+ * 100 – Level, XP und Streaks bleiben immer. Im Sanften Modus gibt es gar keine HP-Wirkung.
  */
 import { BALANCING } from './balancing'
 import { addDays, compareDays, isValidDayKey } from './dates'
@@ -31,16 +31,17 @@ export * from './hpRules'
 const BASIS_POINTS = 10_000
 
 /**
- * Gold, das eine Niederlage am Tag `day` kostet: `floor(defeatGoldLoss × max(0, Guthaben))` mit dem Guthaben zu
- * diesem Zeitpunkt – am Ende des Tages `day` (`deriveGameState(…, day).gold.balance`, frühere Niederlagen schon
- * abgezogen). Ausgaben zählen dort wie überall unabhängig von ihrem Tag, auch die bis zur Abrechnung getätigten:
- * Eine Niederlage drückt das Guthaben so nie unter 0.
+ * Gold, das eine Niederlage am Tag `day` kostet: `min(defeatGoldLossMax, floor(defeatGoldLoss × max(0, Guthaben)))`
+ * (15 %, höchstens 100 Gold) mit dem Guthaben zu diesem Zeitpunkt – am Ende des Tages `day`
+ * (`deriveGameState(…, day).gold.balance`, frühere Niederlagen schon abgezogen). Ausgaben zählen dort wie überall
+ * unabhängig von ihrem Tag, auch die bis zur Abrechnung getätigten: Eine Niederlage drückt das Guthaben so nie
+ * unter 0.
  */
 function defeatGoldLoss(data: GameData, ledgerSoFar: HpLedgerEntry[], day: DayKey): number {
   const balance = Math.max(0, deriveGameState({ ...data, hpLedger: ledgerSoFar }, day).gold.balance)
   if (!Number.isFinite(balance)) return 0
   const share = Math.round(BALANCING.defeatGoldLoss * BASIS_POINTS)
-  return Math.floor((balance * share) / BASIS_POINTS)
+  return Math.min(BALANCING.defeatGoldLossMax, Math.floor((balance * share) / BASIS_POINTS))
 }
 
 /**
@@ -58,7 +59,8 @@ function defeatGoldLoss(data: GameData, ledgerSoFar: HpLedgerEntry[], day: DayKe
  *    Liegt zwischen dem vorigen Eintrag und dem Tag eine Lücke (`since` nach dem letzten Ledger-Tag, z. B. nach dem
  *    Wiederherstellen eines Backups), zählen auch die Heiltränke aus der Lücke – genau wie in `GameState.hp.current`
  *    (Heiltränke nach dem letzten abgerechneten Tag).
- * 4. Niederlage bei `hpAfter ≤ 0`: `defeat.goldLost` (15 % des Guthabens, siehe `defeatGoldLoss`), danach volle HP.
+ * 4. Niederlage bei `hpAfter ≤ 0`: `defeat.goldLost` (15 % des Guthabens, höchstens 100 Gold, siehe
+ *    `defeatGoldLoss`), danach volle HP.
  * 5. Sanfter Modus (`penalties.enabled === false`): `penalties: false`, `hpDelta: 0`, `hpAfter = maxHp`, nie eine
  *    Niederlage.
  *

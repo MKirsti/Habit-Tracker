@@ -7,7 +7,7 @@
  * - **Heiltrank getrunken**: neue Heiltrank-Käufe von heute → kleine Meldung mit den geheilten HP.
  *
  * Bewusst **ohne** Meldung: der übliche Tagesschaden bzw. die Heilung der Abrechnung – die steht ruhig im
- * Helden-Kopf („Sonntag: −3 HP“). Lebenspunkte sollen motivieren, nicht jeden Morgen mit einem Toast mahnen.
+ * Helden-Kopf („Sonntag: −1 HP“). Lebenspunkte sollen motivieren, nicht jeden Morgen mit einem Toast mahnen.
  *
  * „Neu abgerechnet“ heißt: ans Ledger angehängt (Tag nach dem bisher letzten) – so meldet ein ersetztes Ledger
  * (Backup) keine alten Tage. Massenänderungen (Tageswechsel, Backup, anderes Profil) filtert `GameFeedback` vorher.
