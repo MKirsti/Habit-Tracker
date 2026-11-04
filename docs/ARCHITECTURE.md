@@ -447,3 +447,58 @@ Darin per Tailwind-Arbitrary-Werten: `border-(--accent-35)`, `bg-(--accent-10)`,
 - **Kampagnenfarbe:** Kampagnen-Banner (Rahmen, Leuchten, Icon-Rahmen, Akzentlinie unter dem Titel), Kapitel-Zeitleiste (Knoten, Verbindungen, Hervorhebung und Leuchten des aktuellen Kapitels, Kapitel-Fortschrittsbalken), Gesamtfortschritt der Kampagne, Farbpunkt in der Kampagnen-Auswahl, Kampagnen-Karten auf dem Dashboard (Rahmen, Akzent, Fortschritt, Kapitel-Rauten), Bibliotheks-Karten und Einrichtungs-Dialog (Haupt-Attribut der Vorlage bzw. des gewählten Pfads), Zeilen der beendeten Kampagnen (behalten ihre Farbe), Kampagnen-Abzeichen der Quests auf der Quests-Seite, Kapitel-Toast (Ring um das Kampagnen-Symbol), Konfetti und Akzent der Feier-Szene „Kampagne abgeschlossen“.
 - **Gold bleibt reserviert für:** XP-Zahlen, Belohnungen (Belohnung-Box), „Gemeistert“-/Siegeszustände, Primär-Buttons und den App-Rahmen (Navigation, XP-Leiste).
 - Zurückhaltend einsetzen: Die Farbe tönt Linien, Leuchten und Fortschritt; Flächen bleiben das dunkle Braun-Schwarz, Fließtext bleibt Pergament.
+
+## Phase 2a – Gold, Schatzkammer, Streak-Bonus, Erfolge, Nebenquests (Vertrag)
+
+Typen: `src/domain/types.ts` (Abschnitte „Phase 2a“), Zahlen: `BALANCING.goldPerXp`, `streakBonusPerStep`, `streakBonusMax`, `achievementGold`.
+
+### Streak-Bonus (Engine)
+- Jede erledigte Quest-Erledigung bringt `round(questXp(c.difficulty) × (1 + bonus))` XP (Charakter **und** Attribut).
+- `bonus = min(streakBonusPerStep × n, streakBonusMax)`; `n` = Länge der Serie **unmittelbar vor** dem Tag (Tages-Einheit: aufeinanderfolgende erledigte Plantage direkt davor, gleiche Regeln wie `computeStreak` – Nicht-Plantage und Pausen werden übersprungen, ein verpasster Plantag setzt auf 0) bzw. **vor** der Woche (Wochen-Einheit: aufeinanderfolgende erfüllte Wochen direkt vor der Woche des Tages; alle Erledigungen einer Woche bekommen denselben Bonus).
+- Tag 1 einer Serie: +0 %, Tag 2: +5 %, …, ab Tag 11: +50 %. Gilt rückwirkend für den ganzen Verlauf.
+- Perfekter-Tag-Bonus = 25 % der Quest-XP des Tages **inklusive** Streak-Bonus. `HabitStatus.xp/baseXp/streakBonus` zeigen ihn an.
+- Muss effizient bleiben: pro Quest ein linearer Durchlauf über die Tage.
+
+### Gold (Engine)
+- `gold.fromXp = floor(level.totalXp × goldPerXp)` (alle XP-Quellen inkl. Nebenquests, Bonus, Kapitel).
+- `gold.fromAchievements` = Summe `goldReward` aller freigeschalteten Erfolge.
+- `gold.spent` = Summe `purchases[].price`; `balance = earned − spent` (kann nach nachträglichen Änderungen negativ sein – Kaufen ist dann gesperrt).
+
+### Nebenquests (Engine)
+- Erledigte Nebenquest (`doneDay ≤ today`) bringt `questXp(difficulty)` (ohne Streak-Bonus) an Charakter + `attribute`. Zählt nie für den Perfekten Tag.
+- `GameState.sideQuests`: offene (sortiert: überfällige/mit Termin zuerst nach Termin, dann `order`) und die **heute** erledigten.
+
+### Erfolge
+- Definitionen: `src/domain/achievements/definitions.ts` → `export const ACHIEVEMENTS: AchievementDefinition[]` (~30, reine Daten + `progress(stats)`).
+- Engine berechnet `AchievementStats` und `GameState.achievements`: `unlocked` = gespeicherter `AchievementUnlock` **oder** `current ≥ target` jetzt. Einmal freigeschaltet bleibt freigeschaltet (auch wenn ein Wert später sinkt) – dafür speichert die App neue Freischaltungen dauerhaft:
+- `AchievementRecorder` (in `src/app`, innerhalb des `GameProvider`) ruft bei neu erreichten, noch nicht gespeicherten Erfolgen `recordAchievementUnlocks([{ id, day: today }])` auf (idempotent, überschreibt nie einen vorhandenen Tag).
+- Gold aus Erfolgen zählt nicht in `AchievementStats.goldFromXp` (keine Kreisbezüge).
+
+### Daten (`src/data`)
+- Dexie `version(3)`: neue Tabellen `rewards '&id, order'`, `purchases '&id, day'`, `sideQuests '&id, order'`, `achievementUnlocks '&id'`. `loadGameData` liefert sie (sortiert) mit; `resetAllData` leert sie; Backup enthält sie (im Schema optional → alte Backups bleiben gültig, schemaVersion unverändert).
+```ts
+// Schatzkammer
+export type RewardDraft = Omit<Reward, 'id' | 'order' | 'createdAt' | 'archived'>
+createReward(draft): Promise<Reward>            // Titel Pflicht, price ganzzahlig 1…1_000_000
+updateReward(id, patch: Partial<RewardDraft>): Promise<void>
+archiveReward(id) / restoreReward(id) / deleteReward(id)   // delete nur ohne Einlösungen, sonst archivieren
+moveReward(id, 'up' | 'down')
+purchaseReward(rewardId, today): Promise<Purchase>
+  // in einer Transaktion: prüft Guthaben über deriveGameState(loadGameData(), today).gold.balance ≥ price
+  // ("Dafür fehlen dir noch N Gold."), einmalige Belohnung nur einmal ("Diese Belohnung hast du schon eingelöst."),
+  // archivierte nicht ("Diese Belohnung ist nicht mehr verfügbar.")
+undoPurchase(purchaseId): Promise<void>          // Rückgängig (z. B. versehentlich): Gold zurück
+// Nebenquests
+export type SideQuestDraft = Omit<SideQuest, 'id' | 'order' | 'createdDay' | 'doneDay'>
+createSideQuest(draft, today) · updateSideQuest(id, patch) · completeSideQuest(id, day) · reopenSideQuest(id) · deleteSideQuest(id)
+// Erfolge
+recordAchievementUnlocks(unlocks: AchievementUnlock[]): Promise<void>
+```
+
+### UI
+- **Navigation:** Heute · Quests · Kampagne · **Schatzkammer** (`/schatzkammer`, Icon z. B. `Gem`/`Coins`) · Held. `/einstellungen` bleibt als Route, ist aber nicht mehr in der Leiste: erreichbar über ein ⚙️-Symbol im Kopf der Held-Seite (Einstellungen-Seite bekommt „Zurück zum Helden“).
+- **Held-Seite** mit Reitern (URL `?tab=`): Übersicht (bisheriger Inhalt) · Erfolge (`?tab=erfolge`). Phase 2b ergänzt „Statistik“.
+- **Schatzkammer:** Gold-Guthaben groß, Belohnungen (Raster, Einlösen mit Bestätigung + kleine Szene), eigene Belohnungen anlegen/bearbeiten/sortieren/archivieren, Vorschläge mit einem Tipp übernehmen (`src/pages/treasury/rewardSuggestions.ts`), Chronik der Einlösungen (mit „Rückgängig“), Hinweis zum Gold-Verdienst (≈ ½ Gold pro XP). Platz für die Gegenstände aus 2b vorsehen.
+- **Dashboard:** Gold-Guthaben im Helden-Kopf (Tipp → Schatzkammer); Quest-Zeilen zeigen den Streak-Bonus (z. B. „+24 XP · 🔥 +20 %“); Bereich **Nebenquests** (offene + heute erledigte, schnell anlegen, abhaken).
+- **Quests-Seite:** Reiter „Gewohnheiten“ / „Nebenquests“ (Nebenquests verwalten: anlegen, bearbeiten, löschen, erledigte einblenden).
+- **Feedback:** XP-Meldung nennt auch Gold („+24 XP · +12 Gold“); neuer Erfolg → eigene Meldung mit Stufe (Bronze/Silber/Gold) und Gold-Belohnung; keine Meldungen für die stille Erst-Freischaltung beim ersten Laden.

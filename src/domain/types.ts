@@ -221,6 +221,163 @@ export interface GameData {
   mainQuests: MainQuest[]
   /** Grabsteine gelöschter Quests (siehe `DeletedHabit`). Fehlt, solange keine Quest gelöscht wurde. */
   deletedHabits?: DeletedHabit[]
+  /** Belohnungen der Schatzkammer (Phase 2a). Fehlt = keine. */
+  rewards?: Reward[]
+  /** Eingelöste Belohnungen (Gold-Ausgaben). Fehlt = keine. */
+  purchases?: Purchase[]
+  /** Nebenquests (einmalige Aufgaben). Fehlt = keine. */
+  sideQuests?: SideQuest[]
+  /** Dauerhaft freigeschaltete Erfolge (einmal erreicht = für immer). Fehlt = keine. */
+  achievementUnlocks?: AchievementUnlock[]
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2a: Gold, Schatzkammer, Nebenquests, Erfolge (gespeicherte Fakten)
+// ---------------------------------------------------------------------------
+
+/** Eine selbst definierte, echte Belohnung in der Schatzkammer, z. B. "Pizza bestellen" für 400 Gold. */
+export interface Reward {
+  id: string
+  title: string
+  /** Emoji. */
+  icon: string
+  description?: string
+  /** Preis in Gold, ganze Zahl ≥ 1. */
+  price: number
+  /** true = beliebig oft einlösbar; false = einmalig (danach "Eingelöst"). */
+  repeatable: boolean
+  order: number
+  /** Ausgeblendet (nicht mehr kaufbar); bisherige Einlösungen bleiben in der Chronik. */
+  archived?: boolean
+  createdAt: number
+}
+
+/**
+ * Eine Gold-Ausgabe. Titel, Icon und Preis sind Momentaufnahmen – spätere Änderungen an der Belohnung ändern
+ * die Chronik nicht. `kind` ist für Phase 2b erweiterbar (z. B. Gegenstände wie der Streak-Schutz).
+ */
+export interface Purchase {
+  id: string
+  kind: 'reward'
+  rewardId?: string
+  title: string
+  icon: string
+  price: number
+  /** Spieltag des Einlösens. */
+  day: DayKey
+  createdAt: number
+}
+
+/** Einmalige Aufgabe mit XP, z. B. "Steuererklärung". Zählt nicht für den Perfekten Tag, kostet nie etwas. */
+export interface SideQuest {
+  id: string
+  title: string
+  /** Emoji. */
+  icon: string
+  description?: string
+  attribute: AttributeId
+  difficulty: Difficulty
+  /** Optionaler Termin. */
+  dueDay?: DayKey
+  createdDay: DayKey
+  /** Spieltag der Erledigung; fehlt = offen. */
+  doneDay?: DayKey
+  order: number
+}
+
+/** Ein dauerhaft freigeschalteter Erfolg. */
+export interface AchievementUnlock {
+  /** ID der Erfolgs-Definition. */
+  id: string
+  /** Spieltag, an dem er (erstmals) freigeschaltet wurde. */
+  day: DayKey
+}
+
+export type AchievementTier = 'bronze' | 'silver' | 'gold'
+export type AchievementCategory = 'consistency' | 'diligence' | 'perfection' | 'campaigns' | 'growth' | 'treasury' | 'special'
+
+/**
+ * Kennzahlen, aus denen Erfolge berechnet werden (vom Engine bereitgestellt). Alles bis einschließlich `today`.
+ */
+export interface AchievementStats {
+  questsCompleted: number
+  perfectDays: number
+  bestDayStreak: number
+  bestWeekStreak: number
+  activeDays: number
+  adventureDay: number
+  level: number
+  totalXp: number
+  attributeLevels: Record<AttributeId, number>
+  chaptersCompleted: number
+  campaignsCompleted: number
+  /** Derzeit aktive Kampagnen (nicht archiviert, nicht abgeschlossen). */
+  activeCampaigns: number
+  sideQuestsCompleted: number
+  purchases: number
+  /** Gold aus XP (ohne Erfolgs-Gold – vermeidet Kreisbezüge). */
+  goldFromXp: number
+  /**
+   * Wie oft der Held nach einer Pause von ≥ 7 Tagen ohne erledigte Quest wieder eine Quest erledigt hat
+   * ("Phönix"-Erfolg).
+   */
+  comebacks: number
+}
+
+export interface AchievementDefinition {
+  /** Stabil (wird in AchievementUnlock gespeichert), z. B. 'streak-7'. */
+  id: string
+  title: string
+  description: string
+  /** Emoji. */
+  icon: string
+  tier: AchievementTier
+  category: AchievementCategory
+  /** Gold-Belohnung beim Freischalten (bronze ≈ 25, silver ≈ 75, gold ≈ 200). */
+  goldReward: number
+  /** Geheim: Titel/Beschreibung erst nach dem Freischalten sichtbar. */
+  secret?: boolean
+  /** Reine Funktion: aktueller Stand und Ziel; freigeschaltet, sobald current ≥ target. */
+  progress(stats: AchievementStats): { current: number; target: number }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2a: abgeleiteter Zustand
+// ---------------------------------------------------------------------------
+
+export interface GoldState {
+  /** floor(level.totalXp × BALANCING.goldPerXp). */
+  fromXp: number
+  /** Summe der goldReward aller freigeschalteten Erfolge. */
+  fromAchievements: number
+  /** fromXp + fromAchievements. */
+  earned: number
+  /** Summe aller Purchases. */
+  spent: number
+  /** earned − spent. Kann nach nachträglichen Änderungen (z. B. gelöschte Quest) negativ werden. */
+  balance: number
+}
+
+export interface AchievementState {
+  definition: AchievementDefinition
+  unlocked: boolean
+  /** Spieltag der Freischaltung (gespeichert oder – falls noch nicht gespeichert – heute). */
+  unlockedDay?: DayKey
+  current: number
+  target: number
+  /** min(current / target, 1). */
+  progress: number
+}
+
+export interface SideQuestState {
+  quest: SideQuest
+  done: boolean
+  /** Offen und Termin vor heute. */
+  overdue: boolean
+  /** Termin ist heute. */
+  dueToday: boolean
+  /** XP bei bzw. für die Erledigung (questXp(difficulty), ohne Streak-Bonus). */
+  xp: number
 }
 
 // ---------------------------------------------------------------------------
@@ -274,10 +431,18 @@ export interface HabitStatus {
    */
   week?: { done: number; target: number }
   /**
-   * XP der Quest an diesem Tag: erledigt die tatsächlich gutgeschriebenen (Schwierigkeit der Erledigung),
-   * sonst die, die eine Erledigung jetzt bringen würde (aktuelle Schwierigkeit).
+   * XP der Quest an diesem Tag **inklusive Streak-Bonus**: erledigt die tatsächlich gutgeschriebenen
+   * (Schwierigkeit der Erledigung), sonst die, die eine Erledigung jetzt bringen würde (aktuelle Schwierigkeit).
+   * = round(baseXp × (1 + streakBonus)).
    */
   xp: number
+  /** XP ohne Streak-Bonus (questXp der maßgeblichen Schwierigkeit). */
+  baseXp: number
+  /**
+   * Streak-Bonus als Anteil (0 … BALANCING.streakBonusMax), siehe ARCHITECTURE.md „Streak-Bonus“:
+   * min(streakBonusPerStep × Länge der Serie unmittelbar VOR diesem Tag bzw. dieser Woche, streakBonusMax).
+   */
+  streakBonus: number
 }
 
 export interface DayState {
@@ -357,9 +522,14 @@ export interface GameTotals {
   bestWeekStreak: number
   /** Tage mit mindestens einer erledigten Quest. */
   activeDays: number
+  /** Quest-XP inklusive Streak-Bonus. */
   xpFromQuests: number
+  /** Davon Streak-Bonus. */
+  xpFromStreakBonus: number
   xpFromPerfectDays: number
   xpFromChapters: number
+  xpFromSideQuests: number
+  sideQuestsCompleted: number
 }
 
 export interface GameState {
@@ -379,4 +549,9 @@ export interface GameState {
    * in gespeicherter Reihenfolge. Für die Liste „Beendete & gemeisterte Kampagnen“.
    */
   archivedMainQuests: MainQuestState[]
+  gold: GoldState
+  /** Alle Erfolge in Definitions-Reihenfolge. */
+  achievements: AchievementState[]
+  /** Nebenquests: offene (nach Termin, dann order) und die heute erledigten. */
+  sideQuests: SideQuestState[]
 }

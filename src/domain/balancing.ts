@@ -19,6 +19,14 @@ export const BALANCING = {
   mainQuestXp: 500,
   /** Wie viele Tage rückwirkend Quests nachgetragen werden dürfen. */
   backfillDays: 1,
+  /** Gold pro XP (alle XP-Quellen). */
+  goldPerXp: 0.5,
+  /** Streak-Bonus pro Serien-Schritt vor dem Tag bzw. der Woche (+5 %). */
+  streakBonusPerStep: 0.05,
+  /** Höchster Streak-Bonus (+50 %, erreicht nach 10 Schritten in Folge). */
+  streakBonusMax: 0.5,
+  /** Gold-Belohnung für Erfolge je Stufe (Richtwerte für die Definitionen). */
+  achievementGold: { bronze: 25, silver: 75, gold: 200 },
   /** Höchstens so viele aktive Kampagnen gleichzeitig (aktiv = nicht archiviert und nicht abgeschlossen). */
   maxActiveCampaigns: 3,
   /** Sicherheitsgrenze für Level-Berechnungen. */
