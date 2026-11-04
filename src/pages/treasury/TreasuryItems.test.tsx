@@ -86,6 +86,8 @@ describe('Schatzkammer: Gegenstände', () => {
     expect(freeze).toHaveTextContent('Preis: 150 Gold')
     expect(freeze).toHaveTextContent('Fängt einen schwachen Tag auf – keine HP verloren, alle Streaks bleiben.')
     expect(freeze).toHaveTextContent('Setzt sich von selbst ein')
+    // In der Durchhänger-Pause wird keiner verbraucht – der Tag kostet dort ohnehin keine HP.
+    expect(freeze).toHaveTextContent('In einer Pause bleibt er im Beutel – da kostet ein Tag ohnehin keine HP.')
     expect(freeze).toHaveTextContent('0 von 5 Streak-Schutz im Beutel')
     expect(within(freeze).getByRole('button', { name: 'Streak-Schutz für 150 Gold kaufen' })).toBeEnabled()
 

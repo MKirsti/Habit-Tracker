@@ -22,9 +22,10 @@ export interface DayScoreRow {
 }
 
 /**
- * Wann eine Wertung gilt – in der Reihenfolge der Tabelle. Zwei Namen weichen hier von der Tagesübersicht ab, weil die
+ * Wann eine Wertung gilt – in der Reihenfolge der Tabelle. Ein Name weicht hier von der Tagesübersicht ab, weil die
  * Tabelle Regeln beschreibt statt eines offenen Tages: „Nichts erledigt“ (dort „Noch nichts erledigt“ – man kann ja
- * noch nachtragen) und „Längere Pause“ (wie in der Statistik).
+ * noch nachtragen). „Pause“ ist die Durchhänger-Pause: Nach `slumpPauseAfterDays` Tagen mit HP-Verlust in Folge kostet
+ * kein Tag mehr etwas – bis zum nächsten guten (oder perfekten) Tag.
  */
 const SCORE_ORDER: { score: DayScore; when: string; label?: string }[] = [
   { score: 'perfect', when: 'alle Tagesquests erledigt' },
@@ -35,8 +36,8 @@ const SCORE_ORDER: { score: DayScore; when: string; label?: string }[] = [
   { score: 'none', when: 'keine Tagesquest fällig (etwa nur Wochenquests)' },
   {
     score: 'absent',
-    label: 'Längere Pause',
-    when: `ab dem ${formatNumber(BALANCING.absentAfterDays + 1)}. Tag in Folge ohne erledigte Quest – dann ruhen deine Lebenspunkte`,
+    // Geschützter Bindestrich: „HP-|Verlust“ bricht nicht um.
+    when: `nach ${formatNumber(BALANCING.slumpPauseAfterDays)} Tagen mit HP\u2011Verlust in Folge – bis zu deinem nächsten guten Tag verlierst du keine Lebenspunkte`,
   },
 ]
 
@@ -49,14 +50,15 @@ export function dayScoreRows(): DayScoreRow[] {
 }
 
 /**
- * Die wichtigsten Regeln in wenigen Sätzen – das Beruhigende zuerst (Obergrenze, Wochenquests, Gnadenfrist), dann
- * die Wege nach oben und zum Schutz, zum Schluss die Niederlage (mit ihrer Obergrenze in Gold).
+ * Die wichtigsten Regeln in wenigen Sätzen – das Beruhigende zuerst (Obergrenze, Wochenquests, Pause, Gnadenfrist),
+ * dann die Wege nach oben und zum Schutz, zum Schluss die Niederlage (mit ihrer Obergrenze in Gold).
  */
 export function hpRuleNotes(): string[] {
-  const { hpByScore, hpBase, hpPerLevel, defeatGoldLoss, defeatGoldLossMax, items } = BALANCING
+  const { hpByScore, hpBase, hpPerLevel, slumpPauseAfterDays, defeatGoldLoss, defeatGoldLossMax, items } = BALANCING
   return [
     `Eine Wertung pro Tag: höchstens ${hpDeltaLabel(hpByScore.missed)}, egal wie viele Quests und Kampagnen du führst.`,
     `Wochenquests kosten nie Lebenspunkte – sie helfen sogar: Erledigst du an einem Tag statt deiner Tagesquests nur eine Wochenquest, zählt er als „${DAY_SCORE_LABELS.weak}“ (${hpDeltaLabel(hpByScore.weak)}) statt „Nichts erledigt“ (${hpDeltaLabel(hpByScore.missed)}).`,
+    `Pause: Nach ${formatNumber(slumpPauseAfterDays)} Tagen mit Schaden in Folge ruht der Schaden – bis zu deinem nächsten guten Tag. Ein Durchhänger kostet so höchstens ${hpDeltaLabel(slumpPauseAfterDays * hpByScore.missed)}, und dein ❄️ Streak-Schutz bleibt in der Pause im Beutel.`,
     'Gnadenfrist: Gestern kannst du noch nachtragen – abgerechnet wird ein Tag erst danach.',
     `Heilung: Ein Perfekter Tag heilt ${hpDeltaLabel(hpByScore.perfect)}, ein Level-Aufstieg füllt deine Lebenspunkte ganz auf, ein 🧪 Heiltrank bringt ${hpDeltaLabel(items.healingPotion.heal)}.`,
     'Schutz: Krank oder unterwegs? Ein Ruhetag oder Urlaub (unten unter „Rast & Urlaub“) schont Lebenspunkte und Streaks – auch gestern lässt sich noch als Ruhetag eintragen. Ein ❄️ Streak-Schutz aus der Schatzkammer fängt schwache Tage auf.',

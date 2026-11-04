@@ -104,13 +104,16 @@ describe('Einstellungen: Lebenspunkte', () => {
       'Nichts erledigtgar keine Quest erledigt, auch keine Wochenquest−6 HP',
       'RuhetagRuhetag oder Urlaub – nichts ist Pflicht±0 HP',
       'Keine Tagesquestskeine Tagesquest fällig (etwa nur Wochenquests)±0 HP',
-      'Längere Pauseab dem 4. Tag in Folge ohne erledigte Quest – dann ruhen deine Lebenspunkte±0 HP',
+      'Pausenach 3 Tagen mit HP\u2011Verlust in Folge – bis zu deinem nächsten guten Tag verlierst du keine Lebenspunkte±0 HP',
     ])
     expect(BALANCING.hpByScore).toMatchObject({ perfect: 10, good: 2, weak: -1, missed: -6 })
-    expect(BALANCING).toMatchObject({ absentAfterDays: 3, defeatGoldLoss: 0.15, defeatGoldLossMax: 100 })
+    expect(BALANCING).toMatchObject({ slumpPauseAfterDays: 3, defeatGoldLoss: 0.15, defeatGoldLossMax: 100 })
     const text = plain(section)
     expect(text).toContain('höchstens −6 HP, egal wie viele Quests und Kampagnen du führst.')
     expect(text).toContain('Wochenquests kosten nie Lebenspunkte – sie helfen sogar')
+    // 3 × −6 = −18 HP höchstens je Durchhänger.
+    expect(text).toContain('Pause: Nach 3 Tagen mit Schaden in Folge ruht der Schaden – bis zu deinem nächsten guten Tag.')
+    expect(text).toContain('Ein Durchhänger kostet so höchstens −18 HP')
     expect(text).toContain('Gestern kannst du noch nachtragen')
     expect(text).toContain('Bei 0 HP verlierst du 15 % deines Goldes, höchstens 100 Gold, und stehst')
     expect(text).toContain('Du kannst jederzeit wechseln. Rückwirkend zählt nichts')

@@ -139,9 +139,10 @@ describe('Review 2b – Laufzeit mit drei Jahren Verlauf', () => {
       // Phasen à 40 Tage: gute Zeiten, durchwachsene Zeiten, Durststrecken (Niederlagen).
       const phase = Math.floor(i / 40) % 3
       if (phase === 2) {
-        // Durststrecke: nur an jedem 4. Tag eine Wochenquest (anwesend → schwach, −1), dazwischen nichts (Tag 1–3
-        // ohne Erledigung, je −6) – je 4 Tage −19 HP, so kommt es auch mit den milden Regeln zu Niederlagen.
-        if (i % 4 === 0) completions.push(makeCompletion(habits[3], day))
+        // Durststrecke: an jedem 4. Tag ein guter Tag (5 von 9 Tagesquests ≥ 50 % → +2, beendet die Pause),
+        // dazwischen nichts (3 schadende Tage, je −6) – je 4 Tage −16 HP: So kommt es auch mit der Durchhänger-Pause
+        // (höchstens 3 schadende Tage je Durchhänger) zu Niederlagen.
+        if (i % 4 === 0) for (const habit of habits.slice(0, 6)) completions.push(makeCompletion(habit, day))
         continue
       }
       const chance = phase === 0 ? 0.9 : 0.3

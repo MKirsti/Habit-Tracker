@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { ATTRIBUTE_IDS } from './attributes'
+import { DEFAULT_SETTINGS } from './balancing'
 import { addDays, dayRange } from './dates'
 import { dayFactsOf, deriveGameState, getDayState, totalXpTimeline } from './engine'
-import { hpCalendar, restDaySet } from './hp'
+import { hpCalendar, restDaySet, settleDays } from './hp'
 import { levelFromXp } from './leveling'
 import {
   COMPLETION_RATE_DAYS,
@@ -85,7 +86,7 @@ describe('dayHistory', () => {
     expect(mon).toMatchObject({ required: 2, requiredDone: 1, done: 1, questXp: 21, perfectBonusXp: 0, xp: 21, totalXp: 59, perfect: false, score: 'good' })
     // Di: keine Tagesquest, nur die Wochenquest → „schwach“ statt verpasst, 40 XP
     expect(tue).toMatchObject({ required: 2, requiredDone: 0, done: 1, questXp: 40, totalXp: 99, score: 'weak' })
-    // Mi (heute): noch nichts → verpasst (erst Tag 1 ohne Erledigung)
+    // Mi (heute): noch nichts → verpasst (davor nur ein schadender Tag, der Di – noch keine Pause)
     expect(wed).toMatchObject({ required: 2, requiredDone: 0, done: 0, xp: 0, totalXp: 99, score: 'missed' })
     for (const stat of history.days) {
       expect(stat).toMatchObject({ rest: false, settled: false, frozen: false, level: levelFromXp(stat.totalXp).level })
@@ -146,22 +147,27 @@ describe('dayHistory – Tageswertung', () => {
     expect(dayHistory(onlyWeekly, TODAY).days.map((stat) => stat.score)).toEqual(['none', 'none', 'none', 'none'])
   })
 
-  it('Abwesenheit: ab dem 4. Tag in Folge ohne jede erledigte Quest – Ruhetage zählen nicht mit', () => {
+  it('Durchhänger-Pause (live, ohne Abrechnung): nach 3 schadenden Tagen „absent“ – Ruhetage zählen nicht mit', () => {
     const habit = makeHabit({ id: 'h', createdDay: D(-12) })
     const base = makeGameData({ profile: profile(D(-12)), habits: [habit], completions: [makeCompletion(habit, D(-2))] })
     const scores = dayHistory(base, TODAY).days.map((stat) => stat.score)
-    // D(-12) … D(-10): Tag 1–3 verpasst, D(-9) … D(-3): abwesend (Tag 4–10), D(-2) perfekt, danach wieder verpasst
+    // D(-12) … D(-10): Zähler 1–3 (verpasst), D(-9) … D(-3): Pause, D(-2) perfekt (0), D(-1) und heute verpasst (1, 2)
     expect(scores).toEqual([...Array(3).fill('missed'), ...Array(7).fill('absent'), 'perfect', 'missed', 'missed'])
 
     const withRest = { ...base, restPeriods: [{ id: 'r', from: D(-11), until: D(-10), createdAt: 0 }] }
     const restScores = dayHistory(withRest, TODAY).days.map((stat) => stat.score)
     expect(restScores).toEqual([
-      'missed', // D(-12): Tag 1
+      'missed', // D(-12): Zähler 1
       'rest', 'rest', // D(-11), D(-10) zählen nicht mit
-      'missed', 'missed', // D(-9), D(-8): Tag 2 und 3 (zählten Ruhetage mit, wäre D(-9) schon Tag 4)
-      'absent', 'absent', 'absent', 'absent', 'absent', // D(-7) … D(-3): Tag 4–8 (Ruhetage brechen die Zählung nicht)
+      'missed', 'missed', // D(-9), D(-8): Zähler 2 und 3 (zählten Ruhetage mit, wäre D(-9) schon Pause)
+      'absent', 'absent', 'absent', 'absent', 'absent', // D(-7) … D(-3): Pause (Ruhetage brechen die Folge nicht)
       'perfect', 'missed', 'missed',
     ])
+
+    // Eine Wochenquest mitten in der Pause (D(-6)) beendet sie nicht – sie wäre nur „schwach“.
+    const weekly = makeHabit({ id: 'w', order: 1, createdDay: D(-12), schedule: { type: 'weekly', times: 1 } })
+    const withWeekly = { ...base, habits: [habit, weekly], completions: [...base.completions, makeCompletion(weekly, D(-6))] }
+    expect(dayHistory(withWeekly, TODAY).days.map((stat) => stat.score)).toEqual(scores)
   })
 
   it('Ruhetage: keine Pflicht, kein Perfekter Tag, Wertung „rest“ – Erledigtes bringt trotzdem XP', () => {
@@ -414,6 +420,145 @@ describe('dayHistory – Übereinstimmung mit der Engine', () => {
     const elapsed = performance.now() - began
     expect(history.days.length).toBe(3 * 365 + 1)
     expect(elapsed).toBeLessThan(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Durchhänger-Pause: Statistik = Abrechnung = Vorschau
+// ---------------------------------------------------------------------------
+
+describe('dayHistory – Durchhänger-Pause wie bei der Abrechnung', () => {
+  const habit = makeHabit({ id: 'h', createdDay: D(-12) })
+  const scoresOf = (data: GameData) => dayHistory(data, TODAY).days.map((stat) => stat.score)
+  /** Rechnet wie die App zwei Tage später alles bis einschließlich heute ab (Daten unverändert). */
+  const settledThroughToday = (data: GameData) => settleDays(data, addDays(TODAY, 2))
+
+  it('vor since live, ab since nur aus Ledger und Vorschau – heute zeigt, was die Abrechnung daraus macht', () => {
+    // Nichts erledigt seit D(-12); Lebenspunkte erst ab D(-2).
+    const data = makeGameData({
+      profile: profile(D(-12)),
+      settings: { ...DEFAULT_SETTINGS, penalties: { enabled: true, since: D(-2) } },
+      habits: [habit],
+    })
+    // Vor since (live): D(-12) … D(-10) Zähler 1–3, D(-9) … D(-3) Pause. Ab since beginnt die Abrechnung bei 0:
+    // D(-2) Vorschau missed (1), D(-1) Vorschau missed (2), heute live missed (Zähler davor 2 < 3 – keine Pause,
+    // obwohl die Tage vor since „schon“ eine wären).
+    expect(scoresOf(data)).toEqual([...Array(3).fill('missed'), ...Array(7).fill('absent'), 'missed', 'missed', 'missed'])
+    expect(settledThroughToday(data).map((entry) => [entry.day, entry.score])).toEqual([
+      [D(-2), 'missed'],
+      [D(-1), 'missed'],
+      [TODAY, 'missed'],
+    ])
+    expect(deriveGameState(data, TODAY).hp.yesterday).toEqual({ day: D(-1), score: 'missed', threatenedDelta: -6, savedByFreeze: false })
+  })
+
+  it('abgerechnete Tage zählen, Tage in einer Lücke des Ledgers nicht; heute und gestern zeigen die Pause', () => {
+    // Abgerechnet D(-6), D(-5) (je missed); die Abrechnung beginnt erst wieder am D(-2) (Lücke D(-4), D(-3)).
+    const data = makeGameData({
+      profile: profile(D(-12)),
+      settings: { ...DEFAULT_SETTINGS, penalties: { enabled: true, since: D(-2) } },
+      habits: [habit],
+      hpLedger: [ledger(D(-6), { hpDelta: -6, hpAfter: 44 }), ledger(D(-5), { hpDelta: -6, hpAfter: 38 })],
+    })
+    const history = dayHistory(data, TODAY)
+    // Vor dem Ledger (live): D(-12) … D(-10) missed, D(-9) … D(-7) Pause · D(-6), D(-5) aus dem Ledger (Zähler ab dem
+    // Ledger: 1, 2) · Lücke D(-4), D(-3) live mit Zähler 2 → missed, zählen aber nicht weiter · D(-2) Vorschau missed
+    // (3) · D(-1) Vorschau Pause · heute live Pause.
+    expect(history.days.map((stat) => stat.score)).toEqual([
+      ...Array(3).fill('missed'),
+      ...Array(3).fill('absent'),
+      'missed', 'missed', // Ledger
+      'missed', 'missed', // Lücke
+      'missed', 'absent', // Vorschau
+      'absent', // heute
+    ])
+    expect(statOn(history, D(-5))).toMatchObject({ settled: true, score: 'missed' })
+    expect(statOn(history, D(-1))).toMatchObject({ settled: false, open: true, score: 'absent', frozen: false })
+    // Die Abrechnung sieht es genauso: D(-2) missed (Zähler 2 + 1 = 3), D(-1) und heute Pause.
+    const entries = settledThroughToday(data)
+    expect(entries.map((entry) => [entry.day, entry.score])).toEqual([
+      [D(-2), 'missed'],
+      [D(-1), 'absent'],
+      [TODAY, 'absent'],
+    ])
+    // 38 − 6 = 32, dann Pause.
+    expect(entries.map((entry) => entry.hpAfter)).toEqual([32, 32, 32])
+    // Die Vorschau für gestern zeigt die Pause: nichts droht.
+    expect(deriveGameState(data, TODAY).hp.yesterday).toEqual({ day: D(-1), score: 'absent', threatenedDelta: 0, savedByFreeze: false })
+  })
+
+  it('alte Abwesenheits-Einträge und aufgefangene Tage im Ledger: dieselbe Fortsetzung wie bei der Abrechnung', () => {
+    const base = makeGameData({
+      profile: profile(D(-12)),
+      settings: { ...DEFAULT_SETTINGS, penalties: { enabled: true, since: D(-12) } },
+      habits: [habit],
+      completions: [makeCompletion(habit, D(-1))],
+    })
+    // Ledger bis D(-3): … ein alter `absent`-Eintrag am D(-3) → die Pause läuft: D(-2) Vorschau Pause, D(-1) perfekt
+    // (Vorschau, 0), heute verpasst (1).
+    const oldAbsent = { ...base, hpLedger: [ledger(D(-4)), ledger(D(-3), { score: 'absent' })] }
+    expect(scoresOf(oldAbsent).slice(-3)).toEqual(['absent', 'perfect', 'missed'])
+    expect(settledThroughToday(oldAbsent).map((entry) => entry.score)).toEqual(['absent', 'perfect', 'missed'])
+    // Ledger: missed, missed, aufgefangen (D(-5) … D(-3)) → Zähler 2: D(-2) missed (3), D(-1) perfekt (0), heute (1).
+    const frozen = {
+      ...base,
+      hpLedger: [ledger(D(-5)), ledger(D(-4)), ledger(D(-3), { frozen: true })],
+    }
+    expect(scoresOf(frozen).slice(-3)).toEqual(['missed', 'perfect', 'missed'])
+    expect(settledThroughToday(frozen).map((entry) => entry.score)).toEqual(['missed', 'perfect', 'missed'])
+  })
+
+  it('Statistik = Abrechnung = Vorschau (Zufallsdaten mit Ledger, Lücken, Ruhetagen und Streak-Schutz)', () => {
+    const random = seededRandom(2026_11_04)
+    let pauses = 0
+    for (let run = 0; run < 25; run++) {
+      const base = randomData(random)
+      const int = (max: number) => Math.floor(random() * (max + 1))
+      // Seltener erledigt (Durchhänger): jede Erledigung bleibt nur mit 45 % – so gibt es Pausen und Wechsel.
+      const completions = base.completions.filter(() => random() < 0.45)
+      const restFrom = D(-40 + int(30))
+      const since = D(-50 + int(30))
+      const purchases = Array.from({ length: int(4) }, (_, i) => ({
+        id: `p${i}`,
+        kind: 'item' as const,
+        itemId: 'streakFreeze' as const,
+        title: 'Streak-Schutz',
+        icon: '❄️',
+        price: 150,
+        day: D(-45 + int(40)),
+        createdAt: i,
+      }))
+      let data: GameData = {
+        ...base,
+        completions,
+        settings: { ...base.settings, penalties: { enabled: random() < 0.8, since } },
+        restPeriods: [{ id: 'r', from: restFrom, until: addDays(restFrom, int(5)), createdAt: 0 }],
+        purchases,
+      }
+      // Ein echtes Ledger bis zu einem zufälligen Tag; manchmal danach eine Lücke (since später, wie nach einem Backup).
+      const settledUntil = addDays(since, int(18)) // höchstens vorgestern (D(-2))
+      const ledgerEntries = settleDays(data, addDays(settledUntil, 2))
+      const nextSince = random() < 0.3 ? addDays(settledUntil, 1 + int(4)) : since
+      data = { ...data, hpLedger: ledgerEntries, settings: { ...data.settings, penalties: { enabled: true, since: nextSince } } }
+
+      const history = dayHistory(data, TODAY)
+      const where = `Lauf ${run}`
+      // Abgerechnete Tage: aus dem Ledger.
+      for (const entry of ledgerEntries) {
+        expect(statOn(history, entry.day), `${where} ${entry.day}`).toMatchObject({ settled: true, score: entry.score, frozen: entry.frozen })
+      }
+      // Alle noch offenen Tage bis einschließlich heute: genau das, was die Abrechnung daraus macht.
+      for (const entry of settledThroughToday(data)) {
+        const stat = statOn(history, entry.day)
+        expect(stat?.score, `${where} ${entry.day}`).toBe(entry.score)
+        if (entry.day !== TODAY) expect(stat?.frozen, `${where} ${entry.day}`).toBe(entry.frozen)
+        if (entry.score === 'absent') pauses++
+      }
+      // Die Vorschau für gestern (GameState.hp) passt dazu.
+      const yesterday = deriveGameState(data, TODAY).hp.yesterday
+      if (yesterday) expect(statOn(history, D(-1)), where).toMatchObject({ score: yesterday.score, frozen: yesterday.savedByFreeze })
+    }
+    expect(pauses).toBeGreaterThan(0)
   })
 })
 

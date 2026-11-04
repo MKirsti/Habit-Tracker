@@ -83,11 +83,13 @@ describe('settlementNote – die letzte Abrechnung ruhig im Helden-Kopf', () => 
     )
   })
 
-  it('heißt den Helden nach einer längeren Pause willkommen – statt nichts zu sagen', () => {
+  it('sagt in der Durchhänger-Pause ruhig, dass nichts verloren ging – und was sie beendet', () => {
     const note = settlementNote(HP, [entry('2026-11-02', { score: 'absent', hpDelta: 0, hpAfter: 13 })], TODAY)
-    expect(note?.text).toBe('Willkommen zurück – schön, dass du da bist!')
-    expect(note?.tone).toBe('up')
-    expect(note?.spoken).toContain('ruhen die Lebenspunkte')
+    expect(note?.text).toBe('Montag: Pause – der Schaden ruht bis zu deinem nächsten guten Tag')
+    expect(note?.tone).toBe('neutral')
+    expect(note?.spoken).toBe(
+      'Montag abgerechnet: Pause, keine Lebenspunkte verloren. Der Schaden ruht bis zu deinem nächsten guten Tag.',
+    )
   })
 
   it('nennt einen aufgefangenen Tag und eine Niederlage freundlich', () => {
@@ -150,6 +152,15 @@ describe('yesterdayPreview – Vorschau für den noch offenen Vortag', () => {
     expect(backfillStanding({ day: '2026-11-03', score: 'none', threatenedDelta: 0, savedByFreeze: false })).toBeUndefined()
     expect(backfillStanding(undefined)).toBeUndefined()
   })
+
+  it('nennt beim Nachtragen in der Durchhänger-Pause „±0 HP · Pause“ – im Sanften Modus nichts', () => {
+    const paused = { day: '2026-11-03', score: 'absent', threatenedDelta: 0, savedByFreeze: false } as const
+    expect(backfillStanding(paused)).toBe(nb('Stand jetzt: ±0 HP · Pause'))
+    expect(backfillStanding(paused, true)).toBe(nb('Stand jetzt: ±0 HP · Pause'))
+    expect(backfillStanding(paused, false)).toBeUndefined()
+    // In der Pause droht nichts – die Vorschau über der Quest-Karte bleibt aus.
+    expect(yesterdayPreview(paused)).toBeUndefined()
+  })
 })
 
 describe('Rast', () => {
@@ -198,8 +209,8 @@ describe('hpIntroPoints – Einführung „Neu: Lebenspunkte“', () => {
     expect(text).toContain('Wochenquests kosten nie Lebenspunkte – schon eine macht aus einem leeren Tag „Ein Anfang“ (−1 HP).')
     expect(text).toContain('Gnadenfrist')
     expect(text).toContain('Ein Ruhetag schont Lebenspunkte und Serien')
-    // absentAfterDays = 3: ab dem 4. Tag ohne Quest ruhen die Lebenspunkte (Serien schützt nur der Ruhetag).
-    expect(text).toContain('ab dem 4. Tag ohne Quest ruhen die Lebenspunkte ohnehin')
+    // slumpPauseAfterDays = 3: nach drei Tagen mit Schaden ruht der Schaden (Serien schützt nur der Ruhetag).
+    expect(text).toContain('Und nach 3 Tagen mit Schaden in Folge ruht der Schaden ohnehin – bis zu deinem nächsten guten Tag.')
     // 15 %, höchstens 100 Gold.
     expect(text).toContain('stehst du mit vollen Lebenspunkten wieder auf. 15 % deines Goldes (höchstens 100 Gold) sind dann weg')
     expect(text).toContain('Level, XP und Serien bleiben')

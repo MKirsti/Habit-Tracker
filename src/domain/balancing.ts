@@ -32,8 +32,13 @@ export const BALANCING = {
   hpPerLevel: 5,
   /** HP-Wirkung je Tageswertung (eine Wertung pro Tag; Wochenquests kosten nie etwas). */
   hpByScore: { perfect: 10, good: 2, weak: -1, missed: -6, rest: 0, none: 0, absent: 0 },
-  /** Nach so vielen Tagen in Folge ohne jede erledigte Quest gilt der Held als abwesend (ab dem 4. kein Schaden mehr). */
-  absentAfterDays: 3,
+  /**
+   * Durchhänger-Pause: Nach so vielen schadenden Tagen in Folge (`weak`/`missed` ohne Streak-Schutz; Ruhetage,
+   * „none“-Tage und aufgefangene Tage zählen nicht mit und brechen die Folge nicht) ist jeder weitere schwache oder
+   * verpasste Tag `absent` („Pause“: 0 HP, kein Streak-Schutz-Verbrauch) – bis zum nächsten guten oder perfekten Tag.
+   * Ein Durchhänger kostet so höchstens 3 schadende Tage (≤ 3 × −6 = −18 HP).
+   */
+  slumpPauseAfterDays: 3,
   /** Anteil des Gold-Guthabens, der bei einer Niederlage verloren geht. */
   defeatGoldLoss: 0.15,
   /** Höchstens so viel Gold kostet eine Niederlage. */

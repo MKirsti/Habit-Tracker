@@ -4,7 +4,11 @@
  * 1. Ein Tag ohne erledigte Tagesquest, aber mit einer anderen erledigten Quest (etwa einer Wochenquest) ist
  *    `weak` („Ein Anfang“) statt `missed`.
  * 2. `weak` kostet −1 statt −3.
- * 3. Pause ab dem 4. Tag in Folge ohne jede erledigte Quest (`absentAfterDays` = 3) → höchstens 3 × −6 = −18.
+ * 3. Durchhänger-Pause (ersetzt die frühere Abwesenheits-Regel „ab dem 4. Tag ohne Quest“): Nach
+ *    `slumpPauseAfterDays` = 3 schadenden Tagen in Folge (`weak`/`missed` ohne Streak-Schutz; Ruhetage, „none“ und
+ *    aufgefangene Tage zählen nicht und brechen nichts) ist jeder weitere schwache oder verpasste Tag `absent`
+ *    („Pause“, 0 HP, kein Streak-Schutz) – bis zum nächsten guten oder perfekten Tag. Ein Durchhänger kostet so
+ *    höchstens 3 schadende Tage (≤ 3 × −6 = −18), und etwas zu tun ist nie schlechter als nichts.
  * 4. Eine Niederlage kostet min(100, floor(15 % × Guthaben)) Gold.
  * Schon abgerechnete Einträge werden nie umgeschrieben.
  *
@@ -21,6 +25,7 @@ import {
   makeCompletion,
   makeGameData,
   makeHabit,
+  makeItemPurchase,
   makeLedgerEntry,
   makePurchase,
   makeRestPeriod,
@@ -83,9 +88,10 @@ function epicSideQuests(n: number, day: DayKey) {
 }
 
 describe('die vier Zahlen', () => {
-  it('weak −1, Pause nach 3 Tagen, Niederlage 15 % und höchstens 100 Gold', () => {
+  it('weak −1, Pause nach 3 schadenden Tagen, Niederlage 15 % und höchstens 100 Gold', () => {
     expect(BALANCING.hpByScore).toEqual({ perfect: 10, good: 2, weak: -1, missed: -6, rest: 0, none: 0, absent: 0 })
-    expect(BALANCING.absentAfterDays).toBe(3)
+    expect(BALANCING.slumpPauseAfterDays).toBe(3)
+    expect(BALANCING).not.toHaveProperty('absentAfterDays')
     expect(BALANCING.defeatGoldLoss).toBe(0.15)
     expect(BALANCING.defeatGoldLossMax).toBe(100)
   })
@@ -94,7 +100,8 @@ describe('die vier Zahlen', () => {
 describe('Eine Woche nach den milderen Regeln (Regeln 1–3 im Zusammenspiel)', () => {
   const [a, b, c] = ['a', 'b', 'c'].map((id) => daily(id, { createdDay: D(-1) }))
   const w = weekly('w', { createdDay: D(-1) })
-  // Vor der Umstellung abgerechnet: ein schwacher Tag kostete damals −3. Der Eintrag bleibt, wie er ist.
+  // Vor der Umstellung abgerechnet: ein schwacher Tag kostete damals −3. Der Eintrag bleibt, wie er ist – und zählt
+  // als schadender Tag (Zähler 1 zu Beginn von D0).
   const oldEntry = makeLedgerEntry(D(-1), { score: 'weak', hpDelta: -3, hpAfter: 30, maxHp: 50 })
   const data = hero(
     {
@@ -108,24 +115,25 @@ describe('Eine Woche nach den milderen Regeln (Regeln 1–3 im Zusammenspiel)', 
   // XP (bleibt unter 100 → immer Level 1, Max 50, keine Level-Up-Heilung):
   // D0 3 × 10 + round(25 % × 30) = 38; D1 +10 = 48; D2 +10 = 58 (Serie von a am Di gerissen, kein Bonus);
   // D8 +20 = 78.
+  // Durchhänger-Zähler (schadende Tage in Folge) jeweils in Klammern.
   const expected = [
-    { day: D(0), score: 'perfect', hpDelta: 10, hpAfter: 40 }, // Mo: 3 von 3 → 30 + 10
-    { day: D(1), score: 'weak', hpDelta: -1, hpAfter: 39 }, // Di: nur die Wochenquest → Ein Anfang, 40 − 1 (früher missed, −6)
-    { day: D(2), score: 'weak', hpDelta: -1, hpAfter: 38 }, // Mi: 1 von 3 → 39 − 1 (früher −3)
-    { day: D(3), score: 'missed', hpDelta: -6, hpAfter: 32 }, // Do: 1. Tag ohne Quest → 38 − 6
-    { day: D(4), score: 'missed', hpDelta: -6, hpAfter: 26 }, // Fr: 2. Tag → 32 − 6
-    { day: D(5), score: 'missed', hpDelta: -6, hpAfter: 20 }, // Sa: 3. Tag → 26 − 6
-    { day: D(6), score: 'absent', hpDelta: 0, hpAfter: 20 }, // So: 4. Tag → Pause (früher erst ab dem 8.)
-    { day: D(7), score: 'absent', hpDelta: 0, hpAfter: 20 }, // Mo: 5. Tag → Pause
-    { day: D(8), score: 'good', hpDelta: 2, hpAfter: 22 }, // Di: zurück, 2 von 3 → 20 + 2
+    { day: D(0), score: 'perfect', hpDelta: 10, hpAfter: 40 }, // Mo: 3 von 3 → 30 + 10 (0)
+    { day: D(1), score: 'weak', hpDelta: -1, hpAfter: 39 }, // Di: nur die Wochenquest → Ein Anfang, 40 − 1 (1)
+    { day: D(2), score: 'weak', hpDelta: -1, hpAfter: 38 }, // Mi: 1 von 3 → 39 − 1 (2)
+    { day: D(3), score: 'missed', hpDelta: -6, hpAfter: 32 }, // Do: nichts → 38 − 6 (3)
+    { day: D(4), score: 'absent', hpDelta: 0, hpAfter: 32 }, // Fr: Pause – die beiden schwachen Tage zählen mit
+    { day: D(5), score: 'absent', hpDelta: 0, hpAfter: 32 }, // Sa: Pause
+    { day: D(6), score: 'absent', hpDelta: 0, hpAfter: 32 }, // So: Pause
+    { day: D(7), score: 'absent', hpDelta: 0, hpAfter: 32 }, // Mo: Pause
+    { day: D(8), score: 'good', hpDelta: 2, hpAfter: 34 }, // Di: zurück, 2 von 3 → 32 + 2, Pause vorbei (0)
   ]
 
   it('Wertung und HP Tag für Tag', () => {
     const entries = settleThrough(data, D(8))
     expect(view(entries)).toEqual(expected)
     expect(entries.every((entry) => entry.maxHp === 50 && !entry.frozen && entry.defeat === undefined)).toBe(true)
-    // Summe: +10 − 1 − 1 − 6 − 6 − 6 + 0 + 0 + 2 = −8 → 30 − 8 = 22.
-    expect(entries.reduce((sum, entry) => sum + entry.hpDelta, 0)).toBe(-8)
+    // Summe: +10 − 1 − 1 − 6 + 0 + 0 + 0 + 0 + 2 = +4 → 30 + 4 = 34.
+    expect(entries.reduce((sum, entry) => sum + entry.hpDelta, 0)).toBe(4)
   })
 
   it('täglich abgerechnet = alles auf einmal; der alte Eintrag bleibt unverändert', () => {
@@ -135,18 +143,19 @@ describe('Eine Woche nach den milderen Regeln (Regeln 1–3 im Zusammenspiel)', 
     // Zweiter Aufruf: nichts mehr offen.
     expect(settleDays(everyDay, D(10))).toEqual([])
     const state = deriveGameState(everyDay, D(10))
-    expect(state.hp).toMatchObject({ current: 22, max: 50, settledThrough: D(8), defeats: 0 })
+    expect(state.hp).toMatchObject({ current: 34, max: 50, settledThrough: D(8), defeats: 0 })
   })
 
-  it('ein Ruhetag mitten in der Abwesenheit zählt nicht mit und bricht die Zählung nicht', () => {
-    const rest = { ...data, restPeriods: [makeRestPeriod('r', D(4))] }
+  it('ein Ruhetag mitten im Durchhänger zählt nicht mit und bricht ihn nicht', () => {
+    const rest = { ...data, restPeriods: [makeRestPeriod('r', D(3))] }
     expect(view(settleThrough(rest, D(8)))).toEqual([
-      ...expected.slice(0, 4), // bis Do wie oben: 40, 39, 38, 32
-      { day: D(4), score: 'rest', hpDelta: 0, hpAfter: 32 }, // Fr: Ruhetag, zählt nicht
-      { day: D(5), score: 'missed', hpDelta: -6, hpAfter: 26 }, // Sa: 2. Tag → 32 − 6
-      { day: D(6), score: 'missed', hpDelta: -6, hpAfter: 20 }, // So: 3. Tag → 26 − 6
-      { day: D(7), score: 'absent', hpDelta: 0, hpAfter: 20 }, // Mo: 4. Tag → Pause
-      { day: D(8), score: 'good', hpDelta: 2, hpAfter: 22 }, // Di: 20 + 2
+      ...expected.slice(0, 3), // bis Mi wie oben: 40 (0), 39 (1), 38 (2)
+      { day: D(3), score: 'rest', hpDelta: 0, hpAfter: 38 }, // Do: Ruhetag, zählt nicht (2)
+      { day: D(4), score: 'missed', hpDelta: -6, hpAfter: 32 }, // Fr: 38 − 6 (3)
+      { day: D(5), score: 'absent', hpDelta: 0, hpAfter: 32 }, // Sa: Pause
+      { day: D(6), score: 'absent', hpDelta: 0, hpAfter: 32 }, // So: Pause
+      { day: D(7), score: 'absent', hpDelta: 0, hpAfter: 32 }, // Mo: Pause
+      { day: D(8), score: 'good', hpDelta: 2, hpAfter: 34 }, // Di: 32 + 2
     ])
   })
 })
@@ -210,12 +219,12 @@ describe('Regel 1 + 2: „Ein Anfang“ (−1) auch ohne Tagesquest', () => {
   })
 })
 
-describe('Regel 3: Pause ab dem 4. Tag ohne Quest', () => {
+describe('Regel 3: Durchhänger-Pause nach 3 schadenden Tagen', () => {
   const a = daily('a')
 
   it('reine Abwesenheit von vollen HP: 3 × −6 = −18, danach 0 – nie eine Niederlage', () => {
     const entries = settleThrough(hero({ habits: [a] }), D(9))
-    // D0 50 − 6 = 44, D1 38, D2 32, ab D3 (4. Tag) Pause.
+    // D0 50 − 6 = 44 (1), D1 38 (2), D2 32 (3), ab D3 Pause.
     expect(scores(entries)).toEqual(['missed', 'missed', 'missed', ...Array(7).fill('absent')])
     expect(hpAfter(entries)).toEqual([44, 38, 32, 32, 32, 32, 32, 32, 32, 32])
     expect(entries.reduce((sum, entry) => sum + entry.hpDelta, 0)).toBe(-18)
@@ -241,58 +250,78 @@ describe('Regel 3: Pause ab dem 4. Tag ohne Quest', () => {
   })
 
   it('Ruhetage zählen nicht mit und setzen die Zählung nicht zurück', () => {
-    // Ruhetag am D1: D0 1. Tag, D2 2., D3 3., D4 4. → Pause.
+    // Ruhetag am D1: D0 (1), D1 Ruhetag (1), D2 (2), D3 (3), D4 → Pause.
     const early = settleThrough(hero({ habits: [a], restPeriods: [makeRestPeriod('r', D(1))] }), D(4))
     expect(scores(early)).toEqual(['missed', 'rest', 'missed', 'missed', 'absent'])
     expect(hpAfter(early)).toEqual([44, 44, 38, 32, 32])
-    // Ruhetag am D3 (nach dem 3. Tag): D4 ist trotzdem der 4. Tag → Pause, kein neuer Schaden.
+    // Ruhetag am D3 (nach dem 3. schadenden Tag): Der Zähler bleibt 3 → D4 Pause, kein neuer Schaden.
     const late = settleThrough(hero({ habits: [a], restPeriods: [makeRestPeriod('r', D(3))] }), D(4))
     expect(scores(late)).toEqual(['missed', 'missed', 'missed', 'rest', 'absent'])
     expect(hpAfter(late)).toEqual([44, 38, 32, 32, 32])
   })
 
-  it('eine Wochenquest mitten in der Flaute kostet nur −1, beginnt die Zählung aber neu', () => {
+  it('eine Wochenquest in der Pause bleibt Pause (0) – sie beendet den Durchhänger nicht', () => {
     const w = weekly('w')
-    const entries = settleThrough(hero({ habits: [a, w], completions: doneOn({ [D(3)]: [w] }) }), D(8))
+    const entries = settleThrough(hero({ habits: [a, w], completions: doneOn({ [D(3)]: [w] }) }), D(5))
     expect(view(entries)).toEqual([
-      { day: D(0), score: 'missed', hpDelta: -6, hpAfter: 44 }, // 1. Tag
-      { day: D(1), score: 'missed', hpDelta: -6, hpAfter: 38 }, // 2.
-      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 32 }, // 3.
-      { day: D(3), score: 'weak', hpDelta: -1, hpAfter: 31 }, // Wochenquest: Ein Anfang, 32 − 1; Zählung neu
-      { day: D(4), score: 'missed', hpDelta: -6, hpAfter: 25 }, // 1.
-      { day: D(5), score: 'missed', hpDelta: -6, hpAfter: 19 }, // 2.
-      { day: D(6), score: 'missed', hpDelta: -6, hpAfter: 13 }, // 3.
-      { day: D(7), score: 'absent', hpDelta: 0, hpAfter: 13 }, // 4. → Pause
-      { day: D(8), score: 'absent', hpDelta: 0, hpAfter: 13 },
+      { day: D(0), score: 'missed', hpDelta: -6, hpAfter: 44 }, // (1)
+      { day: D(1), score: 'missed', hpDelta: -6, hpAfter: 38 }, // (2)
+      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 32 }, // (3)
+      { day: D(3), score: 'absent', hpDelta: 0, hpAfter: 32 }, // nur die Wochenquest (wäre weak) → Pause, 0
+      { day: D(4), score: 'absent', hpDelta: 0, hpAfter: 32 },
+      { day: D(5), score: 'absent', hpDelta: 0, hpAfter: 32 },
     ])
   })
 
-  it('die Zählung blickt über since zurück (ab Abenteuerbeginn)', () => {
-    // Held seit D0, nichts erledigt. Mit since = D3 ist D3 schon der 4. Tag → sofort Pause.
-    expect(scores(settleThrough(hero({ habits: [a] }, D(3)), D(5)))).toEqual(['absent', 'absent', 'absent'])
-    // Mit since = D2 ist D2 der 3. Tag → noch missed (50 − 6 = 44), D3 Pause.
-    const fromD2 = settleThrough(hero({ habits: [a] }, D(2)), D(3))
-    expect(view(fromD2)).toEqual([
-      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 44 },
-      { day: D(3), score: 'absent', hpDelta: 0, hpAfter: 44 },
+  it('eine Wochenquest pro Woche, sonst nichts: −1, −6, −6 (= −13), dann Pause bis zum nächsten guten Tag', () => {
+    const w = weekly('w')
+    // Jeden Montag (D0, D7, D14) nur die Wochenquest; am D15 endlich die Tagesquest.
+    const data = hero({ habits: [a, w], completions: doneOn({ [D(0)]: [w], [D(7)]: [w], [D(14)]: [w], [D(15)]: [a] }) })
+    const entries = settleThrough(data, D(16))
+    // D0 weak 50 − 1 = 49 (1) · D1 missed 43 (2) · D2 missed 37 (3) · D3–D14 Pause (auch die Montage D7, D14 mit der
+    // Wochenquest) · D15 perfekt 37 + 10 = 47 (0) · D16 missed 41 (1).
+    expect(scores(entries)).toEqual(['weak', 'missed', 'missed', ...Array(12).fill('absent'), 'perfect', 'missed'])
+    expect(hpAfter(entries)).toEqual([49, 43, 37, ...Array(12).fill(37), 47, 41])
+    expect(entries.slice(0, 15).reduce((sum, entry) => sum + entry.hpDelta, 0)).toBe(-13) // −1 − 6 − 6
+    // Nichts zu tun wäre nicht besser: −18 statt −13.
+    const idle = settleThrough(hero({ habits: [a, w] }), D(14))
+    expect(idle.reduce((sum, entry) => sum + entry.hpDelta, 0)).toBe(-18)
+  })
+
+  it('der Zähler beginnt mit der Abrechnung: Tage vor since zählen nicht', () => {
+    // Held seit D0, nichts erledigt, Lebenspunkte erst ab D3: Der Zähler beginnt bei 0 → D3 44 (1), D4 38 (2),
+    // D5 32 (3), D6 Pause.
+    const fromD3 = settleThrough(hero({ habits: [a] }, D(3)), D(6))
+    expect(view(fromD3)).toEqual([
+      { day: D(3), score: 'missed', hpDelta: -6, hpAfter: 44 },
+      { day: D(4), score: 'missed', hpDelta: -6, hpAfter: 38 },
+      { day: D(5), score: 'missed', hpDelta: -6, hpAfter: 32 },
+      { day: D(6), score: 'absent', hpDelta: 0, hpAfter: 32 },
     ])
   })
 
-  it('Vorschau für gestern: am 3. Tag noch −6, am 4. Tag keine Drohung mehr', () => {
-    const data = hero({ habits: [a] })
-    // Heute D3: abgerechnet D0, D1 (44, 38); gestern D2 = 3. Tag.
+  it('Vorschau für gestern: am 3. schadenden Tag noch −6, dann „Pause“ ohne Drohung (und ohne Streak-Schutz)', () => {
+    // Ein am D3 gekaufter Streak-Schutz kann D2 nicht retten (Kauftag danach) – und D3 braucht ihn nicht (Pause).
+    const data = hero({ habits: [a], purchases: [makeItemPurchase('f', 'streakFreeze', D(3))] })
+    // Heute D3: abgerechnet D0, D1 (44, 38; Zähler 2); gestern D2 wäre der 3. schadende Tag.
     const atD3 = withEntries(data, settleDays(data, D(3)))
     expect(hpAfter(atD3.hpLedger ?? [])).toEqual([44, 38])
     expect(deriveGameState(atD3, D(3)).hp.yesterday).toMatchObject({ day: D(2), score: 'missed', threatenedDelta: -6 })
-    // Heute D4: abgerechnet bis D2 (32); gestern D3 = 4. Tag → absent, 0.
+    // Heute D4: abgerechnet bis D2 (32, Zähler 3); gestern D3 → Pause (absent), keine Drohung.
     const atD4 = withEntries(atD3, settleDays(atD3, D(4)))
     expect(hpAfter(atD4.hpLedger ?? [])).toEqual([44, 38, 32])
-    expect(deriveGameState(atD4, D(4)).hp.yesterday).toMatchObject({ day: D(3), score: 'absent', threatenedDelta: 0 })
+    const state = deriveGameState(atD4, D(4))
+    expect(state.hp.yesterday).toEqual({ day: D(3), score: 'absent', threatenedDelta: 0, savedByFreeze: false })
+    expect(state.inventory.streakFreezes).toBe(1)
+    // Abgerechnet (am D5) bleibt es dabei: Pause, 32 HP, der Streak-Schutz bleibt im Vorrat.
+    const atD5 = withEntries(atD4, settleDays(atD4, D(5)))
+    expect(atD5.hpLedger?.at(-1)).toMatchObject({ day: D(3), score: 'absent', frozen: false, hpAfter: 32 })
+    expect(deriveGameState(atD5, D(5)).inventory.streakFreezes).toBe(1)
   })
 })
 
 describe('Regel 4: Niederlage kostet höchstens 100 Gold', () => {
-  it('Guthaben 2.000 → 100 Gold (früher 15 % = 300); danach volle HP und nach 3 Tagen Pause', () => {
+  it('Guthaben 2.000 → 100 Gold (früher 15 % = 300); danach volle HP und nach 3 schadenden Tagen Pause', () => {
     const a = daily('a')
     // 50 epische Nebenquests am D(-1): 50 × 80 = 4.000 XP → Level 6 (2.821 ≤ 4.000 < 4.291), Max-HP 75.
     // Gold aus XP: floor(4.000 × 0,5) = 2.000.
@@ -327,10 +356,10 @@ describe('Regel 4: Niederlage kostet höchstens 100 Gold', () => {
 
     const entries = settleThrough(data, D(3))
     expect(view(entries)).toEqual([
-      { day: D(0), score: 'missed', hpDelta: -6, hpAfter: 6 }, // 1. Tag: 12 − 6
-      { day: D(1), score: 'missed', hpDelta: -6, hpAfter: 75 }, // 2. Tag: 6 − 6 = 0 → Niederlage, volle 75
-      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 69 }, // 3. Tag: 75 − 6
-      { day: D(3), score: 'absent', hpDelta: 0, hpAfter: 69 }, // 4. Tag → Pause
+      { day: D(0), score: 'missed', hpDelta: -6, hpAfter: 6 }, // 12 − 6 (Zähler 1)
+      { day: D(1), score: 'missed', hpDelta: -6, hpAfter: 75 }, // 6 − 6 = 0 → Niederlage, volle 75 (2)
+      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 69 }, // 75 − 6 (3) – die Niederlage beendet den Durchhänger nicht
+      { day: D(3), score: 'absent', hpDelta: 0, hpAfter: 69 }, // Pause
     ])
     // min(100, floor(15 % × 2.000) = 300) = 100.
     expect(entries[1].defeat).toEqual({ goldLost: 100 })
@@ -365,9 +394,9 @@ describe('Regel 4: Niederlage kostet höchstens 100 Gold', () => {
 
     const entries = settleThrough(data, D(2))
     expect(view(entries)).toEqual([
-      { day: D(0), score: 'missed', hpDelta: -6, hpAfter: 1 }, // 1. Tag: 7 − 6
-      { day: D(1), score: 'weak', hpDelta: -1, hpAfter: 65 }, // nur die Wochenquest: 1 − 1 = 0 → Niederlage, volle 65
-      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 59 }, // Zählung nach D1 neu: 1. Tag, 65 − 6
+      { day: D(0), score: 'missed', hpDelta: -6, hpAfter: 1 }, // 7 − 6 (Zähler 1)
+      { day: D(1), score: 'weak', hpDelta: -1, hpAfter: 65 }, // nur die Wochenquest: 1 − 1 = 0 → Niederlage, volle 65 (2)
+      { day: D(2), score: 'missed', hpDelta: -6, hpAfter: 59 }, // 65 − 6 (3)
     ])
     // min(100, floor(15 % × 300) = 45) = 45.
     expect(entries[1].defeat).toEqual({ goldLost: 45 })

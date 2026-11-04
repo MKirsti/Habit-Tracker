@@ -26,10 +26,13 @@ export const SCORE_LABELS: Record<DayScore, string> = {
   missed: 'Nichts erledigt',
   rest: 'Ruhetag',
   none: 'Keine Tagesquests',
-  absent: 'Längere Pause',
+  absent: 'Pause',
 }
 
-/** Wertungen, bei denen die Anzahl erledigter Tagesquests etwas aussagt. */
+/**
+ * Wertungen, bei denen die Anzahl erledigter Tagesquests etwas aussagt. Ein Tag in der Durchhänger-Pause (`absent`)
+ * zeigt sie nur, wenn etwas erledigt war – ein ganz leerer Pausentag bleibt einfach „Pause“.
+ */
 const COUNTED_SCORES: ReadonlySet<DayScore> = new Set(['perfect', 'good', 'weak', 'missed'])
 
 /** Kurzer Tag für Tabellen: "Di, 3. Nov." */
@@ -41,13 +44,15 @@ export function shortDayLabel(day: DayKey): string {
 /**
  * Was an einem Tag los war – für Tooltip und Tabelle (ohne Datum), z. B.
  * "Perfekter Tag · 4 von 4 Tagesquests · +85 XP", "Ein Anfang · 0 von 3 Tagesquests, dafür 1 andere Quest · +10 XP"
- * (nur eine Wochenquest) oder "Heute · 1 von 3 Tagesquests · läuft noch".
+ * (nur eine Wochenquest), "Pause · 1 von 3 Tagesquests · +10 XP · der Schaden ruht" (Durchhänger-Pause) oder
+ * "Heute · 1 von 3 Tagesquests · läuft noch".
  */
 export function dayStatDetails(stat: DayStat, today: DayKey): string {
   const isToday = stat.day === today
   // Heute ist noch nichts entschieden – außer, er ist schon perfekt.
   const parts: string[] = [isToday && stat.score !== 'perfect' && stat.score !== 'rest' ? 'Heute' : SCORE_LABELS[stat.score]]
-  if (COUNTED_SCORES.has(stat.score) && stat.required > 0) {
+  const counted = COUNTED_SCORES.has(stat.score) || (stat.score === 'absent' && stat.done > 0)
+  if (counted && stat.required > 0) {
     const daily = `${formatNumber(stat.requiredDone)} von ${plural(stat.required, 'Tagesquest', 'Tagesquests')}`
     // Keine Tagesquest, aber eine andere Quest (etwa eine Wochenquest) – deshalb „Ein Anfang“ statt „Nichts erledigt“.
     const others = stat.requiredDone === 0 && stat.done > 0 ? `, dafür ${plural(stat.done, 'andere Quest', 'andere Quests')}` : ''
@@ -57,6 +62,7 @@ export function dayStatDetails(stat: DayStat, today: DayKey): string {
   }
   if (stat.xp > 0) parts.push(`+${formatNumber(stat.xp)} XP`)
   if (stat.frozen) parts.push('❄️ vom Streak-Schutz aufgefangen')
+  if (stat.score === 'absent' && !isToday) parts.push('der Schaden ruht')
   if (stat.defeat) parts.push('Niederlage – und wieder aufgestanden')
   if (isToday && stat.score !== 'perfect') parts.push('läuft noch')
   else if (stat.open && !isToday && stat.score !== 'perfect' && stat.score !== 'rest' && stat.score !== 'none') {

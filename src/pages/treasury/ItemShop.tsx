@@ -39,7 +39,7 @@ function itemPoints(itemId: ItemId): { icon: ReactNode; text: string }[] {
     return [
       {
         icon: <WandSparkles />,
-        text: 'Setzt sich von selbst ein: Schaffst du an einem Tag weniger als die Hälfte deiner Tagesquests, fängt er ihn bei der Abrechnung auf.',
+        text: 'Setzt sich von selbst ein: Schaffst du an einem Tag weniger als die Hälfte deiner Tagesquests, fängt er ihn bei der Abrechnung auf. In einer Pause bleibt er im Beutel – da kostet ein Tag ohnehin keine HP.',
       },
       {
         icon: <CalendarCheck />,

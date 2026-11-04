@@ -9,8 +9,11 @@
  * Am Tag 16 bringen 20 epische Nebenquests (+1.600 XP) genau einen Level-Aufstieg (Level 7 → Max-HP 80).
  * Quests: A, B, C täglich (leicht), W 2× pro Woche (leicht). Vor Beginn steht ein Ledger-Eintrag mit 18 HP.
  *
- * Regeln (mild): +10 / +2 / −1 / −6 je Wertung; ein Tag nur mit der Wochenquest ist `weak` (nicht `missed`); ab dem
- * 4. Tag in Folge ohne jede Erledigung `absent` (0); eine Niederlage kostet 15 % des Guthabens, höchstens 100 Gold.
+ * Regeln (mild): +10 / +2 / −1 / −6 je Wertung; ein Tag nur mit der Wochenquest ist `weak` (nicht `missed`);
+ * Durchhänger-Pause: nach 3 schadenden Tagen in Folge (`weak`/`missed` ohne Streak-Schutz; Ruhetage und aufgefangene
+ * Tage zählen nicht und brechen nichts) ist jeder weitere schwache oder verpasste Tag `absent` („Pause“, 0 HP, kein
+ * Streak-Schutz) – bis zum nächsten guten oder perfekten Tag; eine Niederlage kostet 15 % des Guthabens, höchstens
+ * 100 Gold. In den Kommentaren steht der Durchhänger-Zähler in Klammern.
  */
 import { describe, expect, it } from 'vitest'
 import { BALANCING, DEFAULT_SETTINGS } from './balancing'
@@ -49,9 +52,11 @@ const PLAN: Record<number, Habit[]> = {
   2: [A],
   3: [W],
   4: [A],
-  8: [W],
-  12: [A],
+  7: [W],
+  8: [A, B],
+  12: [A, B],
   15: [A, B, C],
+  17: [A, B],
   18: [A],
   33: [A, B, C],
 }
@@ -63,14 +68,14 @@ const COMPLETIONS: Completion[] = Object.entries(PLAN).flatMap(([n, habits]) =>
  * Vor Beginn hat sich Mira etwas gegönnt – so liegt ihr Guthaben bei der Niederlage (Tag 14) zwischen 667 und 816
  * Gold: 15 % davon sind mehr als 100 (die Grenze greift), nach dem Streak-Schutz vom Tag 18 (−150) aber weniger.
  */
-const TREAT_PRICE = 775
+const TREAT_PRICE = 875
 const TREAT = makePurchase({ id: 'treat', title: 'Ein neues Buch', price: TREAT_PRICE, day: D(-1) })
 
 const PURCHASES: Purchase[] = [
   TREAT,
   makeItemPurchase('freeze-1', 'streakFreeze', D(4)),
-  makeItemPurchase('potion-1', 'healingPotion', D(8)),
   makeItemPurchase('freeze-2', 'streakFreeze', D(18)),
+  makeItemPurchase('potion-1', 'healingPotion', D(27)),
 ]
 
 const SIDE_QUESTS = [
@@ -116,43 +121,43 @@ function playDaily(from: DayKey, to: DayKey, ledger: HpLedgerEntry[] = [PRIOR]):
 
 type Row = [day: number, score: DayScore, frozen: boolean, hpDelta: number, hpAfter: number, maxHp: number, penalties: boolean]
 
-/** Von Hand gerechnet (siehe Kommentare). */
+/** Von Hand gerechnet (siehe Kommentare; der Durchhänger-Zähler in Klammern). */
 const EXPECTED: Row[] = [
-  [0, 'perfect', false, 10, 28, 75, true], // 18 + 10
-  [1, 'good', false, 2, 30, 75, true], // 2 von 3 ≥ 50 %
-  [2, 'weak', false, -1, 29, 75, true], // 1 von 3
-  [3, 'weak', false, -1, 28, 75, true], // nur die Wochenquest: keine Tagesquest, aber anwesend → weak statt missed
-  [4, 'weak', true, 0, 28, 75, true], // am selben Tag gekaufter Streak-Schutz fängt auf
-  [5, 'missed', false, -6, 22, 75, true], // Tag 1 ohne Erledigung (kein Schutz mehr)
-  [6, 'missed', false, -6, 16, 75, true], // Tag 2
-  [7, 'missed', false, -6, 10, 75, true], // Tag 3 – ein 4. Tag wäre abwesend
-  [8, 'weak', false, 19, 29, 75, true], // Wochenquest (−1) + Heiltrank 20
-  [9, 'missed', false, -6, 23, 75, true],
-  [10, 'missed', false, -6, 17, 75, true],
-  [11, 'missed', false, -6, 11, 75, true],
-  [12, 'weak', false, -1, 10, 75, true], // 1 von 3
-  [13, 'missed', false, -6, 4, 75, true],
-  [14, 'missed', false, -4, 75, 75, true], // 4 − 6 → 0: Niederlage, danach wieder voll (hpDelta = −Start)
-  [15, 'perfect', false, 0, 75, 75, true], // schon voll
-  [16, 'missed', false, 5, 80, 80, true], // Level-Up heilt voll – trotz verpasstem Tag
-  [17, 'missed', false, 0, 80, 80, false], // Sanfter Modus (abgerechnet am Tag 19)
-  [18, 'weak', true, 0, 80, 80, false], // Streak-Schutz wirkt auch im Sanften Modus
+  [0, 'perfect', false, 10, 28, 75, true], // 18 + 10 (0; der Eintrag davor war gut)
+  [1, 'good', false, 2, 30, 75, true], // 2 von 3 ≥ 50 % (0)
+  [2, 'weak', false, -1, 29, 75, true], // 1 von 3 (1)
+  [3, 'weak', false, -1, 28, 75, true], // nur die Wochenquest: keine Tagesquest, aber etwas getan → weak statt missed (2)
+  [4, 'weak', true, 0, 28, 75, true], // am selben Tag gekaufter Streak-Schutz fängt auf (bleibt 2)
+  [5, 'missed', false, -6, 22, 75, true], // kein Schutz mehr (3)
+  [6, 'absent', false, 0, 22, 75, true], // Durchhänger-Pause: 0 statt −6
+  [7, 'absent', false, 0, 22, 75, true], // nur die Wochenquest – in der Pause bleibt es Pause (0 statt −1)
+  [8, 'good', false, 2, 24, 75, true], // 2 von 3: die Pause ist vorbei (0)
+  [9, 'missed', false, -6, 18, 75, true], // (1)
+  [10, 'missed', false, -6, 12, 75, true], // (2)
+  [11, 'missed', false, -6, 6, 75, true], // (3)
+  [12, 'good', false, 2, 8, 75, true], // 2 von 3 (0) – ohne ihn wäre Tag 13/14 Pause
+  [13, 'missed', false, -6, 2, 75, true], // (1)
+  [14, 'missed', false, -2, 75, 75, true], // 2 − 6 → 0: Niederlage, danach wieder voll (hpDelta = −Start) (2)
+  [15, 'perfect', false, 0, 75, 75, true], // schon voll (0)
+  [16, 'missed', false, 5, 80, 80, true], // Level-Up heilt voll – trotz verpasstem Tag (1)
+  [17, 'good', false, 0, 80, 80, false], // Sanfter Modus (abgerechnet am Tag 19): Wertung ja, HP nicht (0)
+  [18, 'weak', true, 0, 80, 80, false], // Streak-Schutz wirkt auch im Sanften Modus (bleibt 0)
   [19, 'rest', false, 0, 80, 80, true], // wieder an: Start mit vollen HP; Urlaub
   [20, 'rest', false, 0, 80, 80, true],
   [21, 'rest', false, 0, 80, 80, true],
   [22, 'rest', false, 0, 80, 80, true],
-  // Zehn Tage Abwesenheit (Urlaubstage zählen nicht mit): Tage 1–3 verpasst (3 × −6 = −18), ab dem 4. „absent“.
-  [23, 'missed', false, -6, 74, 80, true],
-  [24, 'missed', false, -6, 68, 80, true],
-  [25, 'missed', false, -6, 62, 80, true],
+  // Zehn Tage Abwesenheit: 3 schadende Tage (3 × −6 = −18), dann Pause.
+  [23, 'missed', false, -6, 74, 80, true], // (1)
+  [24, 'missed', false, -6, 68, 80, true], // (2)
+  [25, 'missed', false, -6, 62, 80, true], // (3)
   [26, 'absent', false, 0, 62, 80, true],
-  [27, 'absent', false, 0, 62, 80, true],
-  [28, 'absent', false, 0, 62, 80, true],
-  [29, 'absent', false, 0, 62, 80, true],
-  [30, 'absent', false, 0, 62, 80, true],
-  [31, 'absent', false, 0, 62, 80, true],
-  [32, 'absent', false, 0, 62, 80, true],
-  [33, 'perfect', false, 10, 72, 80, true], // zurück: Perfekter Tag
+  [27, 'absent', false, 18, 80, 80, true], // Heiltrank in der Pause: 62 + 20 = 82, begrenzt auf 80
+  [28, 'absent', false, 0, 80, 80, true],
+  [29, 'absent', false, 0, 80, 80, true],
+  [30, 'absent', false, 0, 80, 80, true],
+  [31, 'absent', false, 0, 80, 80, true],
+  [32, 'absent', false, 0, 80, 80, true],
+  [33, 'perfect', false, 0, 80, 80, true], // zurück: Perfekter Tag, schon voll (0)
 ]
 
 const row = (entry: HpLedgerEntry): Row => [
@@ -204,13 +209,18 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
     expect(day5.hp.yesterday).toStrictEqual({ day: D(4), score: 'weak', threatenedDelta: 0, savedByFreeze: true })
     expect(day5.inventory.streakFreezes).toBe(1) // verbraucht ist er erst mit der Abrechnung
 
-    // Tag 6: gestern verpasst, kein Schutz mehr übrig → −6 drohen.
+    // Tag 6: gestern verpasst, kein Schutz mehr übrig → −6 drohen (Zähler davor 2).
     const day6 = at(D(6))
     expect(day6.inventory.streakFreezes).toBe(0)
     expect(day6.hp.yesterday).toStrictEqual({ day: D(5), score: 'missed', threatenedDelta: -6, savedByFreeze: false })
 
-    // Tag 8: Heiltrank wirkt sofort im abgeleiteten Zustand (abgerechnet bis Tag 6: 16 HP + 20).
-    expect(at(D(8)).hp.current).toBe(36)
+    // Tag 7: abgerechnet bis Tag 5 (22 HP, Zähler 3) – die Vorschau für gestern zeigt die Pause, nichts droht.
+    const day7 = at(D(7))
+    expect(day7.hp).toMatchObject({ current: 22, settledThrough: D(5) })
+    expect(day7.hp.yesterday).toStrictEqual({ day: D(6), score: 'absent', threatenedDelta: 0, savedByFreeze: false })
+
+    // Tag 10: gestern (Tag 9) wieder −6 – der gute Tag 8 hat die Pause beendet.
+    expect(at(D(10)).hp.yesterday).toStrictEqual({ day: D(9), score: 'missed', threatenedDelta: -6, savedByFreeze: false })
 
     // Tag 16: Niederlage abgerechnet; das Level ist heute höher als am Tag 14 → sofort volle (neue) Max-HP.
     const day16 = at(D(16))
@@ -218,7 +228,7 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
     expect(day16.hp).toMatchObject({ current: 80, max: 80, defeats: 1, lastDefeat: { day: D(14), goldLost } })
     expect(day16.gold.lostToDefeats).toBe(goldLost)
     expect(day16.gold.balance).toBe(day16.gold.earned - day16.gold.spent - goldLost)
-    expect(day16.gold.spent).toBe(TREAT_PRICE + 150 + 80)
+    expect(day16.gold.spent).toBe(TREAT_PRICE + 150)
     // „Unbeugsam“: Tag 15 war nach der Niederlage perfekt.
     expect(day16.achievements.find((a) => a.definition.id === 'indomitable')?.unlocked).toBe(true)
 
@@ -228,12 +238,15 @@ describe('Review 2b – die Geschichte von Mira (von Hand gerechnetes Ledger)', 
     expect(day19.hp.yesterday).toStrictEqual({ day: D(18), score: 'weak', threatenedDelta: 0, savedByFreeze: true })
     expect(day19.restToday).toBe(true)
 
+    // Tag 28: Heiltrank vom Tag 27 wirkt sofort im abgeleiteten Zustand (abgerechnet bis Tag 26: 62 + 20 → 80).
+    expect(at(D(28)).hp).toMatchObject({ current: 80, max: 80, settledThrough: D(26) })
+
     // Ende: alles abgerechnet bis Tag 33.
     const end = at(D(35))
-    expect(end.hp).toMatchObject({ enabled: true, current: 72, max: 80, settledThrough: D(33), defeats: 1 })
+    expect(end.hp).toMatchObject({ enabled: true, current: 80, max: 80, settledThrough: D(33), defeats: 1 })
     expect(end.inventory.streakFreezes).toBe(0)
     expect(end.gold.lostToDefeats).toBe(goldLost)
-    expect(end.gold.spent).toBe(TREAT_PRICE + 150 + 80 + 150)
+    expect(end.gold.spent).toBe(TREAT_PRICE + 150 + 150 + 80)
   })
 
   it('unregelmäßig geöffnet (Tag 3, 10, 18): bis Tag 16 dieselben Wertungen und HP wie täglich', () => {
@@ -402,8 +415,9 @@ describe('Review 2b – Lücke zwischen Ledger und Beginn der Abrechnung (z. B. 
 
 describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdaten)', () => {
   /**
-   * Bewusst einfach und langsam: Wertung über `getDayState`, Abwesenheit durch Zurückzählen, Streak-Schutz durch
-   * Zählen, Level und Gold über `deriveGameState` am Ende jedes Tages – keine Bausteine aus `hpRules.ts`.
+   * Bewusst einfach und langsam: Wertung über `getDayState`, Durchhänger-Pause durch Zurückblättern im Ledger,
+   * Streak-Schutz durch Zählen, Level und Gold über `deriveGameState` am Ende jedes Tages – keine Bausteine aus
+   * `hpRules.ts`.
    */
   function referenceSettle(data: GameData, today: DayKey): HpLedgerEntry[] {
     const since = data.settings.penalties?.since
@@ -417,26 +431,33 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
     const activeDays = new Set(
       data.completions.filter((c) => habitIds.has(c.habitId) && c.value >= c.target && c.day <= today).map((c) => c.day),
     )
-    const start = data.profile?.createdDay ?? from
     const enabled = data.settings.penalties?.enabled !== false
     const entries: HpLedgerEntry[] = []
     let previous = last
     for (const day of dayRange(from, to)) {
       const state = getDayState({ ...data, completions: data.completions.filter((c) => c.day <= today) }, day)
-      let inactive = 0
-      for (let d = day; d >= start; d = addDays(d, -1)) {
-        if (activeDays.has(d)) break
-        if (!rest.has(d)) inactive++
+      // Durchhänger: von hinten durch alle bisherigen Einträge (Ledger und schon gerechnete Tage) – schadende Tage
+      // (weak/missed ohne Schutz) zählen, Ruhe-, „none“- und aufgefangene Tage werden übersprungen; ein guter oder
+      // perfekter Tag beendet die Suche, ein „absent“ heißt: Die Pause läuft schon.
+      let damaging = 0
+      let paused = false
+      const earlier = [...ledger, ...entries]
+      for (let i = earlier.length - 1; i >= 0 && !paused; i--) {
+        const { score: earlierScore, frozen: earlierFrozen } = earlier[i]
+        if (earlierScore === 'perfect' || earlierScore === 'good') break
+        if (earlierScore === 'absent') paused = true
+        else if ((earlierScore === 'weak' || earlierScore === 'missed') && !earlierFrozen) damaging++
       }
       let score: DayScore
       if (rest.has(day)) score = 'rest'
       else if (state.requiredCount === 0) score = 'none'
-      else if (inactive >= 4) score = 'absent' // der 4. Tag in Folge ohne jede Erledigung
       else if (state.requiredDone === state.requiredCount) score = 'perfect'
       else if (state.requiredDone * 2 >= state.requiredCount) score = 'good'
       else if (state.requiredDone > 0) score = 'weak'
       else if (activeDays.has(day)) score = 'weak' // keine Tagesquest, aber eine andere Quest erledigt
       else score = 'missed'
+      // Pause: schon 3 schadende Tage in Folge davor → aus weak/missed wird absent (vor dem Streak-Schutz).
+      if ((paused || damaging >= 3) && (score === 'weak' || score === 'missed')) score = 'absent'
       const used = [...ledger, ...entries].filter((entry) => entry.frozen).length
       const bought = (data.purchases ?? []).filter((p) => p.itemId === 'streakFreeze' && p.day <= day).length
       const frozen = (score === 'weak' || score === 'missed') && bought - used > 0
@@ -487,8 +508,9 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
     for (const [i, day] of dayRange(START, today).entries()) {
       if (rnd() < 0.15) {
         chance = rnd() < 0.3 ? 0 : rnd()
-        // Durststrecke: nur an jedem 4. Tag eine einzige Quest – nie abwesend, so kommt es auch mit den milden Regeln
-        // (−1 für schwache Tage, ab dem 4. Tag ohne Erledigung kein Schaden) zu Niederlagen.
+        // Durststrecke: nur an jedem 4. Tag eine einzige Quest – bei 1–2 Tagesquests ein guter Tag, der die
+        // Durchhänger-Pause beendet (danach wieder 3 × −6), bei mehr ein schwacher, der sie nicht beendet. So kommt es
+        // auch mit den milden Regeln zu Niederlagen und zu langen Pausen.
         slump = chance === 0 && rnd() < 0.6
       }
       if (slump) {
@@ -505,8 +527,8 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
     }
     const restPeriods = rnd() < 0.6 ? [makeRestPeriod('r', D(5 + Math.floor(rnd() * 10)), D(15 + Math.floor(rnd() * 5)))] : []
     const sinceOffset = Math.floor(rnd() * 6)
-    // Oft schon angeschlagen – mit den milden Regeln (−1 für schwache Tage, ab dem 4. Tag abwesend) kommt es sonst
-    // kaum zu Niederlagen.
+    // Oft schon angeschlagen – mit den milden Regeln (−1 für schwache Tage, höchstens 3 schadende Tage je
+    // Durchhänger) kommt es sonst kaum zu Niederlagen.
     const ledger = rnd() < 0.6 ? [makeLedgerEntry(D(sinceOffset), { score: 'good', hpAfter: 1 + Math.floor(rnd() * 10) })] : []
     const data = makeGameData({
       profile: { name: 'Mira', avatar: '🧙', createdDay: START },
@@ -533,6 +555,7 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
     let capped = 0
     let frozen = 0
     let absent = 0
+    let pauseEnded = 0
     let weakWithoutDaily = 0
     for (let seed = 1; seed <= 60; seed++) {
       const { data, today } = randomData(seed)
@@ -542,14 +565,18 @@ describe('Review 2b – unabhängiges Referenzmodell der Abrechnung (Zufallsdate
       capped += actual.filter((entry) => entry.defeat?.goldLost === 100).length
       frozen += actual.filter((entry) => entry.frozen).length
       absent += actual.filter((entry) => entry.score === 'absent').length
+      pauseEnded += actual.filter(
+        (entry, i) => (entry.score === 'good' || entry.score === 'perfect') && actual[i - 1]?.score === 'absent',
+      ).length
       weakWithoutDaily += actual.filter((entry) => entry.score === 'weak' && getDayState(data, entry.day).requiredDone === 0).length
     }
-    // Die Zufallsdaten decken auch Niederlagen (mit und ohne Obergrenze), Streak-Schutz, Abwesenheit und schwache
-    // Tage ohne erledigte Tagesquest (nur eine andere Quest) ab.
+    // Die Zufallsdaten decken auch Niederlagen (mit und ohne Obergrenze), Streak-Schutz, Durchhänger-Pausen (auch
+    // durch einen guten Tag beendete) und schwache Tage ohne erledigte Tagesquest (nur eine andere Quest) ab.
     expect(defeats).toBeGreaterThan(capped)
     expect(capped).toBeGreaterThan(0)
     expect(frozen).toBeGreaterThan(0)
     expect(absent).toBeGreaterThan(0)
+    expect(pauseEnded).toBeGreaterThan(0)
     expect(weakWithoutDaily).toBeGreaterThan(0)
   })
 })

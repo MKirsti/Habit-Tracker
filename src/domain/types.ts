@@ -257,8 +257,12 @@ export interface GameData {
  * Wertung eines Spieltags (eine Wertung pro Tag, egal wie viele Quests/Kampagnen):
  * - perfect: Perfekter Tag · good: ≥ 50 % der Tagesquests · weak: > 0 und < 50 % (oder keine, aber eine andere
  *   Quest erledigt, z. B. eine Wochenquest) · missed: gar keine Quest erledigt
- * - rest: Ruhetag/Urlaub · none: keine Tagesquest fällig (nur Wochenquests o. Ä.) · absent: Abwesenheit
- *   (ab dem 4. Tag in Folge ohne jede erledigte Quest – kein weiterer Schaden)
+ * - rest: Ruhetag/Urlaub · none: keine Tagesquest fällig (nur Wochenquests o. Ä.)
+ * - absent: „Pause“ (Durchhänger-Pause) – ein Tag, der `weak` oder `missed` wäre, nachdem schon
+ *   `BALANCING.slumpPauseAfterDays` (3) schadende Tage in Folge (`weak`/`missed` ohne Streak-Schutz) davor liegen:
+ *   0 HP, kein Streak-Schutz-Verbrauch; endet mit dem nächsten guten oder perfekten Tag. Ältere Einträge stammen
+ *   noch aus der früheren Abwesenheits-Regel (ab dem 4. Tag ohne jede erledigte Quest) – sie bleiben, wie sie sind,
+ *   und gelten ebenfalls als laufende Pause.
  */
 export type DayScore = 'perfect' | 'good' | 'weak' | 'missed' | 'rest' | 'none' | 'absent'
 

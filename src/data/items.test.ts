@@ -78,38 +78,44 @@ async function earnGold(epicQuests: number, day: DayKey = START): Promise<void> 
 }
 
 /** HP des angeschlagenen Helden (`woundedHero`), von Hand gerechnet. */
-const WOUNDED_HP = 29
+const WOUNDED_HP = 34
 
 /**
  * Angeschlagener Held: sechs epische Nebenquests am START (480 XP → Level 3, 60 HP; das Level-Up heilt am START
- * voll), sonst nur am 4. Oktober eine Wochenquest (Nebenquests zählen nicht als erledigte Quest). Am 9. Oktober
- * abgerechnet bis zum 7. Oktober:
- * - 1. Okt.: verpasst (1. Tag ohne Quest), aber Level-Up → 60
- * - 2./3. Okt.: verpasst (2./3. Tag ohne Quest) → 60 − 6 − 6 = 48
- * - 4. Okt.: nur die Wochenquest → „Ein Anfang“ statt verpasst → 48 − 1 = 47; die Zählung der Abwesenheit beginnt neu
- *   (ohne sie wäre der 4. Oktober schon der 4. Tag ohne Quest: Pause, kein Schaden mehr)
- * - 5.–7. Okt.: verpasst (1.–3. Tag ohne Quest) → 47 − 3 × 6 = 29
- * Das Gold (≥ 240) reicht für mehrere Gegenstände; neue XP gäbe es heute nicht (ein Level-Up würde voll heilen).
+ * voll), „Lesen“ am 1. und 6. Oktober, am 5. Oktober nur eine Wochenquest (Nebenquests zählen nicht als erledigte
+ * Quest). Höchstens drei Tage mit Schaden am Stück – danach ruht der Schaden bis zum nächsten guten Tag. Am
+ * 11. Oktober abgerechnet bis zum 9. Oktober:
+ * - 1. Okt.: perfekt, Level-Up → 60
+ * - 2.–4. Okt.: verpasst (1.–3. Tag mit Schaden) → 60 − 3 × 6 = 42
+ * - 5. Okt.: nur die Wochenquest – wäre „Ein Anfang“, nach drei Tagen mit Schaden aber Pause → bleibt 42
+ * - 6. Okt.: perfekt, beendet die Pause → 42 + 10 = 52
+ * - 7.–9. Okt.: verpasst (1.–3. Tag mit Schaden) → 52 − 3 × 6 = 34
+ * Das Gold (≥ 240) reicht für mehrere Gegenstände; neue XP gäbe es heute nicht (ein Level-Up würde voll heilen –
+ * mit gut 500 XP bleibt der Held auf Level 3).
  */
 async function woundedHero(): Promise<DayKey> {
-  await hero()
+  const reading = await hero()
   await earnGold(6)
   const weekly = await createHabit(
     { title: 'Laufen', icon: '🏃', attribute: 'vitality', difficulty: 'easy', schedule: { type: 'weekly', times: 1 } },
     START,
     database,
   )
-  await toggleCompletion(weekly.id, '2026-10-04', database)
-  const today = '2026-10-09'
+  await toggleCompletion(reading.id, '2026-10-01', database)
+  await toggleCompletion(weekly.id, '2026-10-05', database)
+  await toggleCompletion(reading.id, '2026-10-06', database)
+  const today = '2026-10-11'
   const entries = await settleHpDays(today, database)
   expect(entries.map((entry) => [entry.day, entry.score, entry.hpAfter])).toEqual([
-    ['2026-10-01', 'missed', 60],
+    ['2026-10-01', 'perfect', 60],
     ['2026-10-02', 'missed', 54],
     ['2026-10-03', 'missed', 48],
-    ['2026-10-04', 'weak', 47],
-    ['2026-10-05', 'missed', 41],
-    ['2026-10-06', 'missed', 35],
-    ['2026-10-07', 'missed', WOUNDED_HP],
+    ['2026-10-04', 'missed', 42],
+    ['2026-10-05', 'absent', 42],
+    ['2026-10-06', 'perfect', 52],
+    ['2026-10-07', 'missed', 46],
+    ['2026-10-08', 'missed', 40],
+    ['2026-10-09', 'missed', WOUNDED_HP],
   ])
   expect((await stateOn(today)).hp).toMatchObject({ current: WOUNDED_HP, max: 60 })
   return today
@@ -226,7 +232,7 @@ describe('purchaseItem – Heiltrank', () => {
     const potion = await purchaseItem('healingPotion', today, database)
     expect(potion).toMatchObject({ kind: 'item', itemId: 'healingPotion', title: 'Heiltrank', icon: '🧪', price: POTION.price })
     const after = await stateOn(today)
-    expect(after.hp.current).toBe(WOUNDED_HP + POTION.heal) // 29 + 20 = 49
+    expect(after.hp.current).toBe(WOUNDED_HP + POTION.heal) // 34 + 20 = 54
     expect(after.gold.balance).toBe(before.gold.balance - POTION.price)
   })
 
@@ -243,7 +249,7 @@ describe('purchaseItem – Heiltrank', () => {
     const today = await woundedHero()
     await purchaseItem('healingPotion', today, database)
     await purchaseItem('healingPotion', today, database)
-    expect((await stateOn(today)).hp.current).toBe(60) // 29 + 2 × 20 = 69, höchstens 60
+    expect((await stateOn(today)).hp.current).toBe(60) // 34 + 2 × 20 = 74, höchstens 60
     await expect(purchaseItem('healingPotion', today, database)).rejects.toThrow(MSG.full)
   })
 })
@@ -262,7 +268,7 @@ describe('undoPurchase – Gegenstände', () => {
     const before = await stateOn(today)
     const freeze = await purchaseItem('streakFreeze', today, database)
     const potion = await purchaseItem('healingPotion', today, database)
-    expect((await stateOn(today)).hp.current).toBe(49) // 29 + 20
+    expect((await stateOn(today)).hp.current).toBe(54) // 34 + 20
 
     await undoPurchase(potion.id, today, database)
     await undoPurchase(freeze.id, today, database)

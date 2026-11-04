@@ -63,7 +63,7 @@ describe('hpFeedbackEvents', () => {
     ])
   })
 
-  it('fasst mehrere Niederlagen eines Schritts zusammen (lange Abwesenheit)', () => {
+  it('fasst mehrere Niederlagen eines Schritts zusammen (mehrere Tage auf einmal abgerechnet)', () => {
     const after = [
       entry('2026-10-28', { defeat: { goldLost: 100 } }),
       entry('2026-10-29'),

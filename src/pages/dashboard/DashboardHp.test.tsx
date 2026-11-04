@@ -150,8 +150,7 @@ describe('Dashboard – Vorschau für gestern', () => {
   it('zeigt freundlich, was gestern droht, und führt direkt zum Nachtragen', async () => {
     await markHpIntroSeen()
     const reading = await createHabit(READING, '2026-10-20')
-    // Kürzlich aktiv (sonst gälte der Held als abwesend – dann kostet gestern nichts).
-    await setCompletionValue(reading.id, '2026-10-31', 1)
+    // Abgerechnet ist nur der 1. November (verpasst: 1. Tag mit Schaden) – gestern wäre erst der 2.: keine Pause.
     await settled(SETTLED, { hpAfter: 44 })
     const { user } = await renderDashboard()
 
@@ -189,22 +188,31 @@ describe('Dashboard – Vorschau für gestern', () => {
     expect(await screen.findByText('Stand jetzt: −1 HP · Ein Anfang')).toBeInTheDocument()
   })
 
-  it('ab dem 4. Tag ohne erledigte Quest ruhen die Lebenspunkte – dann droht gestern nichts', async () => {
+  it('nach 3 Tagen mit Schaden in Folge ruht der Schaden – gestern droht nichts, ein guter Tag beendet die Pause', async () => {
     await markHpIntroSeen()
     const reading = await createHabit(READING, '2026-10-20')
-    // Zuletzt am 30. Oktober erledigt: 31. Oktober, 1. November, gestern = 1.–3. Tag ohne Quest → verpasst (−6).
-    await setCompletionValue(reading.id, '2026-10-30', 1)
-    await settled(SETTLED)
+    // 31. Oktober und 1. November verpasst (50 → 44 → 38): gestern wäre der 3. Tag mit Schaden → noch −6.
+    await settled('2026-10-31', { hpAfter: 44 })
+    await settled(SETTLED, { hpAfter: 38 })
     const view = await renderDashboard()
     expect(screen.getByText('Bleibt es so: −6 HP')).toBeInTheDocument()
     view.unmount()
 
-    // Zuletzt am 29. Oktober: gestern ist der 4. Tag ohne Quest → Pause (±0), keine Vorschau.
-    await setCompletionValue(reading.id, '2026-10-30', 0)
-    await setCompletionValue(reading.id, '2026-10-29', 1)
-    await renderDashboard()
+    // Auch der 30. Oktober verpasst (50 → 44 → 38 → 32): Nach drei Tagen mit Schaden ist gestern Pause (±0) –
+    // keine Vorschau.
+    await settled('2026-10-30', { hpAfter: 44 })
+    await settled('2026-10-31', { hpAfter: 38 })
+    await settled(SETTLED, { hpAfter: 32 })
+    const { user } = await renderDashboard()
     expect(screen.queryByText('Gestern ist noch offen')).not.toBeInTheDocument()
     expect(screen.queryByText(/Bleibt es so/)).not.toBeInTheDocument()
+
+    // Beim Nachtragen steht die Pause ruhig da; ein perfekter Tag (+10) beendet sie.
+    await user.click(screen.getByRole('radio', { name: 'Gestern' }))
+    expect(await screen.findByText('Stand jetzt: ±0 HP · Pause')).toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: 'Lesen erledigt' }))
+    expect(await screen.findByText('Stand jetzt: +10 HP · Perfekter Tag')).toBeInTheDocument()
+    expect((await loadGameData()).completions.some((c) => c.habitId === reading.id && c.day === YESTERDAY)).toBe(true)
   })
 
   it('erscheint nicht, wenn gestern gut lief, und nennt sonst den rettenden Streak-Schutz', async () => {
@@ -356,12 +364,14 @@ describe('Dashboard – sanfte Wege (Krankheitstag, halber Tag, Vorrat, Rückkeh
     expect(within(hero()).getByText('1 Streak-Schutz im Beutel – fängt einen schwachen Tag auf')).toHaveClass('sr-only')
   })
 
-  it('heißt den Helden nach einer längeren Pause willkommen', async () => {
+  it('nennt einen Tag in der Pause ruhig – ohne Verlust, mit dem Weg hinaus', async () => {
     await markHpIntroSeen()
     await createHabit(READING, '2026-10-20')
     await settled(SETTLED, { score: 'absent', hpDelta: 0, hpAfter: 13 })
     await renderDashboard()
-    expect(within(hero()).getByText('Willkommen zurück – schön, dass du da bist!')).toBeInTheDocument()
+    expect(within(hero()).getByText('Sonntag: Pause – der Schaden ruht bis zu deinem nächsten guten Tag')).toBeInTheDocument()
+    // Die Pause hält an (gestern wieder nichts erledigt): Es droht nichts, also keine Vorschau.
+    expect(screen.queryByText('Gestern ist noch offen')).not.toBeInTheDocument()
   })
 
   it('führt aus der Ruhetag-Zeile direkt zu „Rast & Urlaub“', async () => {

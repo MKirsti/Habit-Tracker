@@ -85,10 +85,30 @@ describe('Tage der Heatmap', () => {
     expect(dayStatDetails(stat({ score: 'missed', requiredDone: 0, done: 0, xp: 0, frozen: true }), TODAY)).toBe(
       'Nichts erledigt · 0 von 3 Tagesquests · ❄️ vom Streak-Schutz aufgefangen',
     )
-    expect(dayStatDetails(stat({ score: 'absent', required: 2, requiredDone: 0, done: 0, xp: 0 }), TODAY)).toBe('Längere Pause')
+    expect(dayStatDetails(stat({ score: 'absent', required: 2, requiredDone: 0, done: 0, xp: 0 }), TODAY)).toBe(
+      'Pause · der Schaden ruht',
+    )
     expect(
       dayStatDetails(stat({ score: 'missed', requiredDone: 0, done: 0, xp: 0, defeat: { goldLost: 120 } }), TODAY),
     ).toBe('Nichts erledigt · 0 von 3 Tagesquests · Niederlage – und wieder aufgestanden')
+  })
+
+  it('nennt in der Durchhänger-Pause, was trotzdem erledigt war – ohne Schaden', () => {
+    // Ein schwacher Tag in der Pause: 1 von 3 Tagesquests, gewertet als „Pause“ (±0 HP).
+    expect(dayStatDetails(stat({ score: 'absent', requiredDone: 1, done: 1, xp: 10 }), TODAY)).toBe(
+      'Pause · 1 von 3 Tagesquests · +10 XP · der Schaden ruht',
+    )
+    // Nur eine Wochenquest in der Pause: bleibt Pause, die Wochenquest wird genannt.
+    expect(dayStatDetails(stat({ score: 'absent', requiredDone: 0, done: 1, xp: 10 }), TODAY)).toBe(
+      'Pause · 0 von 3 Tagesquests, dafür 1 andere Quest · +10 XP · der Schaden ruht',
+    )
+    // Gestern (noch offen) in der Pause: nachtragbar – heute ist nichts entschieden.
+    expect(dayStatDetails(stat({ day: '2026-11-03', score: 'absent', requiredDone: 0, done: 0, xp: 0, settled: false, open: true }), TODAY)).toBe(
+      'Pause · der Schaden ruht · noch nachtragbar',
+    )
+    expect(dayStatDetails(stat({ day: TODAY, score: 'absent', requiredDone: 0, done: 0, xp: 0, settled: false, open: true }), TODAY)).toBe(
+      'Heute · läuft noch',
+    )
   })
 
   it('zählt an Ruhetagen und Tagen ohne Pflicht die Erledigungen', () => {

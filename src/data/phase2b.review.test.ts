@@ -66,13 +66,15 @@ describe('Review 2b – Backup wiederherstellen nach einer Lücke', () => {
     for (const day of ['2026-10-01', '2026-10-09', '2026-10-10']) {
       for (const habit of habits) await toggleCompletion(habit.id, day, source)
     }
-    // Tage 2.–8. Oktober: je eine Quest – schwach („Ein Anfang“, −1) –, damit es keine Abwesenheit ist.
+    // Tage 2.–8. Oktober: je eine Quest – schwach („Ein Anfang“, −1) –, am 7. Oktober zwei (gut).
     for (let n = 1; n <= 7; n++) await toggleCompletion(habits[0].id, addDays(START, n), source)
+    await toggleCompletion(habits[1].id, '2026-10-07', source)
     const settled = await settleHpDays(EXPORT_DAY, source)
     expect(settled.at(-1)?.day).toBe('2026-10-08')
-    // 1. Oktober perfekt (voll: 50), 2.–6. Oktober je −1 (49 … 45); der Level-Aufstieg am 7. heilt voll (55),
-    // am 8. wieder −1 (54).
-    expect(settled.map((entry) => entry.hpAfter)).toStrictEqual([50, 49, 48, 47, 46, 45, 55, 54])
+    // 1. Oktober perfekt (voll: 50), 2.–4. Oktober je −1 (49, 48, 47: drei Tage mit Schaden), 5. und 6. Oktober
+    // Pause (bleibt 47); der gute 7. beendet sie, und sein Level-Aufstieg heilt voll (55), am 8. wieder −1 (54).
+    expect(settled.map((entry) => entry.score)).toStrictEqual(['perfect', 'weak', 'weak', 'weak', 'absent', 'absent', 'good', 'weak'])
+    expect(settled.map((entry) => entry.hpAfter)).toStrictEqual([50, 49, 48, 47, 47, 47, 55, 54])
     const backup = parseBackup(JSON.parse(JSON.stringify(await createBackup(noonOf(EXPORT_DAY), source))))
     if (!backup.ok) throw new Error(backup.error)
     return backup.backup
@@ -89,10 +91,11 @@ describe('Review 2b – Backup wiederherstellen nach einer Lücke', () => {
     const state = deriveGameState(await loadGameData(target), restoreDay)
     expect(state.hp).toMatchObject({ current: 54, max: 55, defeats: 0, settledThrough: '2026-10-08' })
     expect(state.gold.lostToDefeats).toBe(0)
-    // Ab jetzt läuft alles wie gewohnt: gestern ist in der Gnadenfrist, ab morgen wird gestern abgerechnet
-    // (seit dem 11. Oktober nichts erledigt – der 23. ist der 13. Tag ohne Quest: abwesend, kein Schaden).
+    // Ab jetzt läuft alles wie gewohnt: gestern ist in der Gnadenfrist, ab morgen wird gestern abgerechnet.
+    // Der 23. Oktober (nichts erledigt) ist laut Ledger erst der 2. Tag mit Schaden in Folge (nach dem schwachen
+    // 8.; die nie abgerechneten Tage dazwischen zählen nicht) – also verpasst: 54 − 6 = 48.
     const next = await settleHpDays(addDays(restoreDay, 1), target)
-    expect(next.map((entry) => [entry.day, entry.score, entry.hpAfter])).toStrictEqual([['2026-10-23', 'absent', 54]])
+    expect(next.map((entry) => [entry.day, entry.score, entry.hpAfter])).toStrictEqual([['2026-10-23', 'missed', 48]])
   })
 
   it('am Tag nach dem Export rechnet die bekannten Tage ganz normal ab (der Exporttag ist dann noch nachtragbar)', async () => {
@@ -161,7 +164,8 @@ describe('Review 2b – Backup wiederherstellen nach einer Lücke', () => {
     await restoreBackup(withPotion, target, noonOf(restoreDay))
     // 54 + 20, höchstens 55.
     expect(deriveGameState(await loadGameData(target), restoreDay).hp.current).toBe(55)
-    // Nach der nächsten Abrechnung (gestern abwesend: ±0) ist der Trank weiter enthalten.
+    // Nach der nächsten Abrechnung (23. Oktober verpasst: 54 + 20 − 6 = 68, höchstens 55) ist der Trank enthalten –
+    // ohne ihn wären es 54 − 6 = 48.
     await settleHpDays(addDays(restoreDay, 1), target)
     expect(deriveGameState(await loadGameData(target), addDays(restoreDay, 1)).hp.current).toBe(55)
   })

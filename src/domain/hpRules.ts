@@ -1,5 +1,5 @@
 /**
- * Lebenspunkte (Phase 2b) – die Regeln ohne die eigentliche Abrechnung: Ruhetage, Tageswertung, Abwesenheit,
+ * Lebenspunkte (Phase 2b) – die Regeln ohne die eigentliche Abrechnung: Ruhetage, Tageswertung, Durchhänger-Pause,
  * Streak-Schutz, Heiltränke und der abgeleitete HP-Zustand (ARCHITECTURE.md „Phase 2b … (Vertrag)“).
  *
  * Öffentlicher Einstieg ist `hp.ts`: Es exportiert alles von hier plus `settleDays`. Diese Datei hängt bewusst
@@ -8,7 +8,8 @@
  *
  * Grundidee (vom Spieler gewünscht): **eine** Wertung pro Spieltag, egal wie viele Quests und Kampagnen laufen.
  * Höchstens −6 HP pro Tag, Wochenquests kosten nie etwas (eine erledigte macht aus `missed` höchstens `weak`),
- * Abwesenheit kostet ab dem 4. Tag nichts mehr, Ruhetage nie.
+ * ein Durchhänger kostet höchstens 3 schadende Tage (danach „Pause“ bis zum nächsten guten Tag), Ruhetage nie.
+ * Etwas zu tun ist so nie schlechter als nichts zu tun.
  */
 import { BALANCING } from './balancing'
 import { addDays, compareDays, fromEpochDay, isValidDayKey, toEpochDay } from './dates'
@@ -189,18 +190,20 @@ export function scoreByProgress(requiredCount: number, requiredDone: number): Da
 }
 
 /**
- * Wertung eines Tages in der Reihenfolge des Vertrags: Ruhetag → `rest`; keine Tagesquest fällig → `none`;
- * abwesend → `absent`; sonst nach Anteil (`scoreByProgress`) – mit einer Ausnahme zugunsten des Helden: Ist keine
- * Tagesquest erledigt, aber eine andere Quest (z. B. eine Wochenquest), gilt der Tag als `weak` statt `missed`.
+ * Wertung eines Tages in der Reihenfolge des Vertrags: Ruhetag → `rest`; keine Tagesquest fällig → `none`; sonst
+ * nach Anteil (`scoreByProgress`) – mit einer Ausnahme zugunsten des Helden: Ist keine Tagesquest erledigt, aber eine
+ * andere Quest (z. B. eine Wochenquest), gilt der Tag als `weak` statt `missed`. Läuft die Durchhänger-Pause
+ * (`flags.pause`, siehe `isSlumpPause`), wird aus einem schwachen oder verpassten Tag `absent` („Pause“, 0 HP);
+ * ein guter oder perfekter Tag bleibt, was er ist (und beendet die Pause).
  */
-export function classifyDay(facts: DayFacts, flags: { rest: boolean; absent: boolean }): DayScore {
+export function classifyDay(facts: DayFacts, flags: { rest: boolean; pause: boolean }): DayScore {
   if (flags.rest) return 'rest'
   if (!(facts.requiredCount > 0)) return 'none'
-  if (flags.absent) return 'absent'
-  const score = scoreByProgress(facts.requiredCount, facts.requiredDone)
+  const progress = scoreByProgress(facts.requiredCount, facts.requiredDone)
   // Wer an dem Tag immerhin eine Quest erledigt hat (z. B. nur eine Wochenquest), hat etwas getan – das ist
   // „Ein Anfang“, nie „Nichts erledigt“. Wochenquests kosten so nie HP, sie können nur helfen.
-  return score === 'missed' && facts.active ? 'weak' : score
+  const score = progress === 'missed' && facts.active ? 'weak' : progress
+  return flags.pause && isFreezableScore(score) ? 'absent' : score
 }
 
 /** Ein (vorab) gewerteter Tag: Schritte 1–2 der Abrechnung, noch ohne HP. */
@@ -211,56 +214,86 @@ export interface ScoredDay {
   frozen: boolean
 }
 
+// ---------------------------------------------------------------------------
+// Durchhänger-Pause
+// ---------------------------------------------------------------------------
+
+/** Was der Durchhänger-Zähler von einem (abgerechneten oder vorab gewerteten) Tag braucht. */
+export type SlumpDay = Pick<ScoredDay, 'score' | 'frozen'>
+
+/** Schadender Tag: `weak` oder `missed`, den kein Streak-Schutz auffängt. */
+export function isDamagingDay(day: SlumpDay): boolean {
+  return isFreezableScore(day.score) && day.frozen !== true
+}
+
+/**
+ * Ein Schritt des Durchhänger-Zählers (schadende Tage in Folge), chronologisch:
+ * - schadender Tag (`weak`/`missed`, nicht aufgefangen) → +1
+ * - `perfect` / `good` → 0 (die Pause endet)
+ * - `absent` (eine Pause – auch ein alter Abwesenheits-Eintrag) → mindestens `slumpPauseAfterDays`: die Pause läuft
+ * - `rest`, `none` und vom Streak-Schutz aufgefangene Tage → unverändert (zählen nicht, brechen nichts)
+ */
+export function slumpCountAfter(count: number, day: SlumpDay): number {
+  if (day.score === 'perfect' || day.score === 'good') return 0
+  if (day.score === 'absent') return Math.max(count, BALANCING.slumpPauseAfterDays)
+  return isDamagingDay(day) ? count + 1 : count
+}
+
+/**
+ * Durchhänger-Zähler nach den Tagen `days` (chronologisch, ab `count`) – der gemeinsame Baustein von Abrechnung
+ * (`settleDays`/`scoreDays`), Vorschau für gestern (`hpCalendar`) und Statistik (`dayHistory`). Die Abrechnung zählt
+ * über das Ledger (die abgerechneten Einträge) und die gerade gewerteten Tage – nie über Tage ohne Eintrag (vor
+ * `since`, Lücken im Ledger); die Statistik zählt genauso und wertet nur die Tage vor dem Beginn der Abrechnung live.
+ */
+export function slumpCountOf(days: Iterable<SlumpDay>, count = 0): number {
+  let result = count
+  for (const day of days) result = slumpCountAfter(result, day)
+  return result
+}
+
+/** Läuft die Durchhänger-Pause? Ja, wenn unmittelbar vor dem Tag ≥ `slumpPauseAfterDays` schadende Tage in Folge liegen. */
+export function isSlumpPause(count: number): boolean {
+  return count >= BALANCING.slumpPauseAfterDays
+}
+
+// ---------------------------------------------------------------------------
+// Wertung mehrerer Tage (Abrechnung und Vorschau)
+// ---------------------------------------------------------------------------
+
 export interface ScoreDaysInput {
   /** Erster und letzter zu wertender Tag (inklusive). */
   from: DayKey
   to: DayKey
   factsOf: (day: DayKey) => DayFacts
   restDays: ReadonlySet<DayKey>
-  /** Ab diesem Tag zählt Abwesenheit (Beginn des Abenteuers, siehe `adventureStartOf`). */
-  adventureStart: DayKey
   purchases: readonly Purchase[] | undefined
-  /** Schon verbrauchte Streak-Schutz-Gegenstände (abgerechnete `frozen`-Tage vor `from`). */
-  freezesUsed: number
-}
-
-/** Schutz vor endlosem Zurückblättern bei kaputten Daten. */
-const MAX_LOOKBACK_DAYS = 4000
-
-/**
- * Tage ohne jede erledigte Quest unmittelbar vor `from` (Ruhetage zählen nicht mit, eine Erledigung – auch an
- * einem Ruhetag – beendet die Zählung). Mehr als `absentAfterDays + 1` braucht niemand.
- */
-function inactiveRunBefore(input: ScoreDaysInput): number {
-  let count = 0
-  const start = toEpochDay(input.adventureStart)
-  const from = toEpochDay(input.from)
-  for (let day = from - 1; day >= start && from - day <= MAX_LOOKBACK_DAYS; day--) {
-    const key = fromEpochDay(day)
-    if (input.factsOf(key).active) break
-    if (input.restDays.has(key)) continue
-    count++
-    if (count > BALANCING.absentAfterDays) break
-  }
-  return count
+  /**
+   * Schon abgerechnete Einträge, nach Tag sortiert (`sortedLedger`); zählen nur die vor `from`: Daraus ergeben
+   * sich die verbrauchten Streak-Schutz-Gegenstände (`frozen`) und der Durchhänger-Zähler (`slumpCountOf`).
+   */
+  ledger: readonly HpLedgerEntry[]
 }
 
 /**
  * Wertung und Streak-Schutz für die Tage `from … to` (chronologisch) – Schritte 1–2 der Abrechnung:
- * 1. Wertung (`classifyDay`); abwesend ist ein Tag, wenn er (Ruhetage nicht mitgezählt) der mehr als
- *    `absentAfterDays`-te Tag in Folge ohne jede erledigte Quest ist – ab dem 4. Tag also kein weiterer Schaden.
- * 2. Streak-Schutz bei `weak`/`missed`, wenn der Vorrat reicht: gekaufte mit Kauftag ≤ Tag minus bereits
- *    verbrauchte (ältester zuerst). Ein nach dem Tag gekaufter Streak-Schutz kann ihn nicht mehr retten.
+ * 1. Wertung (`classifyDay`). Durchhänger-Pause: Liegen unmittelbar vor dem Tag schon `slumpPauseAfterDays` (3)
+ *    schadende Tage in Folge (Zähler aus dem Ledger plus den hier schon gewerteten Tagen, `slumpCountOf`), wird aus
+ *    einem schwachen oder verpassten Tag `absent` („Pause“: 0 HP, kein Streak-Schutz) – bis zum nächsten guten oder
+ *    perfekten Tag. Ein Durchhänger kostet so höchstens 3 schadende Tage.
+ * 2. Streak-Schutz bei `weak`/`missed` (also nur, wenn keine Pause läuft), wenn der Vorrat reicht: gekaufte mit
+ *    Kauftag ≤ Tag minus bereits verbrauchte (ältester zuerst). Ein nach dem Tag gekaufter Streak-Schutz kann ihn
+ *    nicht mehr retten. Ein aufgefangener Tag zählt nicht als schadend (der Zähler bleibt).
  * Die Abrechnung (`settleDays`) und die Vorschau für gestern (`hpCalendar`) nutzen genau diese Funktion.
  */
 export function scoreDays(input: ScoreDaysInput): ScoredDay[] {
   const result: ScoredDay[] = []
   if (!isValidDayKey(input.from) || !isValidDayKey(input.to) || compareDays(input.from, input.to) > 0) return result
+  const before = input.ledger.filter((entry) => compareDays(entry.day, input.from) < 0)
   const freezeDays = itemPurchaseDays(input.purchases, 'streakFreeze')
   let bought = 0
   let next = 0
-  let used = Math.max(0, input.freezesUsed)
-  let inactive = isValidDayKey(input.adventureStart) ? inactiveRunBefore(input) : 0
+  let used = freezesUsedIn(before)
+  let slump = slumpCountOf(before)
   const end = toEpochDay(input.to)
   for (let epoch = toEpochDay(input.from); epoch <= end; epoch++) {
     const day = fromEpochDay(epoch)
@@ -268,20 +301,19 @@ export function scoreDays(input: ScoreDaysInput): ScoredDay[] {
       bought++
       next++
     }
-    const rest = input.restDays.has(day)
-    const facts = input.factsOf(day)
-    if (facts.active) inactive = 0
-    else if (!rest && compareDays(day, input.adventureStart) >= 0) inactive++
-    const score = classifyDay(facts, { rest, absent: inactive > BALANCING.absentAfterDays })
+    // Erst die Pause prüfen (dann gibt es nichts aufzufangen), sonst den Streak-Schutz.
+    const score = classifyDay(input.factsOf(day), { rest: input.restDays.has(day), pause: isSlumpPause(slump) })
     const frozen = isFreezableScore(score) && bought - used > 0
     if (frozen) used++
-    result.push({ day, score, frozen })
+    const scored: ScoredDay = { day, score, frozen }
+    slump = slumpCountAfter(slump, scored)
+    result.push(scored)
   }
   return result
 }
 
 /**
- * Beginn des Abenteuers für die Abwesenheit: `profile.createdDay`; ohne Profil der früheste Anlegetag einer
+ * Beginn des Abenteuers (Beginn der Statistik): `profile.createdDay`; ohne Profil der früheste Anlegetag einer
  * Quest (auch gelöschter); ohne alles `fallback`.
  */
 export function adventureStartOf(data: GameData, fallback: DayKey): DayKey {
@@ -348,9 +380,8 @@ export function hpCalendar(
           to: addDays(asOf, -1),
           factsOf,
           restDays,
-          adventureStart: adventureStartOf(data, from),
           purchases: data.purchases,
-          freezesUsed: freezesUsedIn(ledger),
+          ledger,
         })
   const frozen = [...ledger, ...pending].filter((entry) => entry.frozen === true)
   let freeDays: ReadonlySet<DayKey> = restDays
@@ -372,7 +403,8 @@ export function hpCalendar(
  *   Heiltränke mit Kauftag nach dem letzten abgerechneten Tag, begrenzt auf `0 … max`; ist das Level jetzt höher
  *   als am letzten abgerechneten Tag (größere Max-HP), sind die HP voll. Im Sanften Modus immer `max`.
  * - `yesterday` = Vorschau für gestern, solange er nachgetragen werden kann (ab `since`, noch nicht abgerechnet):
- *   Wertung, `threatenedDelta` = HP-Wirkung der Wertung (0, wenn ein Streak-Schutz ihn auffängt oder im Sanften
+ *   Wertung (nach denselben Regeln wie die Abrechnung, `scoreDays` – in der Durchhänger-Pause also `absent`),
+ *   `threatenedDelta` = HP-Wirkung der Wertung (0 in der Pause, wenn ein Streak-Schutz ihn auffängt oder im Sanften
  *   Modus), `savedByFreeze`.
  */
 export function hpStateOf(data: GameData, calendar: HpCalendar, today: DayKey, level: number): HpState {

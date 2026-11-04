@@ -114,7 +114,7 @@ export function DashboardPage() {
     : undefined
   // Vorschau für gestern nur, wenn „Heute“ gewählt und gestern wählbar ist; beim Nachtragen der laufende Stand.
   const preview = offset === 0 && offsets.includes(1) ? yesterdayPreview(hp.yesterday) : undefined
-  const standing = offset === 1 ? backfillStanding(hp.yesterday) : undefined
+  const standing = offset === 1 ? backfillStanding(hp.yesterday, hp.enabled) : undefined
   const canRest = offset === 0 && !state.restToday && todayState.requiredCount > 0 && !todayState.perfect
   // Zwischenziel „guter Tag“ (nur heute, nur mit Lebenspunkten): Schon die Hälfte heilt.
   const goodDay =

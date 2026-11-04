@@ -22,9 +22,12 @@
  *   für noch nicht abgerechnete Tage ab dem Einschalten der Lebenspunkte (normalerweise gestern) die Vorschau der
  *   Abrechnung (`HpCalendar.pending`, inkl. Streak-Schutz). Alle übrigen (vor dem Einschalten, heute) werden nach
  *   denselben Regeln live bewertet (`classifyDay` in `hpRules.ts`): Ruhetag → `rest`; keine Tagesquest fällig →
- *   `none`; mehr als `absentAfterDays` Tage in Folge (Ruhetage zählen nicht mit) ohne jede erledigte Quest →
- *   `absent`; sonst nach Anteil der erledigten Tagesquests: alle → `perfect`, ≥ 50 % → `good`, > 0 → `weak`,
- *   keine → `missed` (`weak`, wenn an dem Tag eine andere Quest erledigt ist, z. B. eine Wochenquest).
+ *   `none`; sonst nach Anteil der erledigten Tagesquests: alle → `perfect`, ≥ 50 % → `good`, > 0 → `weak`,
+ *   keine → `missed` (`weak`, wenn an dem Tag eine andere Quest erledigt ist, z. B. eine Wochenquest) – und in der
+ *   Durchhänger-Pause (`slumpPauseAfterDays` schadende Tage in Folge davor) wird aus `weak`/`missed` `absent`.
+ *   Den Zähler liefert derselbe Baustein wie bei der Abrechnung (`slumpCountOf`/`slumpCountAfter`): ab dem Beginn
+ *   der Abrechnung (`since` bzw. erster Ledger-Tag) nur aus Ledger und Vorschau – so zeigt die Statistik für heute
+ *   genau das, was die Abrechnung daraus machen wird –, davor live über die Tage der Historie.
  * - Ruhetage, Tagesfakten und Schontage kommen aus denselben Bausteinen wie in der Engine (`restDaySet`,
  *   `dayFactsOf`, `hpCalendar`) – die Statistik rechnet also nie anders als der Spielstand.
  *
@@ -37,8 +40,8 @@ import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
 import { addDays, compareDays, diffDays, fromEpochDay, isValidDayKey, startOfWeek, toEpochDay } from './dates'
 import { dayFactsOf } from './engine'
-import { adventureStartOf, classifyDay, hpCalendar, restDaySet } from './hp'
-import type { DayFacts, HpCalendar } from './hp'
+import { adventureStartOf, classifyDay, hpCalendar, isSlumpPause, restDaySet, slumpCountAfter, slumpCountOf } from './hp'
+import type { DayFacts, HpCalendar, SlumpDay } from './hp'
 import { levelFromXp } from './leveling'
 import { isActiveOn, isArchivedOn, isDone, isRequiredOn, questXp, scheduleOn } from './schedule'
 import { streakBonusForRun, xpWithStreakBonus } from './streakBonus'
@@ -84,7 +87,10 @@ export interface DayStat {
   perfect: boolean
   /** Ruhetag oder Urlaub. */
   rest: boolean
-  /** Tageswertung: abgerechnet aus dem HP-Ledger, für noch offene Tage die Vorschau, sonst live (`classifyDay`). */
+  /**
+   * Tageswertung: abgerechnet aus dem HP-Ledger, für noch offene Tage die Vorschau, sonst live (`classifyDay`, mit
+   * der Durchhänger-Pause wie bei der Abrechnung).
+   */
   score: DayScore
   /** Der Tag ist endgültig abgerechnet (Wertung aus dem HP-Ledger). */
   settled: boolean
@@ -310,6 +316,18 @@ function statsCalendar(data: GameData, today: DayKey): StatsCalendar {
 }
 
 /**
+ * Erster Tag, ab dem die Abrechnung den Durchhänger-Zähler führt: der frühere von `penalties.since` und dem ersten
+ * Ledger-Tag; `undefined`, solange es beides nicht gibt.
+ */
+function slumpLedgerStart(data: GameData, calendar: HpCalendar): DayKey | undefined {
+  const since = data.settings.penalties?.since
+  const first = calendar.ledger[0]?.day
+  const validSince = since !== undefined && isValidDayKey(since) ? since : undefined
+  if (validSince === undefined) return first
+  return first !== undefined && compareDays(first, validSince) < 0 ? first : validSince
+}
+
+/**
  * Gutgeschriebene XP aller erledigten Completions (je Quest ein linearer Durchlauf, wie in der Engine).
  * @param freeDays Schontage (Ruhetage, vom Streak-Schutz aufgefangene Tage): brechen keine Serie.
  */
@@ -441,10 +459,16 @@ export function dayHistory(data: GameData, today: DayKey): DayHistory {
   const pending = new Map(calendar.pending.map((entry) => [entry.day, entry]))
   const openFrom = addDays(today, -BALANCING.backfillDays)
 
+  // Durchhänger-Zähler (schadende Tage in Folge) wie bei der Abrechnung: vor dem Beginn der Abrechnung live über die
+  // Tage der Historie; ab dann – wie `scoreDays` – nur aus Ledger und Vorschau. Live gewertete Tage dort (Lücken im
+  // Ledger, heute) zählen nicht mit, genau wie sie bei der Abrechnung nie in die Folge eingehen.
+  const ledgerStart = slumpLedgerStart(data, calendar)
+  let slump = 0
+  let fromLedger = false
+
   const days: DayStat[] = []
   let totalXp = carriedXp
   let level = levelFromXp(totalXp).level
-  let inactiveDays = 0
   const start = toEpochDay(from)
   const end = toEpochDay(today)
   for (let epochDay = start; epochDay <= end; epochDay++) {
@@ -461,13 +485,18 @@ export function dayHistory(data: GameData, today: DayKey): DayHistory {
     totalXp += xp
     level = xp > 0 ? levelFromXp(totalXp).level : level
 
-    // Abwesenheit wie bei der Abrechnung (`scoreDays`): Tage in Folge ohne jede erledigte Quest ab Abenteuerbeginn;
-    // Ruhetage zählen nicht mit, eine Erledigung (auch an einem Ruhetag) beendet die Zählung.
-    if (facts.active) inactiveDays = 0
-    else if (!restDay && compareDays(day, adventureStart) >= 0) inactiveDays++
-
+    if (!fromLedger && ledgerStart !== undefined && compareDays(day, ledgerStart) >= 0) {
+      fromLedger = true
+      slump = slumpCountOf(calendar.ledger.filter((settledEntry) => compareDays(settledEntry.day, day) < 0))
+    }
     const entry = settled.get(day)
     const preview = pending.get(day)
+    const scored: SlumpDay = entry ??
+      preview ?? {
+        score: classifyDay(facts, { rest: restDay, pause: isSlumpPause(slump) }),
+        frozen: false,
+      }
+    if (entry !== undefined || preview !== undefined || !fromLedger) slump = slumpCountAfter(slump, scored)
     const stat: DayStat = {
       day,
       required: facts.requiredCount,
@@ -482,13 +511,10 @@ export function dayHistory(data: GameData, today: DayKey): DayHistory {
       level,
       perfect,
       rest: restDay,
-      score:
-        entry?.score ??
-        preview?.score ??
-        classifyDay(facts, { rest: restDay, absent: inactiveDays > BALANCING.absentAfterDays }),
+      score: scored.score,
       settled: entry !== undefined,
       open: entry === undefined && compareDays(day, openFrom) >= 0,
-      frozen: entry?.frozen === true || preview?.frozen === true,
+      frozen: scored.frozen === true,
     }
     if (entry?.penalties === true) stat.hp = { delta: entry.hpDelta, after: entry.hpAfter, max: entry.maxHp }
     if (entry?.defeat !== undefined) stat.defeat = { goldLost: entry.defeat.goldLost }
@@ -574,7 +600,7 @@ function dayHeat(stat: DayStat): HeatLevel {
       // Ohne Pflicht (nur Wochenquests) bzw. am Ruhetag: Erledigtes zählt trotzdem.
       return stat.done > 0 ? 2 : 0
     default:
-      // Verpasst (bzw. abwesend): Eine erledigte Wochenquest ist trotzdem ein kleiner Schritt.
+      // Verpasst (bzw. Pause): Eine erledigte Quest ist trotzdem ein kleiner Schritt.
       return stat.done > 0 ? 1 : 0
   }
 }

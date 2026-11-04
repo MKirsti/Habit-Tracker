@@ -4,16 +4,15 @@
  *
  * Vom Spieler gewünscht: **eine** Wertung pro Spieltag (nicht pro Quest!), höchstens −6 HP pro Tag, Wochenquests
  * kosten nie etwas (eine erledigte macht aus „verpasst“ höchstens „schwach“, −1), gestern darf noch nachgetragen
- * werden (Gnadenfrist), Abwesenheit kostet ab dem 4. Tag nichts mehr, eine Niederlage kostet 15 % Gold, höchstens
- * 100 – Level, XP und Streaks bleiben immer. Im Sanften Modus gibt es gar keine HP-Wirkung.
+ * werden (Gnadenfrist), ein Durchhänger kostet höchstens 3 schadende Tage (danach „Pause“ bis zum nächsten guten
+ * Tag), eine Niederlage kostet 15 % Gold, höchstens 100 – Level, XP und Streaks bleiben immer. Im Sanften Modus gibt
+ * es gar keine HP-Wirkung.
  */
 import { BALANCING } from './balancing'
 import { addDays, compareDays, isValidDayKey } from './dates'
 import { dayFactsOf, deriveGameState, totalXpTimeline } from './engine'
 import {
-  adventureStartOf,
   countItemPurchases,
-  freezesUsedIn,
   hpDeltaForScore,
   maxHpForLevel,
   nextUnsettledDay,
@@ -49,9 +48,11 @@ function defeatGoldLoss(data: GameData, ledgerSoFar: HpLedgerEntry[], day: DayKe
  *
  * Zeitraum: `max(settings.penalties.since, letzter Ledger-Tag + 1)` bis `today − backfillDays − 1` (gestern kann
  * noch nachgetragen werden). Ohne `since` wird nichts abgerechnet (nie rückwirkend). Pro Tag:
- * 1. Wertung (`scoreDays`, `classifyDay`): rest / none / absent / perfect / good / weak / missed.
- * 2. Streak-Schutz bei weak/missed, wenn ein vorher (Kauftag ≤ Tag) gekaufter noch da ist → `frozen`, keine
- *    HP-Wirkung; der Tag ist für alle Streaks ein Schontag. Auch im Sanften Modus (schützt Streaks).
+ * 1. Wertung (`scoreDays`, `classifyDay`): rest / none / perfect / good / weak / missed – oder `absent` („Pause“),
+ *    wenn unmittelbar davor schon 3 schadende Tage in Folge liegen (Durchhänger-Pause, Zähler aus dem Ledger und
+ *    den gerade gewerteten Tagen, `slumpCountOf`) und der Tag schwach oder verpasst wäre.
+ * 2. Streak-Schutz bei weak/missed (nie in der Pause), wenn ein vorher (Kauftag ≤ Tag) gekaufter noch da ist →
+ *    `frozen`, keine HP-Wirkung; der Tag ist für alle Streaks ein Schontag. Auch im Sanften Modus (schützt Streaks).
  * 3. HP: Start = `hpAfter` des vorigen Eintrags (Max-HP ohne Eintrag oder nach einem Tag im Sanften Modus);
  *    Änderung = Wertung (0, wenn frozen) + `healingPotion.heal` je Heiltrank mit Kauftag = Tag; ein Level-Up an dem
  *    Tag (Level am Tagesende > am Vortagesende) heilt voll; `hpAfter = clamp(…, 0, maxHp)`. `hpDelta` ist die
@@ -83,9 +84,8 @@ export function settleDays(data: GameData, today: DayKey): HpLedgerEntry[] {
     to,
     factsOf: dayFactsOf(data, today, restDays),
     restDays,
-    adventureStart: adventureStartOf(data, from),
     purchases: data.purchases,
-    freezesUsed: freezesUsedIn(ledger),
+    ledger,
   })
 
   // Level am Ende jedes Tages – mit den Schontagen inklusive der gerade aufgefangenen Tage (Streak-Bonus).

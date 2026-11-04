@@ -82,8 +82,8 @@ const NAMED_IN_NOTE: ReadonlySet<DayScore> = new Set(['perfect', 'good'])
  * nur für einen frisch abgerechneten Tag (höchstens drei Tage her) und nur, wenn er etwas bewirkt hat: eine
  * HP-Änderung, ein aufgefangener Tag (Streak-Schutz) oder eine Niederlage (dann „wieder bei voller Kraft“).
  * Bewusst ungleich gewichtet: Ein guter oder perfekter Tag wird beim Namen genannt („Montag: Perfekter Tag · +10 HP“),
- * ein schwächerer Tag bleibt eine ruhige Zahl („Montag: −1 HP“). Nach einer längeren Pause (`absent`) heißt die Notiz
- * den Helden willkommen.
+ * ein schwächerer Tag bleibt eine ruhige Zahl („Montag: −1 HP“). Ein Tag in der Durchhänger-Pause (`absent`) kostet
+ * nichts – die Notiz sagt das ruhig und nennt den Weg hinaus (der nächste gute Tag).
  */
 export function settlementNote(
   hp: Pick<HpState, 'enabled' | 'settledThrough'>,
@@ -115,9 +115,9 @@ export function settlementNote(
   if (entry.score === 'absent') {
     return {
       day: entry.day,
-      text: 'Willkommen zurück – schön, dass du da bist!',
-      spoken: 'Willkommen zurück – schön, dass du da bist! Während deiner Pause ruhen die Lebenspunkte.',
-      tone: 'up',
+      text: `${name}: Pause – der Schaden ruht bis zu deinem nächsten guten Tag`,
+      spoken: `${name} abgerechnet: Pause, keine Lebenspunkte verloren. Der Schaden ruht bis zu deinem nächsten guten Tag.`,
+      tone: 'neutral',
     }
   }
   const delta = Number.isFinite(entry.hpDelta) ? Math.round(entry.hpDelta) : 0
@@ -215,11 +215,14 @@ export const DAY_SCORE_LABELS: Record<DayScore, string> = {
 
 /**
  * Stand beim Nachtragen für gestern (im Hinweis „Du trägst für gestern nach“): "Stand jetzt: −1 HP · Ein Anfang",
- * "Stand jetzt: +2 HP" – oder der Streak-Schutz. `undefined` ohne HP-Wirkung (keine Tagesquests, Ruhetag …).
+ * "Stand jetzt: +2 HP" – oder der Streak-Schutz. In der Durchhänger-Pause (nur mit Lebenspunkten) "Stand jetzt:
+ * ±0 HP · Pause" – schafft man noch die Hälfte, wird daraus ein guter Tag. `undefined` ohne HP-Wirkung (keine
+ * Tagesquests, Ruhetag, Sanfter Modus …).
  */
-export function backfillStanding(yesterday: HpState['yesterday']): string | undefined {
+export function backfillStanding(yesterday: HpState['yesterday'], enabled = true): string | undefined {
   if (yesterday === undefined) return undefined
   if (yesterday.savedByFreeze) return 'Stand jetzt: ❄️ ein Streak-Schutz fängt den Tag auf'
+  if (enabled && yesterday.score === 'absent') return `Stand jetzt: ${hpDeltaLabel(0)} · ${DAY_SCORE_LABELS.absent}`
   if (yesterday.threatenedDelta === 0) return undefined
   return `Stand jetzt: ${hpDeltaLabel(yesterday.threatenedDelta)} · ${DAY_SCORE_LABELS[yesterday.score]}`
 }
@@ -277,7 +280,7 @@ export function canUndoRestToday(period: Pick<RestPeriod, 'from' | 'until'> | un
  * Das Gute zuerst: Heilung vor dem Höchstverlust, die Pause vor der Niederlage (mit ihrer Obergrenze in Gold).
  */
 export function hpIntroPoints(): { title: string; text: string }[] {
-  const { hpByScore, absentAfterDays, defeatGoldLoss, defeatGoldLossMax } = BALANCING
+  const { hpByScore, slumpPauseAfterDays, defeatGoldLoss, defeatGoldLossMax } = BALANCING
   // Geschütztes Leerzeichen: „15 %“ bricht nie auseinander.
   const percent = `${formatNumber(Math.round(defeatGoldLoss * 100))}\u00a0%`
   return [
@@ -294,8 +297,10 @@ export function hpIntroPoints(): { title: string; text: string }[] {
     { title: 'Gnadenfrist', text: 'Gestern kannst du noch nachtragen.' },
     {
       title: 'Pause',
-      // Nur die Lebenspunkte ruhen von selbst – Serien schützt allein der Ruhetag.
-      text: `Krank oder unterwegs? Ein Ruhetag schont Lebenspunkte und Serien – ab dem ${formatNumber(absentAfterDays + 1)}. Tag ohne Quest ruhen die Lebenspunkte ohnehin.`,
+      // Nur der Schaden ruht von selbst – Serien schützt allein der Ruhetag (bzw. ein Streak-Schutz).
+      text:
+        'Krank oder unterwegs? Ein Ruhetag schont Lebenspunkte und Serien. Und nach ' +
+        `${formatNumber(slumpPauseAfterDays)} Tagen mit Schaden in Folge ruht der Schaden ohnehin – bis zu deinem nächsten guten Tag.`,
     },
     {
       title: 'Bei 0 HP',

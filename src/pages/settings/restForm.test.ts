@@ -148,8 +148,11 @@ describe('Lebenspunkte: Erklärung der Tageswertung', () => {
     expect(rows.map((row) => row.score)).toEqual(['perfect', 'good', 'weak', 'missed', 'rest', 'none', 'absent'])
     for (const row of rows) expect(row.delta).toBe(BALANCING.hpByScore[row.score])
     expect(rows.map((row) => row.deltaLabel.replaceAll('\u00a0', ' '))).toEqual(['+10 HP', '+2 HP', '−1 HP', '−6 HP', '±0 HP', '±0 HP', '±0 HP'])
-    // absentAfterDays = 3 → ab dem 4. Tag in Folge ohne Quest ist Pause.
-    expect(rows.find((row) => row.score === 'absent')?.when).toContain('ab dem 4. Tag')
+    // slumpPauseAfterDays = 3 → nach 3 Tagen mit HP-Verlust in Folge ist Pause, bis zum nächsten guten Tag.
+    expect(rows.find((row) => row.score === 'absent')).toMatchObject({
+      label: 'Pause',
+      when: 'nach 3 Tagen mit HP\u2011Verlust in Folge – bis zu deinem nächsten guten Tag verlierst du keine Lebenspunkte',
+    })
     // Eine Wochenquest allein macht den Tag zu „Ein Anfang“; „Nichts erledigt“ heißt wirklich gar nichts.
     expect(rows.find((row) => row.score === 'weak')?.when).toContain('oder immerhin eine Wochenquest')
     expect(rows.find((row) => row.score === 'missed')?.when).toBe('gar keine Quest erledigt, auch keine Wochenquest')
@@ -160,6 +163,10 @@ describe('Lebenspunkte: Erklärung der Tageswertung', () => {
     expect(notes).toContain('höchstens −6 HP')
     expect(notes).toContain(
       'Wochenquests kosten nie Lebenspunkte – sie helfen sogar: Erledigst du an einem Tag statt deiner Tagesquests nur eine Wochenquest, zählt er als „Ein Anfang“ (−1 HP) statt „Nichts erledigt“ (−6 HP).',
+    )
+    // Ein Durchhänger kostet höchstens 3 × −6 = −18 HP; in der Pause wird kein Streak-Schutz verbraucht.
+    expect(notes).toContain(
+      'Pause: Nach 3 Tagen mit Schaden in Folge ruht der Schaden – bis zu deinem nächsten guten Tag. Ein Durchhänger kostet so höchstens −18 HP, und dein ❄️ Streak-Schutz bleibt in der Pause im Beutel.',
     )
     expect(notes).toContain('45 + 5 je Level (Level 1: 50 HP)')
     expect(notes).toContain('15 % deines Goldes, höchstens 100 Gold,')
