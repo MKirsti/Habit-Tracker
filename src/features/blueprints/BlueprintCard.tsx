@@ -2,8 +2,9 @@ import { Check, ChevronRight, Hourglass, Swords, Trophy } from 'lucide-react'
 import { useId } from 'react'
 import type { CSSProperties } from 'react'
 import type { CampaignBlueprint } from '../../data/blueprints'
-import { ATTRIBUTES } from '../../domain/attributes'
+import type { AttributeId } from '../../domain/types'
 import { AttributeChip, Badge, cn } from '../../ui'
+import { ACCENT_SURFACE, attributeAccentVars } from '../campaignTheme'
 import { durationLabel } from './blueprintText'
 
 export interface BlueprintCardProps {
@@ -27,13 +28,29 @@ export interface BlueprintCardProps {
   disabled?: boolean
   /** Überschriften-Ebene des Titels. Standard: h3. */
   headingLevel?: 'h2' | 'h3'
+  /**
+   * Attribut, dessen Farbe die Karte trägt. Standard: das Haupt-Attribut der Vorlage. Ist eine Klasse gewählt
+   * (bzw. läuft eine Kampagne mit Klasse), deren Haupt-Attribut – siehe `blueprintAccentAttribute`.
+   */
+  accent?: AttributeId
   className?: string
+}
+
+const CLASSES_BADGE_STYLE: CSSProperties = {
+  borderColor: 'var(--accent-35)',
+  backgroundColor: 'var(--accent-10)',
+  color: 'var(--accent-text)',
 }
 
 /**
  * Karte einer Kampagnen-Vorlage in der Bibliothek: großes Icon, Titel, Tagline, Attribute, Laufzeit,
  * Klassenwahl und Status. Die ganze Karte ist antippbar – der Titel ist ein Button, der sich unsichtbar
  * über die Karte spannt (kurzer zugänglicher Name, Tagline und Status als Beschreibung).
+ *
+ * Akzent: die Farbe des Haupt-Attributs (`attributeAccentVars`, CSS-Variablen auf dem `<article>`; bei gewählter
+ * Klasse deren Farbe, siehe `accent`) – zart im
+ * Rahmen, in der Lichtkante, im Schein oben links und im Icon-Rahmen; beim Überfahren und als Auswahl kräftiger.
+ * Gold bleibt für „Ausgewählt“ und „Gemeistert“.
  */
 export function BlueprintCard({
   blueprint,
@@ -45,6 +62,7 @@ export function BlueprintCard({
   runningLabel,
   disabled = false,
   headingLevel: Heading = 'h3',
+  accent = blueprint.primaryAttribute,
   className,
 }: BlueprintCardProps) {
   const id = useId()
@@ -54,51 +72,58 @@ export function BlueprintCard({
   const classesId = `${id}-classes`
   const choiceId = `${id}-choice`
   const showsChoice = (selected && selectionLabel !== undefined) || (running && runningLabel !== undefined)
-  const color = ATTRIBUTES[blueprint.primaryAttribute].color
   const paths = blueprint.paths ?? []
   const hasStatus = running || mastered || selected
-
-  const accent: CSSProperties = {
-    // Leichter Schein in der Farbe des Haupt-Attributs – jede Vorlage bekommt so ihre eigene Stimmung.
-    backgroundImage: `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)`,
-  }
-  const medallion: CSSProperties = {
-    backgroundImage: `radial-gradient(circle at 50% 30%, color-mix(in srgb, ${color} 30%, transparent), color-mix(in srgb, ${color} 6%, transparent) 72%)`,
-    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 42%, transparent), 0 10px 26px -14px ${color}`,
-  }
 
   return (
     <article
       data-state={disabled ? 'disabled' : selected ? 'selected' : undefined}
+      data-accent={accent}
+      style={attributeAccentVars(accent)}
       className={cn(
         'group relative isolate flex h-full flex-col overflow-hidden rounded-2xl border p-4 sm:p-5',
         'transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out',
         'has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gold-bright',
         selected
-          ? 'border-gold/75 bg-linear-to-b from-[#2a2010]/95 to-surface/95 shadow-[inset_0_1px_0_rgb(240_201_106/0.16),0_0_0_1px_rgb(212_165_72/0.25),0_18px_44px_-20px_rgb(212_165_72/0.55)]'
+          ? cn(
+              'border-(--accent-60) shadow-[inset_0_1px_0_var(--accent-20),0_0_0_1px_var(--accent-35),0_18px_44px_-20px_var(--accent-60)]',
+              ACCENT_SURFACE,
+            )
           : disabled
             ? 'border-border/80 bg-surface/55'
-            : 'border-border bg-linear-to-b from-surface-raised/85 to-surface/90 shadow-card hover:-translate-y-0.5 hover:border-gold-dim/80 hover:shadow-raised',
+            : 'border-[color-mix(in_srgb,var(--accent)_16%,var(--color-border))] bg-linear-to-b from-surface-raised/85 to-surface/90 shadow-card hover:-translate-y-0.5 hover:border-(--accent-35) hover:shadow-[0_0_0_1px_var(--accent-10),0_18px_44px_-22px_var(--accent-35)]',
         className,
       )}
     >
-      {/* Akzent-Schein + feine Lichtkante oben */}
-      <span aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={accent} />
+      {/* Akzent-Schein oben links + feine Lichtkante oben – in der Farbe des Haupt-Attributs */}
+      <span
+        aria-hidden="true"
+        className={cn(
+          'pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(120%_70%_at_0%_0%,var(--accent-10),transparent_62%)] transition-opacity duration-200',
+          disabled && 'opacity-60',
+        )}
+      />
       <span
         aria-hidden="true"
         className={cn(
           'pointer-events-none absolute inset-x-8 top-0 h-px bg-linear-to-r from-transparent to-transparent',
-          selected ? 'via-gold-bright/70' : 'via-gold/30',
+          selected ? 'via-(--accent)' : disabled ? 'via-(--accent-20)' : 'via-(--accent-35) group-hover:via-(--accent-60)',
         )}
       />
 
       <div className="flex items-start justify-between gap-3">
+        {/* Icon-Rahmen (Medaillon) in der Akzentfarbe */}
         <span
           aria-hidden="true"
-          style={medallion}
+          data-medallion=""
           className={cn(
-            'grid size-14 shrink-0 place-items-center rounded-2xl text-[1.875rem] leading-none transition-transform duration-300 ease-out',
-            !disabled && 'group-hover:scale-105 group-hover:-rotate-3',
+            'grid size-14 shrink-0 place-items-center rounded-2xl text-[1.875rem] leading-none',
+            'bg-[radial-gradient(circle_at_50%_30%,var(--accent-20),var(--accent-5)_72%)]',
+            'transition-[transform,box-shadow] duration-300 ease-out',
+            selected
+              ? 'shadow-[inset_0_0_0_1px_var(--accent-60),0_10px_26px_-12px_var(--accent)]'
+              : 'shadow-[inset_0_0_0_1px_var(--accent-35),0_10px_26px_-14px_var(--accent-60)]',
+            !disabled && 'group-hover:scale-105 group-hover:-rotate-3 group-hover:shadow-[inset_0_0_0_1px_var(--accent-60),0_10px_26px_-12px_var(--accent)]',
             disabled && 'opacity-70 grayscale-[35%]',
           )}
         >
@@ -152,7 +177,7 @@ export function BlueprintCard({
         {blueprint.tagline}
       </p>
       {selected && selectionLabel !== undefined && (
-        <p id={choiceId} className="mt-2 text-sm font-medium text-gold-bright">
+        <p id={choiceId} className="mt-2 text-sm font-medium text-(--accent-text)">
           <span className="sr-only">Deine Wahl: </span>
           {selectionLabel}
         </p>
@@ -166,7 +191,8 @@ export function BlueprintCard({
 
       {paths.length > 0 && (
         <p id={classesId} className="mt-3">
-          <Badge tone="gold" className="gap-1.5">
+          {/* Etikett in der Akzentfarbe (Inline-Stil überstimmt die neutrale Tonalität des Badges). */}
+          <Badge data-classes="" className="gap-1.5" style={CLASSES_BADGE_STYLE}>
             <span>Klassenwahl</span>
             <span aria-hidden="true" className="tracking-[0.12em]">
               {paths.map((path) => path.icon).join('')}
@@ -189,7 +215,7 @@ export function BlueprintCard({
           </span>
           <span className="ml-auto inline-flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-              <Hourglass aria-hidden="true" className="size-3.5 text-gold/80" />
+              <Hourglass aria-hidden="true" className="size-3.5 text-(--accent-60)" />
               <span>
                 <span className="sr-only">Laufzeit: </span>
                 {durationLabel(blueprint.durationDays)}
@@ -199,7 +225,7 @@ export function BlueprintCard({
               aria-hidden="true"
               className={cn(
                 'size-5 shrink-0 transition-[transform,color] duration-200',
-                disabled ? 'text-faint/60' : 'text-gold/70 group-hover:translate-x-0.5 group-hover:text-gold-bright',
+                disabled ? 'text-faint/60' : 'text-(--accent-60) group-hover:translate-x-0.5 group-hover:text-(--accent)',
               )}
             />
           </span>

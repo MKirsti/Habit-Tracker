@@ -7,6 +7,8 @@ import { ATTRIBUTES } from '../../domain/attributes'
 import type { CharacterProfile, Completion, GameState } from '../../domain/types'
 import { useMediaQuery, useToast } from '../../ui'
 import type { ToastApi, ToastOptions } from '../../ui'
+import { accentVars } from '../campaignTheme'
+import { campaignAccentById } from './campaignAccent'
 import { CelebrationOverlay } from './CelebrationOverlay'
 import {
   celebrationMemoryOf,
@@ -21,7 +23,7 @@ import type { Celebration } from './celebrations'
 import { Confetti } from './Confetti'
 import type { ConfettiBurstSpec } from './Confetti'
 import { creditedCompletions, diffGameStates, feedbackStillHolds, isBulkChange } from './feedbackEvents'
-import type { FeedbackEvent, PerfectDayEvent, XpGainedEvent } from './feedbackEvents'
+import type { ChapterCompletedEvent, FeedbackEvent, PerfectDayEvent, XpGainedEvent } from './feedbackEvents'
 import {
   attributeToastText,
   bonusGrowthToastText,
@@ -37,7 +39,8 @@ const HIGHLIGHT_TOAST_MS = 5000
 /** Kurzer Hinweis „Tagesbonus steigt auf …“ (wie ein XP-Toast). */
 const BONUS_GROWTH_TOAST_MS = 3500
 
-type ConfettiIntensity = ConfettiBurstSpec['intensity']
+/** Konfetti, das zu einer Änderung passt: Stärke und ggf. die Kampagnenfarbe (Kapitel). */
+type ConfettiChoice = Pick<ConfettiBurstSpec, 'intensity' | 'accent'>
 
 /**
  * Zentrale Spiel-Rückmeldung: beobachtet den Spielzustand und zeigt XP-Toasts, Attribut-Aufstiege,
@@ -55,6 +58,9 @@ type ConfettiIntensity = ConfettiBurstSpec['intensity']
  * - Der Bonus des Perfekten Tages erscheint immer als Tagessumme (wie in der Tagesbilanz): Wächst er,
  *   wird der Toast ersetzt statt ein „inkl. … Bonus-XP“ an XP-Toasts zu hängen.
  * - XP werden über die geänderten Erledigungen den Quests zugeordnet – auch nachgetragene.
+ * - Kampagnenfarbe: Kapitel-Toast (Icon-Rahmen), Kapitel-Konfetti und die Szene „Kampagne gemeistert“ tragen die
+ *   Hauptfarbe der Kampagne (`campaignAccentById`); XP, Belohnung und Pokal bleiben golden. Ohne Attribut bleibt
+ *   alles golden.
  */
 export function GameFeedback() {
   const { data, state } = useGameContext()
@@ -123,7 +129,7 @@ export function GameFeedback() {
     }
     // Höchstens ein Konfetti pro Änderung.
     const confetti = present(toastEvents, state)
-    if (confetti && fancy) addBurst({ intensity: confetti, ...toastOrigin() })
+    if (confetti && fancy) addBurst({ ...confetti, ...toastOrigin() })
   }, [
     state,
     data.profile,
@@ -159,15 +165,17 @@ export function GameFeedback() {
   // Pro Szene genau ein Konfetti-Burst (auch wenn Effekte im StrictMode doppelt laufen).
   const burstFor = useRef<number | undefined>(undefined)
   const reveal = useCallback(
-    (id: number, origin: { x: number; y: number }) => {
+    (id: number, origin: { x: number; y: number }, accent: string | undefined) => {
       if (!fancy || burstFor.current === id) return
       burstFor.current = id
-      addBurst({ mode: 'burst', intensity: 'full', ...origin })
+      addBurst({ mode: 'burst', intensity: 'full', accent, ...origin })
     },
     [fancy, addBurst],
   )
 
   const current = queue[0]
+  // Kampagne gemeistert: in der Hauptfarbe der Kampagne (Level-Up und Kampagnen ohne Attribut bleiben golden).
+  const accent = current?.kind === 'campaign' ? campaignAccentById(state, current.event.campaignId) : undefined
   return (
     <>
       {typeof document !== 'undefined' &&
@@ -179,7 +187,8 @@ export function GameFeedback() {
                 celebration={current}
                 fancy={fancy}
                 onClose={() => close(current.id)}
-                onReveal={(origin) => reveal(current.id, origin)}
+                onReveal={(origin) => reveal(current.id, origin, accent)}
+                accent={accent}
               />
             )}
           </AnimatePresence>,
@@ -368,11 +377,11 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
 
   /**
    * Zeigt die Toasts zu `events`, soweit sie in `state` noch stimmen, und meldet, ob dazu Konfetti
-   * passt (Perfekter Tag: dezent, Kapitel: voll).
+   * passt (Perfekter Tag: dezent, Kapitel: voll – in der Farbe der Kampagne).
    */
   const present = useCallback(
-    (events: readonly FeedbackEvent[], state: GameState): ConfettiIntensity | undefined => {
-      let confetti: ConfettiIntensity | undefined
+    (events: readonly FeedbackEvent[], state: GameState): ConfettiChoice | undefined => {
+      let confetti: ConfettiChoice | undefined
       for (const event of events) {
         if (!feedbackStillHolds(event, state)) continue
         switch (event.type) {
@@ -382,24 +391,31 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
           case 'perfect-day':
             if (!event.today) {
               claim(toast({ tone: 'xp', icon: <Star />, duration: HIGHLIGHT_TOAST_MS, ...perfectDayToastText(event) }), [event])
-              confetti ??= 'light'
+              confetti ??= { intensity: 'light' }
               break
             }
             // Immer die aktuelle Tagessumme – auch für Toasts, die nach einer Szene nachgeholt werden.
             showPerfectToday(event, state.todayState.perfectBonusXp)
             if (!event.update) {
-              confetti ??= 'light'
+              confetti ??= { intensity: 'light' }
               // Neue XP-Sitzung: Quests von vor dem Perfekten Tag landen nicht in einem Toast danach.
               xp.current = null
             }
             break
-          case 'chapter-completed':
+          case 'chapter-completed': {
+            const accent = campaignAccentById(state, event.campaignId)
             claim(
-              toast({ tone: 'xp', icon: event.campaignIcon, duration: HIGHLIGHT_TOAST_MS, ...chapterToastText(event) }),
+              toast({
+                tone: 'xp',
+                icon: accent === undefined ? event.campaignIcon : <ChapterToastIcon event={event} accent={accent} />,
+                duration: HIGHLIGHT_TOAST_MS,
+                ...chapterToastText(event),
+              }),
               [event],
             )
-            confetti = 'full'
+            confetti = { intensity: 'full', accent }
             break
+          }
           case 'attribute-level-up':
             claim(toast({ tone: 'success', icon: ATTRIBUTES[event.attribute].icon, ...attributeToastText(event) }), [event])
             break
@@ -455,6 +471,22 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
   }, [])
 
   return { present, revoke, syncPerfectBonus, resetSessions }
+}
+
+/**
+ * Icon des Kapitel-Toasts: das Emoji der Kampagne in einem Ring in ihrer Farbe. Deckt den goldenen Icon-Kreis
+ * des XP-Toasts ab (gleiche Größe, deckende Fläche); der Toast selbst bleibt golden – er meldet XP.
+ */
+function ChapterToastIcon({ event, accent }: { event: ChapterCompletedEvent; accent: string }) {
+  return (
+    <span
+      data-chapter-accent={accent}
+      style={accentVars(accent)}
+      className="grid size-9 place-items-center rounded-full bg-[color-mix(in_srgb,var(--accent)_16%,var(--color-surface-raised))] shadow-[0_0_14px_-3px_var(--accent-60)] ring-1 ring-(--accent-60) ring-inset"
+    >
+      {event.campaignIcon}
+    </span>
+  )
 }
 
 // ---------------------------------------------------------------------------

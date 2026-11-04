@@ -2,8 +2,8 @@ import { Check, CircleAlert } from 'lucide-react'
 import { useId } from 'react'
 import type { Ref } from 'react'
 import type { BlueprintPath } from '../../data/blueprints'
-import { ATTRIBUTES } from '../../domain/attributes'
-import { AttributeChip, cn, tintStyle } from '../../ui'
+import { AttributeChip, cn } from '../../ui'
+import { ACCENT_SURFACE, attributeAccentVars } from '../campaignTheme'
 
 export interface ClassPickerProps {
   paths: readonly BlueprintPath[]
@@ -22,6 +22,8 @@ export interface ClassPickerProps {
 /**
  * Klassenwahl: drei große Radio-Karten (Icon, Klasse, Art, Beschreibung, Attribute). Echte Radio-Buttons
  * (Pfeiltasten, Screenreader); der Klassenname ist das Label und spannt sich unsichtbar über die Karte.
+ * Jede Karte trägt die Farbe ihres Haupt-Attributs (Rahmen, Icon-Rahmen, Art, Auswahl-Anzeige) – gewählt
+ * leuchtet sie in dieser Farbe.
  */
 export function ClassPicker({ paths, value, onChange, error = false, firstInputRef, labelledBy, disabled = false }: ClassPickerProps) {
   const name = useId()
@@ -78,21 +80,33 @@ function ClassCard({ name, path, checked, onSelect, inputRef, disabled, invalid 
   const id = useId()
   const inputId = `${id}-input`
   const descriptionId = `${id}-description`
-  const color = ATTRIBUTES[path.primaryAttribute].color
   return (
     <div
       data-checked={checked || undefined}
+      data-accent={path.primaryAttribute}
+      style={attributeAccentVars(path.primaryAttribute)}
       className={cn(
         'relative isolate flex flex-col rounded-2xl border p-3.5 transition-[border-color,background-color,box-shadow] duration-200 sm:p-4',
         'has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-gold-bright',
         checked
-          ? 'border-gold/75 bg-linear-to-b from-[#2a2010]/95 to-surface/95 shadow-[inset_0_1px_0_rgb(240_201_106/0.16),0_0_0_1px_rgb(212_165_72/0.22),0_14px_34px_-18px_rgb(212_165_72/0.55)]'
+          ? cn(
+              'border-(--accent-60) shadow-[inset_0_1px_0_var(--accent-20),0_0_0_1px_var(--accent-35),0_14px_34px_-18px_var(--accent-60)]',
+              ACCENT_SURFACE,
+            )
           : invalid
             ? 'border-danger/60 bg-surface/70 hover:border-danger'
-            : 'border-border bg-surface/70 hover:border-border-strong hover:bg-surface-raised/70',
+            : 'border-[color-mix(in_srgb,var(--accent)_14%,var(--color-border))] bg-surface/70 hover:border-(--accent-35) hover:bg-surface-raised/70',
         disabled && 'pointer-events-none opacity-60',
       )}
     >
+      {/* Feine Lichtkante oben in der Klassenfarbe */}
+      <span
+        aria-hidden="true"
+        className={cn(
+          'pointer-events-none absolute inset-x-6 top-0 h-px bg-linear-to-r from-transparent to-transparent transition-opacity duration-200',
+          checked ? 'via-(--accent)' : 'via-(--accent-35)',
+        )}
+      />
       <input
         ref={inputRef}
         id={inputId}
@@ -108,11 +122,13 @@ function ClassCard({ name, path, checked, onSelect, inputRef, disabled, invalid 
       <div className="flex items-start gap-3 sm:flex-1 sm:flex-col sm:items-center sm:text-center">
         <span
           aria-hidden="true"
+          data-medallion=""
           className={cn(
-            'grid size-12 shrink-0 place-items-center rounded-xl border text-[1.75rem] leading-none transition-transform duration-300 sm:size-14 sm:text-[2rem]',
-            checked && 'scale-105',
+            'grid size-12 shrink-0 place-items-center rounded-xl border text-[1.75rem] leading-none transition-[transform,background-color,border-color,box-shadow] duration-300 sm:size-14 sm:text-[2rem]',
+            checked
+              ? 'scale-105 border-(--accent-60) bg-(--accent-20) shadow-[0_8px_22px_-10px_var(--accent)]'
+              : 'border-(--accent-35) bg-(--accent-10)',
           )}
-          style={tintStyle(color, checked ? 20 : 11, checked ? 55 : 30)}
         >
           {path.icon}
         </span>
@@ -125,7 +141,7 @@ function ClassCard({ name, path, checked, onSelect, inputRef, disabled, invalid 
               {path.className}
             </span>{' '}
             <span className="sr-only">–</span>{' '}
-            <span className="mt-0.5 block text-[0.6875rem] font-semibold tracking-[0.14em] text-gold uppercase">
+            <span className="mt-0.5 block text-[0.6875rem] font-semibold tracking-[0.14em] text-(--accent-text) uppercase">
               {path.label}
             </span>
           </label>
@@ -145,7 +161,7 @@ function ClassCard({ name, path, checked, onSelect, inputRef, disabled, invalid 
         aria-hidden="true"
         className={cn(
           'absolute top-3.5 right-3.5 grid size-6 place-items-center rounded-full border-2 transition-colors duration-200 sm:top-3 sm:right-3',
-          checked ? 'border-gold-bright bg-gold-bright text-on-gold' : 'border-border-strong bg-bg-deep/60',
+          checked ? 'border-(--accent) bg-(--accent) text-on-gold' : 'border-border-strong bg-bg-deep/60',
         )}
       >
         {checked && <Check className="size-3.5" strokeWidth={3.5} />}

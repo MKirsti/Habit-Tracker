@@ -7,6 +7,7 @@ import type { CampaignBlueprint } from '../../data/blueprints'
 import type { AdventureChoice } from '../../data/seed'
 import { CAMPAIGN_LIMIT_MESSAGE } from '../../domain/campaigns'
 import { cn } from '../../ui'
+import { blueprintAccentAttribute } from './blueprintAccent'
 import { BlueprintCard } from './BlueprintCard'
 import { BlueprintSetupDialog } from './BlueprintSetupDialog'
 import type { BlueprintLibraryMode } from './BlueprintSetupDialog'
@@ -78,6 +79,8 @@ export function BlueprintLibrary({
           const runningRef = status.running.get(blueprint.id)
           const running = isStart && runningRef !== undefined
           const isSelected = !isStart && selected?.blueprintId === blueprint.id
+          // Farbe der Karte: Haupt-Attribut der Vorlage – bzw. der gewählten oder laufenden Klasse.
+          const chosenPathId = isSelected ? selected?.options.pathId : running ? runningRef?.pathId : undefined
           return (
             <li key={blueprint.id} className="min-w-0">
               <BlueprintCard
@@ -90,6 +93,7 @@ export function BlueprintLibrary({
                 runningLabel={running && runningRef ? choiceSummary(blueprint, runningRef) : undefined}
                 disabled={running || busy}
                 headingLevel={cardHeadingLevel}
+                accent={blueprintAccentAttribute(blueprint, chosenPathId)}
               />
             </li>
           )

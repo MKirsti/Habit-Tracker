@@ -5,7 +5,8 @@ import { deleteMainQuest } from '../../data/repository'
 import { BALANCING } from '../../domain/balancing'
 import { isCampaignActive } from '../../domain/campaigns'
 import type { MainQuestState } from '../../domain/types'
-import { Badge, Button, ConfirmDialog, IconButton, ProgressBar, SectionTitle, formatNumber, useToast } from '../../ui'
+import { accentVars, campaignColor } from '../../features/campaignTheme'
+import { Badge, Button, ConfirmDialog, IconButton, ProgressBar, SectionTitle, cn, formatNumber, useToast } from '../../ui'
 import { restoreBlockedReason } from './campaignArchive'
 import { campaignOrigin, originSummary } from './campaignOrigin'
 import { errorMessage } from './errors'
@@ -133,19 +134,26 @@ function ArchivedCampaignRow({
   const origin = campaignOrigin(quest)
   const doneCount = chapters.filter((chapter) => chapter.done).length
   const percent = Math.round(progress * 100)
+  const color = campaignColor(campaign)
 
   return (
     <li
       aria-labelledby={titleId}
-      className="relative flex min-w-0 flex-col rounded-2xl border border-border bg-surface/70 p-4"
+      data-campaign-color={color}
+      style={accentVars(color)}
+      // Feiner Rand in der Kampagnenfarbe – beendete Kampagnen etwas zurückgenommen.
+      className={cn(
+        'relative flex min-w-0 flex-col rounded-2xl border bg-surface/70 p-4',
+        complete ? 'border-(--accent-35)' : 'border-(--accent-20)',
+      )}
     >
       <div className="flex items-start gap-3">
         <span
           aria-hidden="true"
           className={
             complete
-              ? 'grid size-12 shrink-0 place-items-center rounded-xl bg-gold/12 text-[1.625rem] ring-1 ring-gold/35 ring-inset'
-              : 'grid size-12 shrink-0 place-items-center rounded-xl bg-black/25 text-[1.625rem] ring-1 ring-white/6 ring-inset grayscale-[40%]'
+              ? 'grid size-12 shrink-0 place-items-center rounded-xl bg-(--accent-10) text-[1.625rem] ring-1 ring-(--accent-35) ring-inset'
+              : 'grid size-12 shrink-0 place-items-center rounded-xl bg-black/25 text-[1.625rem] ring-1 ring-(--accent-20) ring-inset grayscale-[40%]'
           }
         >
           {quest.icon}
@@ -175,13 +183,14 @@ function ArchivedCampaignRow({
           className="mt-3.5"
           size="sm"
           value={progress}
+          color={color}
           glow={complete}
           label={
             <span className="text-xs text-muted tabular-nums">
               {formatNumber(doneCount)} / {formatNumber(chapters.length)} Kapitel
             </span>
           }
-          valueLabel={<span className="text-xs font-semibold text-gold-bright">{formatNumber(percent)} %</span>}
+          valueLabel={<span className="text-xs font-semibold text-(--accent-text)">{formatNumber(percent)} %</span>}
           valueText={`${formatNumber(percent)} % – ${formatNumber(doneCount)} von ${formatNumber(chapters.length)} Kapiteln abgeschlossen`}
         />
       )}

@@ -11,10 +11,14 @@
  * - Geteilte Quests: gleicher Titel ⇒ gleiche Quest (Icon, Attribut, Rhythmus-Typ, Einheit), Bausteine aus
  *   `shared.ts` unverändert, keine Beinahe-Dubletten ("Wasser" neben "Wasser trinken").
  * - Texte: Du-Form, deutsche Typografie, Zahlen in Texten passen zu den Zielen.
+ * - Klassen-Hinweise (`BlueprintPath.levelHints`, optional): beide Stufen nicht leer, eigene Zahlen der Klasse.
+ * - Hauptfarbe: Das Haupt-Attribut (des Pfads) bekommt die meisten geplanten XP pro Woche – die Kampagne trägt nach
+ *   dem Installieren also genau die Farbe, die die Bibliothek zeigt.
  */
 import { describe, expect, it } from 'vitest'
 import { ATTRIBUTE_IDS } from '../../domain/attributes'
 import { BALANCING, DIFFICULTIES } from '../../domain/balancing'
+import { dominantAttribute, plannedWeeklyXpByAttribute } from '../../domain/training'
 import type { IsoWeekday, Schedule } from '../../domain/types'
 import { BLUEPRINTS, getBlueprint } from './index'
 import { daysToReachAtPlanPace } from './planPace'
@@ -121,6 +125,13 @@ describe('Kampagnen-Bibliothek', () => {
     expect(body?.paths?.map((path) => path.id)).toEqual(['strength', 'endurance', 'sports'])
     expect(body?.paths?.map((path) => path.label)).toEqual(['Kraftsport', 'Ausdauersport', 'Sport allgemein & Spielsport'])
     for (const path of body?.paths ?? []) expect(body?.tagline, path.label).toContain(path.label)
+    // Jede Klasse erklärt die Stufen mit ihren eigenen Zahlen; der allgemeine Hinweis gilt vor der Klassenwahl.
+    for (const path of body?.paths ?? []) {
+      for (const level of BLUEPRINT_LEVELS) {
+        expect(path.levelHints?.[level], `${path.id}.${level}`).toBeDefined()
+        expect(path.levelHints?.[level], `${path.id}.${level}`).not.toBe(body?.levelHints[level])
+      }
+    }
     expect(() => body?.build({ level: 'beginner' })).toThrow()
     expect(() => body?.build({ level: 'beginner', pathId: 'quidditch' })).toThrow()
   })
@@ -141,6 +152,14 @@ describe('Kampagnen-Bibliothek', () => {
       expect(path.label.length).toBeGreaterThan(0)
       expect(path.description.length).toBeGreaterThan(0)
       expect(path.secondaryAttributes).not.toContain(path.primaryAttribute)
+      // Klassen-Hinweise sind optional – wenn es sie gibt, dann für beide Stufen und nicht leer.
+      if (path.levelHints !== undefined) {
+        expect(Object.keys(path.levelHints).sort(), `${path.id}.levelHints`).toEqual([...BLUEPRINT_LEVELS].sort())
+        for (const level of BLUEPRINT_LEVELS) {
+          expect(path.levelHints[level].trim().length, `${path.id}.levelHints.${level}`).toBeGreaterThan(0)
+        }
+        expect(path.levelHints.beginner, `${path.id}: Stufen unterscheiden sich`).not.toBe(path.levelHints.advanced)
+      }
     }
   })
 
@@ -154,9 +173,47 @@ describe('Kampagnen-Bibliothek', () => {
         [`${path.id}.className`, path.className],
         [`${path.id}.label`, path.label],
         [`${path.id}.description`, path.description],
+        ...(path.levelHints === undefined
+          ? []
+          : BLUEPRINT_LEVELS.map((level): [string, string] => [`${path.id}.levelHints.${level}`, path.levelHints?.[level] ?? ''])),
       ]),
     ]
     for (const [where, text] of texts) expectCleanGermanText(text, `${blueprint.id}.${where}`)
+  })
+
+  const pathHintCases = BLUEPRINTS.flatMap((blueprint) =>
+    (blueprint.paths ?? []).flatMap((path) =>
+      path.levelHints === undefined
+        ? []
+        : BLUEPRINT_LEVELS.map((level) => ({
+            name: `${blueprint.id}/${path.id} · ${level}`,
+            hint: path.levelHints?.[level] ?? '',
+            content: blueprint.build({ level, pathId: path.id }),
+          })),
+    ),
+  )
+
+  it.each(pathHintCases)('$name: Klassen-Hinweis nennt die Zahlen genau dieser Klasse und Stufe', ({ hint, content }) => {
+    // Jede Zahl vor einer Einheit („6.000 Schritte“, „20 Minuten“, „2,5 L“) ist ein Tagesziel einer Quest mit dieser
+    // Einheit – oder steht so in einer Quest-Beschreibung (z. B. „mindestens 30 Minuten“ ohne Messung).
+    const units = [...new Set(content.quests.flatMap((quest) => (quest.measure ? [quest.measure.unit] : [])))]
+    for (const unit of units) {
+      const allowed = new Set([
+        ...content.quests.flatMap((quest) => (quest.measure?.unit === unit ? [quest.measure.target] : [])),
+        ...content.quests.flatMap((quest) => numbersBefore(quest.description, unit)),
+      ])
+      for (const value of numbersBefore(hint, unit)) expect([...allowed], `${unit}: ${hint}`).toContain(value)
+    }
+    // Die Kern-Quest gibt den Takt vor: Bei einer Wochenquest nennt der Hinweis genau ihre Häufigkeit.
+    const core = content.quests[0]
+    if (core?.schedule.type === 'weekly') {
+      expect(hint, `Kern-Quest ${core.title}`).toMatch(new RegExp(`(^|\\D)${core.schedule.times}(×| [\\p{L} ]+) pro Woche`, 'u'))
+    }
+    // Messbare Tagesziele, die der Hinweis mit Namen nennt („10 Liegestütze“), stimmen ebenfalls.
+    for (const quest of content.quests) {
+      if (!quest.measure) continue
+      for (const value of numbersBefore(hint, quest.title)) expect(value, `${quest.title}: ${hint}`).toBe(quest.measure.target)
+    }
   })
 
   describe.each(cases)('$name', ({ blueprint, options, content }) => {
@@ -213,6 +270,18 @@ describe('Kampagnen-Bibliothek', () => {
       expect(content.quests[0]?.attribute).toBe(primary)
       const trained = new Set(content.quests.map((quest) => quest.attribute))
       for (const attribute of secondaries) expect(trained, attribute).toContain(attribute)
+    })
+
+    it('Hauptfarbe: das Haupt-Attribut bekommt klar die meisten geplanten XP pro Woche', () => {
+      // Dieselbe Rechnung wie MainQuestState.dominantAttribute (Engine-Regel 6). So trägt die installierte Kampagne
+      // die Farbe, die Bibliothek, Klassenwahl und Vorschau zeigen – ohne Gleichstand, der von der Quest-Reihenfolge
+      // nach dem Installieren (geteilte Quests) abhinge.
+      const weights = plannedWeeklyXpByAttribute(content.quests)
+      const own = weights.get(primary) ?? 0
+      for (const [attribute, xp] of weights) {
+        if (attribute !== primary) expect(own, `${primary} ${own} vs. ${attribute} ${xp}`).toBeGreaterThan(xp)
+      }
+      expect(dominantAttribute(content.quests)).toBe(primary)
     })
 
     it('Tageslast: Einsteiger höchstens 3, Fortgeschritten höchstens 4 Pflicht-Quests an jedem Wochentag', () => {

@@ -13,6 +13,8 @@ export interface QuestRowProps {
   habit: Habit
   /** Verknüpfte Kampagne (falls vorhanden). */
   campaign?: MainQuest
+  /** Hauptfarbe dieser Kampagne (`campaignColor`) für ihr Abzeichen – ohne: Gold. */
+  campaignColor?: string
   streak: Streak
   isFirst: boolean
   isLast: boolean
@@ -25,7 +27,7 @@ export interface QuestRowProps {
  * Eine aktive Quest in der Verwaltung: Symbol, Titel, Rhythmus, Schwierigkeit/XP, Attribut, Ziel,
  * Kampagne, Serie und Aktionen. Auf dem Handy stehen Serie und Aktionen in einer eigenen Zeile.
  */
-export function QuestRow({ habit, campaign, streak, isFirst, isLast, onMove, onEdit }: QuestRowProps) {
+export function QuestRow({ habit, campaign, campaignColor, streak, isFirst, isLast, onMove, onEdit }: QuestRowProps) {
   const titleId = useId()
 
   // Am Rand gesperrt über aria-disabled statt disabled: Ein fokussierter Button behält so den Fokus, wenn die
@@ -80,7 +82,14 @@ export function QuestRow({ habit, campaign, streak, isFirst, isLast, onMove, onE
               </Badge>
             )}
             {campaign && (
-              <Badge tone="gold" icon={<span aria-hidden="true">{campaign.icon}</span>} className="min-w-0">
+              // In der Hauptfarbe der Kampagne – wie auf Kampagnen-Seite und Dashboard (Gold bleibt den XP).
+              <Badge
+                tone="gold"
+                color={campaignColor}
+                icon={<span aria-hidden="true">{campaign.icon}</span>}
+                className="min-w-0"
+                data-campaign-color={campaignColor}
+              >
                 <span className="sr-only">Kampagne: </span>
                 <span className="truncate">{campaign.title}</span>
               </Badge>

@@ -1,7 +1,7 @@
 import { motion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { confettiLifetime, createConfettiParticles } from './confetti'
+import { confettiColors, confettiLifetime, createConfettiParticles } from './confetti'
 import type { ConfettiMode, ConfettiParticle } from './confetti'
 
 export interface ConfettiBurstSpec {
@@ -12,6 +12,8 @@ export interface ConfettiBurstSpec {
   /** Ursprung als Anteil der Fensterbreite/-höhe (0..1). */
   x: number
   y: number
+  /** Kampagnenfarbe (Hex): mischt sie ins Konfetti (siehe `confettiColors`). Ohne: alle Attributfarben. */
+  accent?: string
 }
 
 export interface ConfettiProps {
@@ -21,7 +23,8 @@ export interface ConfettiProps {
 }
 
 /**
- * Leichtgewichtiges DOM-Konfetti in Gold, Pergament und Attributfarben. Liegt über allem, fängt
+ * Leichtgewichtiges DOM-Konfetti in Gold, Pergament und Attributfarben (bei Kampagnen-Feiern Gold, Pergament
+ * und die Kampagnenfarbe). Liegt über allem, fängt
  * keine Klicks ab und ist für Screenreader unsichtbar. Ob überhaupt Konfetti fliegt (Einstellung
  * „Effekte“, reduzierte Bewegung), entscheidet der Aufrufer.
  */
@@ -50,6 +53,7 @@ function ConfettiBurst({ burst, onEnd }: { burst: ConfettiBurstSpec; onEnd: (id:
       count: COUNTS[burst.intensity][burst.mode],
       mode: burst.mode,
       distance: burst.intensity === 'light' ? distance * 0.75 : distance,
+      colors: confettiColors(burst.accent),
     })
   })
 
@@ -64,7 +68,11 @@ function ConfettiBurst({ burst, onEnd }: { burst: ConfettiBurstSpec; onEnd: (id:
   }, [burst.id, particles])
 
   return (
-    <div className="absolute size-0" style={{ left: `${burst.x * 100}%`, top: `${burst.y * 100}%` }}>
+    <div
+      className="absolute size-0"
+      data-accent={burst.accent}
+      style={{ left: `${burst.x * 100}%`, top: `${burst.y * 100}%` }}
+    >
       {particles.map((particle) => (
         <Particle key={particle.id} particle={particle} />
       ))}

@@ -4,7 +4,9 @@ import { Link } from 'react-router'
 import { BALANCING } from '../../domain/balancing'
 import { isCampaignActive } from '../../domain/campaigns'
 import type { MainQuestState } from '../../domain/types'
+import { ACCENT_SURFACE, accentVars, campaignColor } from '../../features/campaignTheme'
 import { Card, ProgressBar, SectionTitle, buttonClassName, cn, formatNumber } from '../../ui'
+import { CampaignFrame } from '../campaign/CampaignFrame'
 import { campaignOrigin, originSummary } from '../campaign/campaignOrigin'
 import { campaignChapterLine, deadlineText } from './dashboardText'
 
@@ -24,6 +26,8 @@ function campaignHref(id: string): string {
 /**
  * Abschnitt „Kampagne(n)“: eine Kampagne als große Karte, mehrere als kompakte Karten (laufende zuerst,
  * dann gemeisterte) – jede führt zu ihrer Kampagne. Ohne Kampagne eine Einladung, die erste zu beginnen.
+ * Jede Karte trägt die Hauptfarbe ihrer Kampagne (`campaignColor`: Rahmen, Symbol, Fortschritt, Kapitel-Rauten);
+ * „gemeistert“ bleibt golden.
  */
 export function CampaignSection({ campaigns }: CampaignSectionProps) {
   const titleId = useId()
@@ -102,13 +106,14 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
   const deadline = complete ? undefined : deadlineText(daysLeft)
   const chapterLine = campaignChapterLine(campaign)
   const origin = campaignOrigin(quest)
+  const color = campaignColor(campaign)
 
   return (
-    <Card
+    <CampaignFrame
+      campaign={campaign}
       as="article"
-      tone="gold"
-      ornate
-      className="transition-[border-color] duration-200 hover:border-gold/60 has-[a:active]:scale-[0.995]"
+      padding="md"
+      className="transition-[border-color] duration-200 hover:border-(--accent-60) has-[a:active]:scale-[0.995]"
     >
       <Link
         to={campaignHref(quest.id)}
@@ -118,7 +123,7 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
       <div className="flex items-start gap-3">
         <div
           aria-hidden="true"
-          className="grid size-12 shrink-0 place-items-center rounded-xl bg-gold/10 text-[1.625rem] ring-1 ring-gold/30 ring-inset"
+          className="grid size-12 shrink-0 place-items-center rounded-xl bg-(--accent-10) text-[1.625rem] ring-1 ring-(--accent-35) ring-inset"
         >
           {quest.icon}
         </div>
@@ -126,7 +131,7 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
           <h3 className="font-display text-[1.0625rem] leading-snug font-semibold tracking-wide text-parchment">
             {quest.title}
           </h3>
-          {origin && <p className="mt-0.5 text-xs font-medium text-gold/90">{originSummary(origin)}</p>}
+          {origin && <p className="mt-0.5 text-xs font-medium text-(--accent-text)">{originSummary(origin)}</p>}
           <p className={cn('mt-0.5 text-sm', complete ? 'font-medium text-gold-bright' : 'text-muted')}>
             {complete && <Trophy aria-hidden className="mr-1.5 -mt-0.5 inline size-4" />}
             {chapterLine}
@@ -136,10 +141,11 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
 
       <ProgressBar
         value={progress}
+        color={color}
         glow={complete}
         className="mt-4"
         label={<span className="text-xs text-muted">Gesamtfortschritt</span>}
-        valueLabel={<span className="font-semibold text-gold-bright">{formatNumber(percent)} %</span>}
+        valueLabel={<span className="font-semibold text-(--accent-text)">{formatNumber(percent)} %</span>}
         valueText={`${formatNumber(percent)} % – ${formatNumber(doneCount)} von ${formatNumber(chapters.length)} Kapiteln abgeschlossen`}
       />
 
@@ -151,9 +157,9 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
               className={cn(
                 'size-2.5 rotate-45 rounded-[2px]',
                 chapter.done
-                  ? 'bg-gold shadow-[0_0_6px_-1px_rgb(240_201_106/0.8)]'
+                  ? 'bg-(--accent) shadow-[0_0_6px_-1px_var(--accent)]'
                   : index === currentChapterIndex
-                    ? 'bg-gold/15 ring-1 ring-gold/70'
+                    ? 'bg-(--accent-20) ring-1 ring-(--accent)'
                     : 'bg-black/40 ring-1 ring-border-strong',
               )}
             />
@@ -163,12 +169,15 @@ function CampaignCard({ campaign }: { campaign: MainQuestState }) {
 
       <div className="mt-3.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
         {deadline ? <DeadlineHint deadline={deadline} /> : <span />}
-        <span aria-hidden="true" className="ml-auto inline-flex items-center gap-1 font-medium whitespace-nowrap text-gold">
+        <span
+          aria-hidden="true"
+          className="ml-auto inline-flex items-center gap-1 font-medium whitespace-nowrap text-(--accent-text)"
+        >
           Zur Kampagne
           <ArrowRight className="size-4" />
         </span>
       </div>
-    </Card>
+    </CampaignFrame>
   )
 }
 
@@ -183,16 +192,25 @@ function CompactCampaignCard({ campaign }: { campaign: MainQuestState }) {
   const deadline = complete ? undefined : deadlineText(daysLeft)
   const origin = campaignOrigin(quest)
   const chapterLine = compactChapterLine(campaign)
+  const color = campaignColor(campaign)
 
   return (
     <article
+      data-campaign-color={color}
+      style={accentVars(color)}
       className={cn(
-        'group relative isolate rounded-2xl border px-3.5 py-3 transition-[border-color,background-color] duration-200 has-[a:active]:scale-[0.995]',
+        'group relative isolate rounded-2xl border px-3.5 py-3 shadow-card transition-[border-color,background-color] duration-200 has-[a:active]:scale-[0.995] hover:border-(--accent-60)',
+        // Laufend: nur ein Hauch der Kampagnenfarbe im Rand; gemeistert: etwas kräftiger, mit getönter Fläche.
         complete
-          ? 'border-gold/45 bg-linear-to-b from-[#2a2010]/90 to-surface/90 hover:border-gold/70'
-          : 'border-border bg-linear-to-b from-surface-raised/85 to-surface/90 shadow-card hover:border-gold-dim/80',
+          ? cn('border-(--accent-35)', ACCENT_SURFACE)
+          : 'border-(--accent-20) bg-linear-to-b from-surface-raised/85 to-surface/90',
       )}
     >
+      {/* Schmaler Farbstreifen am linken Rand – die Kampagne auf einen Blick. */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-3 left-0 w-0.5 rounded-full bg-(--accent) opacity-80"
+      />
       <Link
         to={campaignHref(quest.id)}
         aria-label={`Kampagne „${quest.title}“ öffnen`}
@@ -201,7 +219,7 @@ function CompactCampaignCard({ campaign }: { campaign: MainQuestState }) {
       <div className="flex items-center gap-3">
         <div
           aria-hidden="true"
-          className="grid size-10 shrink-0 place-items-center rounded-xl bg-gold/10 text-[1.375rem] ring-1 ring-gold/30 ring-inset"
+          className="grid size-10 shrink-0 place-items-center rounded-xl bg-(--accent-10) text-[1.375rem] ring-1 ring-(--accent-35) ring-inset"
         >
           {quest.icon}
         </div>
@@ -210,9 +228,11 @@ function CompactCampaignCard({ campaign }: { campaign: MainQuestState }) {
             <h3 className="min-w-0 truncate font-display text-[0.9375rem] leading-snug font-semibold tracking-wide text-parchment">
               {quest.title}
             </h3>
-            <span className="shrink-0 text-sm font-semibold text-gold-bright tabular-nums">{formatNumber(percent)} %</span>
+            <span className="shrink-0 text-sm font-semibold text-(--accent-text) tabular-nums">
+              {formatNumber(percent)} %
+            </span>
           </div>
-          {origin && <p className="truncate text-xs font-medium text-gold/90">{originSummary(origin)}</p>}
+          {origin && <p className="truncate text-xs font-medium text-(--accent-text)">{originSummary(origin)}</p>}
           <p className={cn('truncate text-xs', complete ? 'font-medium text-gold-bright' : 'text-muted')}>
             {complete && <Trophy aria-hidden className="mr-1 -mt-0.5 inline size-3.5" />}
             {chapterLine}
@@ -220,12 +240,13 @@ function CompactCampaignCard({ campaign }: { campaign: MainQuestState }) {
         </div>
         <ArrowRight
           aria-hidden="true"
-          className="size-4 shrink-0 text-gold/70 transition-transform duration-200 group-hover:translate-x-0.5"
+          className="size-4 shrink-0 text-(--accent-60) transition-transform duration-200 group-hover:translate-x-0.5"
         />
       </div>
       <div className="mt-2.5 flex items-center gap-3">
         <ProgressBar
           value={progress}
+          color={color}
           size="sm"
           glow={complete}
           className="min-w-0 flex-1"

@@ -7,6 +7,7 @@ import { setChapterCounter, setChapterManual } from '../../data/repository'
 import { BALANCING } from '../../domain/balancing'
 import { reachesTarget } from '../../domain/schedule'
 import type { Chapter, ChapterState, Habit, MainQuestState } from '../../domain/types'
+import { accentVars, campaignColor } from '../../features/campaignTheme'
 import { Badge, Button, IconButton, ProgressBar, cn, formatNumber, useToast } from '../../ui'
 import { chapterProgressText, formatDate, formatValue, isArchived } from './campaignText'
 import { errorMessage } from './errors'
@@ -28,7 +29,8 @@ export interface ChapterTimelineProps {
 
 /**
  * Kapitel als senkrechte Questkarte: verbundene Knoten von oben nach unten, am Ende das Ziel
- * (die Belohnung). Abgeschlossene Kapitel leuchten golden, das aktuelle Kapitel ist hervorgehoben.
+ * (die Belohnung). Abgeschlossene Kapitel, der zurückgelegte Weg und das hervorgehobene aktuelle Kapitel
+ * tragen die Hauptfarbe der Kampagne (`campaignColor`); das Ziel selbst bleibt golden.
  */
 export function ChapterTimeline({
   campaign,
@@ -40,9 +42,10 @@ export function ChapterTimeline({
 }: ChapterTimelineProps) {
   const { quest, chapters, currentChapterIndex, complete } = campaign
   const lastDone = chapters.length > 0 && chapters[chapters.length - 1].done
+  const color = campaignColor(campaign)
 
   return (
-    <ol className="relative">
+    <ol className="relative" style={accentVars(color)} data-campaign-color={color}>
       {chapters.map((state, index) => {
         const status: ChapterStatus = state.done ? 'done' : index === currentChapterIndex ? 'current' : 'upcoming'
         return (
@@ -52,6 +55,7 @@ export function ChapterTimeline({
             state={state}
             index={index}
             status={status}
+            color={color}
             habit={state.chapter.criterion.type === 'habit' ? habitsById.get(state.chapter.criterion.habitId) : undefined}
             onEdit={() => onEditChapter(state.chapter, index)}
             onAnnounce={onAnnounce}
@@ -122,7 +126,7 @@ export function ChapterTimeline({
   )
 }
 
-/** Verbindungslinie vom Knoten dieser Zeile zum nächsten. Gold = bereits zurückgelegter Weg. */
+/** Verbindungslinie vom Knoten dieser Zeile zum nächsten. Kampagnenfarbe = bereits zurückgelegter Weg. */
 function TrailSegment({ traveled }: { traveled: boolean }) {
   return (
     <span
@@ -130,7 +134,7 @@ function TrailSegment({ traveled }: { traveled: boolean }) {
       className={cn(
         'absolute top-11 bottom-0 left-[1.375rem] -translate-x-1/2',
         traveled
-          ? 'w-0.5 bg-linear-to-b from-gold to-gold/55 shadow-[0_0_8px_rgb(240_201_106/0.35)]'
+          ? 'w-0.5 bg-linear-to-b from-(--accent) to-(--accent-60) shadow-[0_0_8px_var(--accent-35)]'
           : 'w-0 border-l-2 border-dashed border-border-strong',
       )}
     />
@@ -142,12 +146,14 @@ interface ChapterNodeProps {
   state: ChapterState
   index: number
   status: ChapterStatus
+  /** Hauptfarbe der Kampagne (Hex) für die Fortschrittsbalken. */
+  color: string
   habit: Habit | undefined
   onEdit: () => void
   onAnnounce: (message: string) => void
 }
 
-function ChapterNode({ questId, state, index, status, habit, onEdit, onAnnounce }: ChapterNodeProps) {
+function ChapterNode({ questId, state, index, status, color, habit, onEdit, onAnnounce }: ChapterNodeProps) {
   const { chapter } = state
   const { today } = useGameContext()
   const titleId = useId()
@@ -163,12 +169,17 @@ function ChapterNode({ questId, state, index, status, habit, onEdit, onAnnounce 
           aria-hidden="true"
           className={cn(
             'relative grid size-11 place-items-center rounded-full font-display text-base font-bold tabular-nums',
-            status === 'done' && 'bg-linear-to-b from-gold-bright to-gold text-on-gold shadow-glow-sm',
-            status === 'current' && 'bg-surface-raised text-gold-bright shadow-glow ring-2 ring-gold',
+            // Gefüllt in der Kampagnenfarbe; der dunkle Haken hat auf jeder Attributfarbe ≥ 5:1.
+            status === 'done' &&
+              'bg-linear-to-b from-[color-mix(in_srgb,var(--accent)_78%,white)] to-(--accent) text-on-gold shadow-[0_0_10px_-1px_var(--accent-60)]',
+            status === 'current' &&
+              'bg-surface-raised text-(--accent-text) ring-2 ring-(--accent) shadow-[0_0_0_1px_var(--accent-35),0_0_22px_-4px_var(--accent-60)]',
             status === 'upcoming' && 'bg-surface text-muted ring-1 ring-border-strong',
           )}
         >
-          {status === 'current' && <span className="absolute -inset-1.5 animate-glow-pulse rounded-full ring-1 ring-gold/45" />}
+          {status === 'current' && (
+            <span className="absolute -inset-1.5 animate-glow-pulse rounded-full ring-1 ring-(--accent-60)" />
+          )}
           {status === 'done' ? (
             <motion.span initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="grid place-items-center">
               <Check className="size-5" strokeWidth={3} />
@@ -185,17 +196,21 @@ function ChapterNode({ questId, state, index, status, habit, onEdit, onAnnounce 
         className={cn(
           'relative min-w-0 rounded-2xl border p-4 sm:p-5',
           status === 'current' &&
-            'border-gold/45 bg-linear-to-b from-gold-deep/45 to-surface/95 shadow-[inset_0_1px_0_rgb(240_201_106/0.14),0_14px_36px_-18px_rgb(212_165_72/0.45)]',
-          status === 'done' && 'border-gold/20 bg-surface/80 shadow-card',
+            'border-(--accent-35) bg-linear-to-b from-[color-mix(in_srgb,var(--accent)_8%,var(--color-surface))] to-surface/95 shadow-[inset_0_1px_0_var(--accent-20),0_14px_36px_-18px_var(--accent-35)]',
+          status === 'done' && 'border-(--accent-20) bg-surface/80 shadow-card',
           status === 'upcoming' && 'border-border bg-surface/55',
         )}
       >
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold tracking-[0.14em] uppercase">
-              <span className={status === 'upcoming' ? 'text-muted' : 'text-gold'}>Kapitel {number}</span>
+              <span className={status === 'upcoming' ? 'text-muted' : 'text-(--accent-text)'}>Kapitel {number}</span>
               {status === 'current' && (
-                <Badge tone="gold" icon={<Sparkles />} className="tracking-normal normal-case">
+                <Badge
+                  color={color}
+                  icon={<Sparkles />}
+                  className="tracking-normal normal-case"
+                >
                   Aktuelles Kapitel
                 </Badge>
               )}
@@ -220,7 +235,7 @@ function ChapterNode({ questId, state, index, status, habit, onEdit, onAnnounce 
         </div>
 
         {status === 'done' && (
-          <p className="mt-1.5 flex items-center gap-1.5 text-sm font-medium text-gold-bright">
+          <p className="mt-1.5 flex items-center gap-1.5 text-sm font-medium text-(--accent-text)">
             <Check aria-hidden className="size-4" strokeWidth={2.5} />
             {state.doneDay !== undefined ? `Abgeschlossen am ${formatDate(state.doneDay, today)}` : 'Abgeschlossen'}
           </p>
@@ -238,12 +253,13 @@ function ChapterNode({ questId, state, index, status, habit, onEdit, onAnnounce 
           ) : chapter.criterion.type === 'manual' ? (
             <ManualAction questId={questId} state={state} status={status} titleId={titleId} onAnnounce={onAnnounce} />
           ) : chapter.criterion.type === 'counter' ? (
-            <CounterAction questId={questId} state={state} status={status} onAnnounce={onAnnounce} />
+            <CounterAction questId={questId} state={state} status={status} color={color} onAnnounce={onAnnounce} />
           ) : (
             <HabitProgress
               state={state}
               habit={habit}
               status={status}
+              color={color}
               archived={habit !== undefined && isArchived(habit, today)}
             />
           )}
@@ -274,11 +290,13 @@ function BrokenReference({ onEdit }: { onEdit: () => void }) {
 function ProgressLine({
   state,
   status,
+  color,
   lead,
   habit,
 }: {
   state: ChapterState
   status: ChapterStatus
+  color: string
   lead?: ReactNode
   habit?: Habit
 }) {
@@ -298,6 +316,7 @@ function ProgressLine({
       </div>
       <ProgressBar
         value={state.progress}
+        color={color}
         size={status === 'done' ? 'sm' : 'md'}
         aria-label={`Fortschritt: ${state.chapter.title}`}
         valueText={text.spoken}
@@ -311,11 +330,13 @@ function HabitProgress({
   state,
   habit,
   status,
+  color,
   archived,
 }: {
   state: ChapterState
   habit: Habit | undefined
   status: ChapterStatus
+  color: string
   /** Die Quest ist archiviert – das Kapitel kann gerade nicht fortschreiten. */
   archived: boolean
 }) {
@@ -329,7 +350,7 @@ function HabitProgress({
   ) : undefined
   return (
     <>
-      <ProgressLine state={state} status={status} lead={lead} habit={habit} />
+      <ProgressLine state={state} status={status} color={color} lead={lead} habit={habit} />
       {archived && !state.done && (
         <p className="mt-2.5 flex items-start gap-2 text-[0.8125rem] text-muted">
           <Archive aria-hidden className="mt-0.5 size-3.5 shrink-0 text-warning" />
@@ -401,11 +422,13 @@ function CounterAction({
   questId,
   state,
   status,
+  color,
   onAnnounce,
 }: {
   questId: string
   state: ChapterState
   status: ChapterStatus
+  color: string
   onAnnounce: (message: string) => void
 }) {
   const { today } = useGameContext()
@@ -478,6 +501,7 @@ function CounterAction({
       <ProgressBar
         className="mt-2"
         value={shown.progress}
+        color={color}
         size={status === 'done' ? 'sm' : 'md'}
         aria-label={`Fortschritt: ${chapter.title}`}
         valueText={text?.spoken}

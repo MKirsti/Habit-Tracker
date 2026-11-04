@@ -6,8 +6,9 @@ import { ATTRIBUTES } from '../../domain/attributes'
 import { BALANCING } from '../../domain/balancing'
 import { addDays } from '../../domain/dates'
 import { describeSchedule, questXp } from '../../domain/schedule'
-import type { DayKey, Habit } from '../../domain/types'
+import type { AttributeId, DayKey, Habit } from '../../domain/types'
 import { cn, formatNumber } from '../../ui'
+import { attributeAccentVars } from '../campaignTheme'
 import { countLabel, criterionSummary, durationLabel, formatDeadline, measureText } from './blueprintText'
 import { otherLevel as flipLevel } from './levelCompare'
 import type { LevelComparison, QuestLevelDelta } from './levelCompare'
@@ -33,6 +34,11 @@ export interface BlueprintPreviewProps {
    * Stufe gibt, sind markiert – so sieht man beim Stufenwechsel sofort, was sich ändert.
    */
   comparison?: LevelComparison
+  /**
+   * Akzentfarbe (Haupt-Attribut der Vorlage bzw. des gewählten Pfads) für Rahmen, Icon-Rahmen, Überschriften und
+   * Kapitel-Nummern. Standard: das Attribut der Kern-Quest (der ersten), die das Haupt-Attribut trainiert.
+   */
+  accent?: AttributeId
   className?: string
 }
 
@@ -41,6 +47,9 @@ const LEVEL_ICON: Record<BlueprintLevel, typeof Sprout> = { beginner: Sprout, ad
 /**
  * Live-Vorschau einer Vorlage: Kampagnen-Titel, Laufzeit bis zum Zieldatum, Quests (Rhythmus, Ziel,
  * Attribut, XP) und Kapitel mit ihren Zielen. Geteilte Quests sind markiert.
+ *
+ * Farben: Rahmen, Icon-Rahmen, Überschriften und Kapitel-Nummern in der Akzentfarbe (wie die Kapitel-Zeitleiste
+ * der fertigen Kampagne); XP und Belohnung bleiben golden.
  */
 export function BlueprintPreview({
   content,
@@ -49,9 +58,11 @@ export function BlueprintPreview({
   sharedHabits,
   sharedOwners,
   comparison,
+  accent,
   className,
 }: BlueprintPreviewProps) {
   const id = useId()
+  const accentAttribute = accent ?? content.quests[0]?.attribute
   const questsId = `${id}-quests`
   const chaptersId = `${id}-chapters`
   const questsByKey = new Map(content.quests.map((quest) => [quest.key, quest]))
@@ -59,15 +70,28 @@ export function BlueprintPreview({
 
   return (
     <div
+      data-preview=""
+      data-accent={accentAttribute}
+      style={attributeAccentVars(accentAttribute)}
       className={cn(
-        'relative overflow-hidden rounded-2xl border border-border bg-bg-deep/45 p-4 shadow-[inset_0_1px_0_rgb(255_236_200/0.04)] sm:p-5',
+        'relative isolate overflow-hidden rounded-2xl border border-[color-mix(in_srgb,var(--accent)_22%,var(--color-border))] bg-bg-deep/45 p-4 shadow-[inset_0_1px_0_rgb(255_236_200/0.04)] sm:p-5',
         className,
       )}
     >
+      {/* Zarter Schein und Lichtkante oben in der Akzentfarbe */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-28 bg-[radial-gradient(90%_100%_at_15%_0%,var(--accent-10),transparent_70%)]"
+      />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-10 top-0 h-px bg-linear-to-r from-transparent via-(--accent-35) to-transparent"
+      />
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"
-          className="grid size-11 shrink-0 place-items-center rounded-xl bg-gold/10 text-2xl leading-none ring-1 ring-gold/30 ring-inset"
+          data-medallion=""
+          className="grid size-11 shrink-0 place-items-center rounded-xl bg-(--accent-10) text-2xl leading-none ring-1 ring-(--accent-35) ring-inset"
         >
           {content.icon}
         </span>
@@ -75,7 +99,7 @@ export function BlueprintPreview({
           <p className="text-[0.6875rem] font-semibold tracking-[0.16em] text-muted uppercase">Deine Kampagne</p>
           <p className="font-display text-base leading-snug font-semibold tracking-wide text-parchment">{content.title}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[0.8125rem] text-muted">
-            <CalendarClock aria-hidden="true" className="size-3.5 shrink-0 text-gold/80" />
+            <CalendarClock aria-hidden="true" className="size-3.5 shrink-0 text-(--accent-60)" />
             <span>
               {durationLabel(durationDays)} · bis {formatDeadline(deadline)}
             </span>
@@ -85,7 +109,7 @@ export function BlueprintPreview({
 
       <div className="mt-5 grid gap-5 sm:grid-cols-2 sm:gap-6">
         <section aria-labelledby={questsId} className="min-w-0">
-          <h4 id={questsId} className="mb-2.5 text-xs font-semibold tracking-[0.16em] text-gold uppercase">
+          <h4 id={questsId} className="mb-2.5 text-xs font-semibold tracking-[0.16em] text-(--accent-text) uppercase">
             {countLabel(content.quests.length, 'Quest', 'Quests')}
           </h4>
           <ul role="list" className="flex flex-col gap-3">
@@ -121,7 +145,7 @@ export function BlueprintPreview({
         </section>
 
         <section aria-labelledby={chaptersId} className="min-w-0">
-          <h4 id={chaptersId} className="mb-2.5 text-xs font-semibold tracking-[0.16em] text-gold uppercase">
+          <h4 id={chaptersId} className="mb-2.5 text-xs font-semibold tracking-[0.16em] text-(--accent-text) uppercase">
             {countLabel(content.chapters.length, 'Kapitel', 'Kapitel')}
           </h4>
           <ol className="flex flex-col gap-2.5">
@@ -132,7 +156,8 @@ export function BlueprintPreview({
                 <li key={`${index}-${chapter.title}`} className="flex items-start gap-2.5">
                   <span
                     aria-hidden="true"
-                    className="mt-px grid size-6 shrink-0 place-items-center rounded-full border border-gold/35 bg-gold/10 font-display text-[0.6875rem] font-semibold text-gold-bright tabular-nums"
+                    data-chapter-node=""
+                    className="mt-px grid size-6 shrink-0 place-items-center rounded-full border border-(--accent-35) bg-(--accent-10) font-display text-[0.6875rem] font-semibold text-(--accent-text) tabular-nums"
                   >
                     {index + 1}
                   </span>

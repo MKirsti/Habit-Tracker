@@ -19,6 +19,7 @@ import {
   updateSettings,
 } from '../../data/repository'
 import type { HabitDraft } from '../../data/repository'
+import { ATTRIBUTES } from '../../domain/attributes'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { ToastProvider } from '../../ui'
@@ -380,6 +381,67 @@ describe('GameFeedback', () => {
     await user.click(within(levelUp).getByRole('button', { name: 'Weiter' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByText('Kapitel abgeschlossen: Der erste Funke · +100 XP')).toBeInTheDocument()
+  })
+
+  it('Kapitel und Kampagne in der Hauptfarbe der Kampagne – XP und Belohnung bleiben golden', async () => {
+    // Eigene Kampagne mit der Mönch-Vorlage als Herkunft, ohne eigene Quests → Weisheit (Silber).
+    const quest = await createMainQuest({
+      title: 'Die stille Probe',
+      icon: '📿',
+      why: 'Ruhe finden',
+      reward: 'Ein Abend im Badehaus',
+      startDay: TODAY,
+      blueprint: { id: 'monk', level: 'beginner' },
+      chapters: [
+        { id: 'first', title: 'Die erste Stille', criterion: { type: 'counter', target: 1, label: 'Stunden' } },
+        { id: 'second', title: 'Die zweite Stille', criterion: { type: 'counter', target: 1, label: 'Stunden' } },
+      ],
+    })
+    // Gestern 80 XP + 20 Bonus-XP → Level 2: Das Kapitel (+100) bringt keinen Level-Up, der Toast kommt sofort.
+    const training = await createHabit(TRAINING, '2026-11-01')
+    await setCompletionValue(training.id, '2026-11-02', 1)
+    await renderFeedback()
+    expect(screen.getByTestId('level')).toHaveTextContent('Level 2')
+    const silver = ATTRIBUTES.wisdom.color
+
+    // Kapitel: Toast mit dem Emoji der Kampagne in einem Ring ihrer Farbe, Konfetti mit ihrer Farbe.
+    await setChapterCounter(quest.id, 'first', 1, TODAY)
+    const title = await screen.findByText('Kapitel abgeschlossen: Die erste Stille · +100 XP')
+    const toast = title.closest('li')
+    const icon = toast?.querySelector<HTMLElement>('[data-chapter-accent]')
+    expect(icon).toHaveAttribute('data-chapter-accent', silver)
+    expect(icon).toHaveTextContent('📿')
+    expect(icon?.style.getPropertyValue('--accent')).toBe(silver)
+    expect(document.querySelector('[data-confetti] [data-accent]')).toHaveAttribute('data-accent', silver)
+
+    // Kampagne gemeistert: Szene in Silber, Pokal und Belohnung golden.
+    await setChapterCounter(quest.id, 'second', 1, TODAY)
+    const scene = await screen.findByRole('dialog', { name: 'Kampagne gemeistert!' })
+    const root = scene.closest<HTMLElement>('[data-tone]')
+    expect(root).toHaveAttribute('data-tone', 'accent')
+    expect(root?.style.getPropertyValue('--accent')).toBe(silver)
+    expect(scene.querySelector('[data-medallion]')).toHaveAttribute('data-medallion', 'accent')
+    expect(within(scene).getByText('Die stille Probe').className).toContain('text-(--accent-text)')
+    expect(within(scene).getByText('+500 XP').className).toContain('text-gold-bright')
+    expect(within(scene).getByText('Ein Abend im Badehaus').closest('[class*="bg-parchment"]')).not.toBeNull()
+  })
+
+  it('Kampagne ohne Attribut (keine Quests, keine Vorlage): Szene und Kapitel-Toast bleiben golden', async () => {
+    const quest = await createMainQuest({
+      title: 'Mein eigener Weg',
+      icon: '🗺️',
+      why: '',
+      reward: '',
+      startDay: TODAY,
+      chapters: [{ id: 'only', title: 'Der eine Schritt', criterion: { type: 'counter', target: 1, label: 'Schritte' } }],
+    })
+    await renderFeedback()
+    await setChapterCounter(quest.id, 'only', 1, TODAY)
+    const scene = await screen.findByRole('dialog', { name: 'Kampagne gemeistert!' })
+    const root = scene.closest<HTMLElement>('[data-tone]')
+    expect(root).toHaveAttribute('data-tone', 'gold')
+    expect(root?.style.getPropertyValue('--accent')).toBe('')
+    expect(within(scene).getByText('Mein eigener Weg').className).toContain('text-gold-bright')
   })
 
   it('zeigt die Szene ohne Effekte schlicht – ohne Konfetti', async () => {

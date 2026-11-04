@@ -14,6 +14,9 @@
  *    Auswertung wie aktive), alle übrigen in `mainQuests`.
  * 4. adventureDay = diffDays(profile.createdDay, today) + 1 (ohne Profil: 1).
  * 5. getDayState sortiert sichtbare Quests nach `order` (dann `title`); Streaks gelten zum Stichtag `day`.
+ * 6. Kampagnenfarbe: `MainQuestState.dominantAttribute` = Attribut mit den meisten planmäßigen XP pro Woche
+ *    (questXp × Termine pro Woche) unter den heute aktiven Quests der Kampagne (`linkedHabitIds`); ist keine
+ *    aktiv, unter allen bereits angelegten (archivierten/pausierten) – siehe `dominantAttributeOf`.
  *
  * Pflicht/Sichtbarkeit eines Tages richten sich nach dem an diesem Tag gültigen Rhythmus (`scheduleOn`)
  * und berücksichtigen Pausen. Bearbeiten, Archivieren und Zurückholen einer Quest ändern so nie
@@ -28,9 +31,19 @@ import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
 import { compareDays, diffDays, isValidDayKey, startOfWeek } from './dates'
 import { attributeLevelFromXp, levelFromXp, rankForLevel } from './leveling'
-import { doneDaysInWeek, habitTarget, isDone, isRequiredOn, isVisibleOn, questXp, scheduleOn } from './schedule'
+import {
+  doneDaysInWeek,
+  habitTarget,
+  isActiveOn,
+  isDone,
+  isRequiredOn,
+  isVisibleOn,
+  questXp,
+  scheduleOn,
+} from './schedule'
 import type { HabitTimeline } from './schedule'
 import { bestStreakIn, computeStreak } from './streaks'
+import { dominantAttribute } from './training'
 import type {
   AttributeId,
   AttributeState,
@@ -257,20 +270,47 @@ function linkedHabitIdsOf(quest: MainQuest, index: GameIndex): string[] {
   return [...linked.values()].sort(compareHabits).map((habit) => habit.id)
 }
 
+/**
+ * Das Attribut, das die Kampagne am stärksten trainiert (bestimmt ihre Hauptfarbe, `dominantAttribute` in
+ * `training.ts`): Gewicht jeder Quest in `linkedHabitIds` = `questXp(difficulty)` × Termine pro Woche laut dem
+ * heute gültigen Rhythmus; bei Gleichstand gewinnt die zuerst sortierte Quest (`linkedHabitIds` ist nach `order`
+ * sortiert). Gezählt werden die am Tag `today` aktiven Quests. Ist keine davon aktiv (alle archiviert oder
+ * pausiert, z. B. nach „Kampagne beenden“ mit ihren Quests), zählt ihr zuletzt gültiger Plan – so behält eine
+ * Kampagne ihre Farbe. `undefined` ohne (bereits angelegte) Quest mit Gewicht.
+ */
+function dominantAttributeOf(
+  linkedHabitIds: readonly string[],
+  index: GameIndex,
+  today: DayKey,
+): AttributeId | undefined {
+  const habits = linkedHabitIds.flatMap((id) => {
+    const habit = index.habitsById.get(id)
+    return habit !== undefined && compareDays(habit.createdDay, today) <= 0 ? [habit] : []
+  })
+  const planned = (list: readonly Habit[]) =>
+    list.map((habit) => ({ attribute: habit.attribute, difficulty: habit.difficulty, schedule: scheduleOn(habit, today) }))
+  return (
+    dominantAttribute(planned(habits.filter((habit) => isActiveOn(habit, today)))) ?? dominantAttribute(planned(habits))
+  )
+}
+
 function buildMainQuestState(quest: MainQuest, index: GameIndex, ctx: ChapterContext, today: DayKey): MainQuestState {
   const chapters = quest.chapters.map((chapter) => evaluateChapter(chapter, quest, ctx))
   const progress =
     chapters.length === 0 ? 0 : chapters.reduce((sum, chapter) => sum + chapter.progress, 0) / chapters.length
   const currentChapterIndex = chapters.findIndex((chapter) => !chapter.done)
+  const linkedHabitIds = linkedHabitIdsOf(quest, index)
   const state: MainQuestState = {
     quest,
     chapters,
     progress,
     currentChapterIndex,
     complete: chapters.length > 0 && currentChapterIndex === -1,
-    linkedHabitIds: linkedHabitIdsOf(quest, index),
+    linkedHabitIds,
   }
   if (quest.deadline !== undefined) state.daysLeft = diffDays(today, quest.deadline)
+  const dominantAttribute = dominantAttributeOf(linkedHabitIds, index, today)
+  if (dominantAttribute !== undefined) state.dominantAttribute = dominantAttribute
   return state
 }
 

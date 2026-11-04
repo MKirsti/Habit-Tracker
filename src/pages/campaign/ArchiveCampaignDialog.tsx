@@ -5,7 +5,7 @@ import { archiveMainQuest } from '../../data/repository'
 import { BALANCING } from '../../domain/balancing'
 import type { Habit, MainQuestState } from '../../domain/types'
 import { Button, Dialog, Switch, cn, formatNumber, useToast } from '../../ui'
-import { campaignQuestsToArchive } from './campaignArchive'
+import { campaignQuestsToArchive, defaultArchiveQuests } from './campaignArchive'
 import { countLabel } from './campaignText'
 import { errorMessage } from './errors'
 
@@ -20,14 +20,14 @@ export interface ArchiveCampaignDialogProps {
 
 /**
  * Rückfrage „Kampagne beenden?“ (laufend) bzw. „In die Ruhmeshalle legen?“ (gemeistert) mit dem Schalter
- * „Zugehörige Quests ebenfalls archivieren“ (Standard: an). Verdiente XP bleiben in beiden Fällen.
+ * „Zugehörige Quests ebenfalls archivieren“ (Standard: `defaultArchiveQuests`). Verdiente XP bleiben in beiden Fällen.
  */
 export function ArchiveCampaignDialog({ open, onClose, campaign, onArchived }: ArchiveCampaignDialogProps) {
   const { data, today, state } = useGameContext()
   const { toast } = useToast()
   const cancelRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
-  const [archiveQuests, setArchiveQuests] = useState(true)
+  const [archiveQuests, setArchiveQuests] = useState(() => defaultArchiveQuests(campaign))
   const [busy, setBusy] = useState(false)
   // Im Ladezustand ist der Bestätigen-Button deaktiviert (der Fokus landet auf <body>) – nach einem Fehler
   // bekommt er ihn zurück, sobald er wieder bedienbar ist.
@@ -40,12 +40,12 @@ export function ArchiveCampaignDialog({ open, onClose, campaign, onArchived }: A
     if (button?.isConnected && (active === null || active === document.body)) button.focus({ preventScroll: true })
   }, [busy])
 
-  // Bei jedem Öffnen frisch: Schalter wieder an.
+  // Bei jedem Öffnen frisch: Schalter wieder auf dem Standard der (beim Öffnen gesetzten) Kampagne.
   const [wasOpen, setWasOpen] = useState(open)
   if (open !== wasOpen) {
     setWasOpen(open)
     if (open) {
-      setArchiveQuests(true)
+      setArchiveQuests(defaultArchiveQuests(campaign))
       setBusy(false)
     }
   }

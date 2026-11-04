@@ -1,6 +1,8 @@
 # ⚔️ Plan: RPG-Habit-Tracker (Arbeitstitel: *Questlog*)
 
 > Status: **Entwurf – wartet auf Freigabe.** Jedes Modul hat eine ID (z. B. `B3`), damit du einfach sagen kannst, was rein soll und was nicht.
+>
+> Stand November 2026: Das MVP ist live. Was darüber hinaus schon umgesetzt ist, steht in [Abschnitt 8 „Umgesetzt“](#8-umgesetzt).
 
 ---
 
@@ -48,7 +50,7 @@ Legende: **MVP** = erste nutzbare Version · **P2/P3/P4** = spätere Phase · **
 | C2 | Kapitel/Meilensteine | Typen: (a) manuell abhaken, (b) automatisch („Quest X 30× erledigt“), (c) Messwert („10 km am Stück“) | MVP (a+b), P2 (c) |
 | C3 | Verknüpfung | Quests einer Hauptquest zuordnen → zählt in deren Fortschritt | MVP |
 | C4 | Boss-Kampf | Jedes Kapitel bzw. die Hauptquest ist ein Boss mit HP; jede verknüpfte Quest macht Schaden. Boss-HP wird aus Zieldatum + Quests automatisch berechnet. | P3 |
-| C5 | Mehrere Hauptquests | bis zu 3 gleichzeitig | P2 |
+| C5 | Mehrere Hauptquests | bis zu 3 gleichzeitig | ✅ umgesetzt (P2) |
 | C6 | Ruhmeshalle | Archiv geschaffter Hauptquests mit Statistik | P2 |
 
 ### D – Belohnung & Motivation
@@ -159,7 +161,7 @@ Level, Streaks und Fortschritte werden aus den `Completion`-Einträgen **berechn
 |-------|------|----------------------------------|
 | **0 – Setup** | Fundament | Projekt, Linting, Tests, automatisches Deployment auf GitHub Pages |
 | **1 – MVP „Spielbar“** | ab hier täglich nutzbar | A1 A2 A3 · B1 B2 B3 B4 B7 B8 · C1 C2(a+b) C3 · D1(Zähler) D7 · F1 · G1 G2 G3 G6 |
-| **2 – Motivation** | Belohnung & Konsequenz | D1(Bonus) D2 D3 D5 · E1 E2 E3 · B6 · C2(c) C5 C6 · F2 F3 |
+| **2 – Motivation** | Belohnung & Konsequenz | D1(Bonus) D2 D3 D5 · E1 E2 E3 · B6 · C2(c) C5 ✅ C6 · F2 F3 |
 | **3 – Episch** | Wow-Effekt | C4 Boss-Kampf · D4 Loot · D6 Effekte · F4 F5 · A5 (A4) |
 | **4 – Überall** | mehrere Geräte | G4 Sync · G5 Erinnerungen |
 
@@ -175,3 +177,15 @@ Jede Phase endet mit einer **funktionierenden, getesteten und online erreichbare
 4. **Optik:** (a) Dark Fantasy – dunkel, Gold, Pergament-Akzente · (b) Pixel-Art Retro – 8-Bit-Schrift, Sprites · (c) Modern & clean mit RPG-Elementen *(Empfehlung: a)*
 5. **Module:** Welche IDs rein/raus? Oder „Empfehlung übernehmen“.
 6. **Dein echtes Ziel:** Was ist deine erste Hauptquest, und welche 3–6 Gewohnheiten gehören dazu? Dann richte ich die App direkt damit ein und stimme das Balancing darauf ab.
+
+---
+
+## 8. Umgesetzt
+
+Über das MVP (Phase 1) hinaus ist bereits fertig:
+
+- **C5 Mehrere Hauptquests** ✅ – bis zu 3 Kampagnen gleichzeitig aktiv; abgeschlossene belegen keinen Platz. Kampagnen lassen sich beenden, zurückholen und endgültig löschen (Liste „Beendete & gemeisterte Kampagnen“).
+- **Kampagnen-Bibliothek** – 8 fertige Vorlagen: 📚 Der Weg des Gelehrten · ⚔️ Der Weg des Körpers · ⚗️ Der Alchemist · 📿 Der stille Mönch · 🌄 Der Frühaufsteher · 🏰 Die Festung · 🧑‍🤝‍🧑 Die Gefährten · 🌍 Der Polyglotte. Jede gibt es in zwei **Stufen** (Einsteiger / Fortgeschritten) mit eigenen Startwerten und Kapitel-Zielen. „Der Weg des Körpers“ hat eine **Klassenwahl**: 🗡️ Krieger (Kraftsport), 🏹 Waldläufer (Ausdauersport), 🛡️ Gladiator (Sport allgemein & Spielsport) – eine Wahl der Inhalte, kein XP-Bonus wie in A4. Vor dem Start zeigt eine Vorschau Quests und Kapitel; Quests, die mehrere Kampagnen brauchen (z. B. „Wasser trinken“), werden geteilt statt verdoppelt. Die erste Kampagne lässt sich schon im Onboarding wählen.
+- **Kampagnenfarben** – jede Kampagne trägt die Farbe des Attributs, das sie am stärksten trainiert (meiste planmäßige XP pro Woche): 💪 Stärke Rot · 🧠 Intelligenz Blau · 🧘 Weisheit Silber/Eisblau · 🗣️ Charisma Bernstein · ❤️ Vitalität Grün · 🛡️ Disziplin Violett. Die Farbe färbt Rahmen, Leuchten, Kapitel-Zeitleiste und Fortschritt; Gold bleibt für XP, Belohnungen, „Gemeistert“ und den App-Rahmen. Jede Vorlage trainiert ihr Haupt-Attribut am stärksten – die Bibliothek zeigt also schon vor dem Start die spätere Farbe –, und eine beendete Kampagne behält ihre Farbe in der Ruhmeshalle.
+
+Details: `docs/ARCHITECTURE.md` („Kampagnen-Bibliothek“, „Kampagnenfarben“).

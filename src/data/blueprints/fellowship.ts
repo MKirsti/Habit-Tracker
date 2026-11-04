@@ -4,8 +4,8 @@
  * Freundschaften schlafen selten im Streit ein, sondern im Schweigen. Die Gefährten halten sie mit kleinen,
  * regelmäßigen Gesten wach:
  * - 💌 **Jemandem schreiben oder anrufen** (Charisma, Kern): jeden Tag eine echte Nachricht oder ein kurzer Anruf.
- * - 👂 **Ganz zuhören** (Weisheit): im wichtigsten Gespräch des Tages bleibt das Handy weg – Achtsamkeit im
- *   Miteinander.
+ * - 👂 **Ganz zuhören** (Weisheit, Einsteiger leicht, Fortgeschrittene mittel): im wichtigsten Gespräch des Tages
+ *   bleibt das Handy weg – Achtsamkeit im Miteinander.
  * - 💐 **Ein ehrliches Kompliment** (Charisma): 3× bzw. 5× pro Woche. Bewusst als Wochenquest, damit Tage ohne
  *   Begegnung (Homeoffice, Krankheit) nichts kaputt machen.
  * - 🫂 **Zeit mit Freunden oder Familie** (Charisma): 1× bzw. 2× pro Woche bewusst zusammen sein.
@@ -45,7 +45,7 @@ function quests(level: BlueprintLevel): BlueprintQuest[] {
       description:
         'Im wichtigsten Gespräch des Tages liegt das Handy außer Sicht – auch am Telefon kein Scrollen nebenbei. Hör zu, um zu verstehen, nicht um zu antworten.',
       attribute: 'wisdom',
-      difficulty: 'medium',
+      difficulty: advanced ? 'medium' : 'easy',
       schedule: { type: 'daily' },
     },
     {

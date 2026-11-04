@@ -9,6 +9,7 @@ import { BALANCING } from '../domain/balancing'
 import { isCampaignActive } from '../domain/campaigns'
 import type { Chapter, Habit, MainQuest, MainQuestState } from '../domain/types'
 import { activeSlotsText, freeSlotsText } from '../features/blueprints'
+import { campaignColor } from '../features/campaignTheme'
 import { Button, Card, PageHeader, SectionTitle, SegmentedControl, Select, formatNumber, useMediaQuery, useToast } from '../ui'
 import { ArchiveCampaignDialog } from './campaign/ArchiveCampaignDialog'
 import { ArchivedCampaigns } from './campaign/ArchivedCampaigns'
@@ -320,15 +321,26 @@ export function CampaignPage() {
               aria-label="Kampagne wählen"
               value={selected.quest.id}
               onChange={selectCampaign}
-              options={campaigns.map(({ quest }) => ({
-                value: quest.id,
-                label: quest.title,
-                icon: <span aria-hidden="true">{quest.icon}</span>,
+              options={campaigns.map((campaign) => ({
+                value: campaign.quest.id,
+                label: campaign.quest.title,
+                icon: (
+                  <span aria-hidden="true" className="inline-flex items-center gap-1.5">
+                    <ColorDot color={campaignColor(campaign)} />
+                    {campaign.quest.icon}
+                  </span>
+                ),
               }))}
             />
           ) : (
             <Select
-              label="Kampagne"
+              // Die native Liste kann keine Farben zeigen – der Punkt im Label steht für die gewählte Kampagne.
+              label={
+                <span className="inline-flex items-center gap-2">
+                  <ColorDot color={campaignColor(selected)} />
+                  Kampagne
+                </span>
+              }
               value={selected.quest.id}
               onChange={selectCampaign}
               options={campaigns.map(({ quest, complete }) => ({
@@ -470,6 +482,18 @@ export function CampaignPage() {
         />
       )}
     </>
+  )
+}
+
+/** Kleiner, leuchtender Punkt in der Hauptfarbe einer Kampagne (Auswahl). */
+function ColorDot({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      data-campaign-color={color}
+      className="inline-block size-2 shrink-0 rounded-full"
+      style={{ backgroundColor: color, boxShadow: `0 0 6px -1px ${color}` }}
+    />
   )
 }
 

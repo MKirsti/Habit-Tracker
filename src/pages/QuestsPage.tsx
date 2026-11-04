@@ -5,6 +5,7 @@ import { Link, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
 import { deleteHabit, moveHabit, restoreHabit } from '../data/repository'
 import type { Habit, MainQuest, Streak } from '../domain/types'
+import { campaignColor } from '../features/campaignTheme'
 import { Button, EmptyState, PageHeader, SectionTitle, buttonClassName, cn, formatNumber, useToast } from '../ui'
 import { ArchivedQuests } from './quests/ArchivedQuests'
 import { questEditButtonId } from './quests/domIds'
@@ -48,7 +49,7 @@ function compareByArchivedDay(a: Habit, b: Habit): number {
  * zurückholen oder endgültig löschen. Deep-Link `/quests?neu=1&kampagne=<id>` öffnet den Anlege-Dialog.
  */
 export function QuestsPage() {
-  const { data, today } = useGameContext()
+  const { data, today, state } = useGameContext()
   const { toast } = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -77,6 +78,14 @@ export function QuestsPage() {
   }, [active, stats, today])
 
   const campaignsById = useMemo(() => new Map<string, MainQuest>(data.mainQuests.map((q) => [q.id, q])), [data.mainQuests])
+  // Hauptfarbe je Kampagne (laufend oder beendet) – für das Kampagnen-Abzeichen der Quests.
+  const campaignColors = useMemo(
+    () =>
+      new Map(
+        [...state.mainQuests, ...state.archivedMainQuests].map((campaign) => [campaign.quest.id, campaignColor(campaign)]),
+      ),
+    [state.mainQuests, state.archivedMainQuests],
+  )
 
   // Deep-Link: /quests?neu=1(&kampagne=<id>) öffnet den Anlege-Dialog (State während des Renderns
   // anpassen), der Effekt entfernt danach die Parameter aus der Adresse.
@@ -263,6 +272,7 @@ export function QuestsPage() {
                       key={habit.id}
                       habit={habit}
                       campaign={habit.mainQuestId !== undefined ? campaignsById.get(habit.mainQuestId) : undefined}
+                      campaignColor={habit.mainQuestId !== undefined ? campaignColors.get(habit.mainQuestId) : undefined}
                       streak={streaks.get(habit.id) ?? { current: 0, best: 0, unit: 'day' }}
                       isFirst={index === 0}
                       isLast={index === active.length - 1}

@@ -10,6 +10,8 @@ import { activeCampaigns } from '../../domain/campaigns'
 import type { Habit } from '../../domain/types'
 import { AttributeChip, Badge, Button, Dialog, SectionTitle, SegmentedControl } from '../../ui'
 import type { SegmentedOption } from '../../ui'
+import { attributeAccentVars } from '../campaignTheme'
+import { blueprintAccentAttribute } from './blueprintAccent'
 import { BlueprintPreview } from './BlueprintPreview'
 import { durationLabel } from './blueprintText'
 import { ClassPicker } from './ClassPicker'
@@ -55,6 +57,10 @@ const LEVEL_OPTIONS: SegmentedOption<BlueprintLevel>[] = BLUEPRINT_LEVELS.map((l
  * Einrichtung einer Vorlage vor dem Start: bei Vorlagen mit Pfaden die **Klassenwahl** (Pflicht, nichts
  * vorausgewählt), die Stufe (Einsteiger/Fortgeschritten mit Hinweis) und eine Live-Vorschau der Quests und
  * Kapitel aus `blueprint.build()` – inklusive Hinweis auf Quests, die mit vorhandenen geteilt werden.
+ *
+ * Der Stufen-Hinweis ist der der gewählten Klasse (`BlueprintPath.levelHints`), davor der allgemeine der Vorlage.
+ * Akzentfarbe (Icon-Rahmen im Kopf, Vorschau): das Haupt-Attribut der Vorlage – nach der Klassenwahl das der
+ * gewählten Klasse, so wie die Kampagne anfangs gefärbt ist.
  */
 export function BlueprintSetupDialog({
   open,
@@ -111,6 +117,10 @@ export function BlueprintSetupDialog({
 
   const options = blueprintOptions(blueprint, level, pathId)
   const ready = !withPaths || pathId !== undefined
+  const chosenPath = withPaths ? blueprint.paths?.find((path) => path.id === pathId) : undefined
+  const levelHint = chosenPath?.levelHints?.[level] ?? blueprint.levelHints[level]
+  const accentAttribute = blueprintAccentAttribute(blueprint, chosenPath?.id)
+  const accent = attributeAccentVars(accentAttribute)
   const content = useMemo<BlueprintContent | null>(() => {
     if (withPaths && pathId === undefined) return null
     try {
@@ -206,7 +216,16 @@ export function BlueprintSetupDialog({
       onClose={handleClose}
       closeOnOverlayClick={!loading}
       size="lg"
-      icon={<span className="text-2xl leading-none">{blueprint.icon}</span>}
+      icon={
+        // Deckt den goldenen Icon-Rahmen des Dialogs mit einem Rahmen in der Akzentfarbe ab (gleiche Größe, deckend).
+        <span
+          data-dialog-accent={accentAttribute}
+          style={accent}
+          className="grid size-10 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--accent)_13%,var(--color-surface))] text-2xl leading-none shadow-[0_6px_18px_-10px_var(--accent)] ring-1 ring-(--accent-35) transition-[background-color,box-shadow] duration-300 ring-inset"
+        >
+          {blueprint.icon}
+        </span>
+      }
       title={blueprint.title}
       description={blueprint.tagline}
       footer={
@@ -227,7 +246,7 @@ export function BlueprintSetupDialog({
         </>
       }
     >
-      <div className="flex flex-col gap-6">
+      <div data-accent={accentAttribute} style={accent} className="flex flex-col gap-6">
         <div>
           <p className="text-[0.9375rem] leading-relaxed text-parchment/90">{blueprint.description}</p>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -292,7 +311,7 @@ export function BlueprintSetupDialog({
             value={level}
             onChange={setLevel}
             options={LEVEL_OPTIONS.map((option) => ({ ...option, disabled: loading }))}
-            hint={blueprint.levelHints[level]}
+            hint={levelHint}
           />
         </section>
 
@@ -321,6 +340,7 @@ export function BlueprintSetupDialog({
                 sharedHabits={sharedHabits}
                 sharedOwners={sharedOwners}
                 comparison={comparison}
+                accent={accentAttribute}
               />
             </motion.div>
           )}

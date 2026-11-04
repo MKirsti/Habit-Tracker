@@ -334,6 +334,15 @@ export interface MainQuestState {
    * zugeordnet sind). Ohne Doppelte, sortiert nach `order` (dann Titel). Archivierte Quests sind enthalten.
    */
   linkedHabitIds: string[]
+  /**
+   * Das Attribut, das diese Kampagne am stärksten trainiert – bestimmt ihre Hauptfarbe. Berechnet aus den
+   * am Stichtag aktiven Quests in `linkedHabitIds`, gewichtet mit den XP, die sie pro Woche planmäßig bringen
+   * (questXp × Termine pro Woche, `src/domain/training.ts`). Gleichstand → das Attribut der zuerst sortierten
+   * beteiligten Quest. Ist keine Quest aktiv (alle archiviert oder pausiert), zählt ersatzweise der zuletzt gültige
+   * Plan aller bereits angelegten Quests – die Kampagne behält so ihre Farbe, auch beendet in der Ruhmeshalle.
+   * `undefined`, wenn gar keine Quest dazugehört (die UI nutzt dann das Haupt-Attribut der Vorlage bzw. Gold).
+   */
+  dominantAttribute?: AttributeId
 }
 
 export interface GameTotals {

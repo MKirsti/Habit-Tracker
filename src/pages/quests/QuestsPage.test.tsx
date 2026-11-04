@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { db } from '../../data/db'
 import * as repository from '../../data/repository'
 import type { HabitDraft } from '../../data/repository'
+import { ATTRIBUTES } from '../../domain/attributes'
 import { deriveGameState } from '../../domain/engine'
 import type { DayKey, Habit } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
@@ -115,6 +116,21 @@ async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('QuestsPage – Liste', () => {
+  it('zeigt das Kampagnen-Abzeichen in der Hauptfarbe der Kampagne (Gold ohne Attribut)', async () => {
+    // Die Quests der Kampagne trainieren vor allem Weisheit → Silber; eine Kampagne ohne Quests bleibt golden.
+    const calm = await createCampaign('Stille Abende')
+    await createHabit({ ...MEDITATION, difficulty: 'hard', mainQuestId: calm.id }, '2026-10-20')
+    await createHabit({ ...READING, difficulty: 'easy', schedule: { type: 'weekly', times: 1 }, mainQuestId: calm.id }, '2026-10-20')
+
+    renderWithGame(<QuestsPage />, { route: '/quests' })
+    const badge = (await screen.findByRole('listitem', { name: 'Meditieren' })).querySelector('[data-campaign-color]')
+    expect(badge).toHaveTextContent('Kampagne: Stille Abende')
+    expect(badge).toHaveAttribute('data-campaign-color', ATTRIBUTES.wisdom.color)
+    expect(questRow('Lesen').querySelector('[data-campaign-color]')).toHaveAttribute('data-campaign-color', ATTRIBUTES.wisdom.color)
+    // XP bleiben golden.
+    expect(within(questRow('Meditieren')).getByText('40 XP')).toHaveClass('text-gold')
+  })
+
   it('erklärt im Leerzustand, was Quests sind, und verweist auf die Kampagnen-Bibliothek', async () => {
     const user = userEvent.setup()
     renderWithGame(<QuestsPage />, { route: '/quests' })

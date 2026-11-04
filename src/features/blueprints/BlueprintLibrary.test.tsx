@@ -8,9 +8,11 @@ import { BLUEPRINTS } from '../../data/blueprints'
 import { archiveMainQuest, createHabit, resetAllData, saveProfile } from '../../data/repository'
 import { installBlueprint } from '../../data/seed'
 import type { AdventureChoice } from '../../data/seed'
+import { ATTRIBUTES } from '../../domain/attributes'
 import { CAMPAIGN_LIMIT_MESSAGE } from '../../domain/campaigns'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
+import { ACCENT_SURFACE } from '../campaignTheme'
 import { BlueprintLibrary } from './index'
 import type { BlueprintLibraryProps } from './index'
 
@@ -360,5 +362,155 @@ describe('BlueprintLibrary – Modus „start“', () => {
     })
     expect(scholar).not.toHaveAttribute('aria-disabled')
     expect(screen.getByText('0 von 3 Kampagnen aktiv')).toBeInTheDocument()
+  })
+})
+
+/** Akzentfarbe (`--accent`) des nächsten Elements mit `data-accent` – Karte, Klasse, Dialog-Inhalt, Vorschau. */
+function accentOf(element: Element | null): string {
+  const holder = element?.closest('[data-accent]')
+  if (!(holder instanceof HTMLElement)) throw new Error('Kein Element mit Akzentfarbe gefunden')
+  return holder.style.getPropertyValue('--accent')
+}
+
+const BODY = BLUEPRINTS.find((blueprint) => blueprint.id === 'body')
+
+function pathHint(pathId: string, level: 'beginner' | 'advanced'): string {
+  const hint = BODY?.paths?.find((path) => path.id === pathId)?.levelHints?.[level]
+  if (hint === undefined) throw new Error(`Kein Hinweis für ${pathId}/${level}`)
+  return hint
+}
+
+describe('BlueprintLibrary – Farben', () => {
+  it('jede Karte trägt die Farbe ihres Haupt-Attributs (Rahmen, Schein, Icon-Rahmen)', async () => {
+    await renderLibrary()
+    for (const blueprint of BLUEPRINTS) {
+      const card = screen.getByRole('button', { name: blueprint.title }).closest('article')
+      expect(card, blueprint.id).toHaveAttribute('data-accent', blueprint.primaryAttribute)
+      expect(card?.style.getPropertyValue('--accent'), blueprint.id).toBe(ATTRIBUTES[blueprint.primaryAttribute].color)
+      expect(card?.style.getPropertyValue('--accent-35'), blueprint.id).toContain(ATTRIBUTES[blueprint.primaryAttribute].color)
+      // Der Icon-Rahmen nutzt die Variablen der Karte.
+      expect(card?.querySelector('[data-medallion]')?.className, blueprint.id).toContain('var(--accent')
+    }
+    // Das Etikett „Klassenwahl“ steht in der Akzentfarbe (aufgehellt für Lesbarkeit auf der getönten Fläche).
+    const body = screen.getByRole('button', { name: 'Der Weg des Körpers' }).closest('article')
+    const classes = body?.querySelector<HTMLElement>('[data-classes]')
+    expect(classes).toHaveTextContent('Klassenwahl')
+    expect(classes?.style.color).toBe('var(--accent-text)')
+    expect(classes?.style.borderColor).toBe('var(--accent-35)')
+  })
+
+  it('die gewählte Vorlage leuchtet in ihrer Farbe', async () => {
+    const selected: AdventureChoice = { blueprintId: 'monk', options: { level: 'beginner' } }
+    await renderLibrary({ selected })
+    const card = screen.getByRole('button', { name: 'Der stille Mönch' }).closest('article')
+    expect(card).toHaveAttribute('data-state', 'selected')
+    expect(card?.style.getPropertyValue('--accent')).toBe(ATTRIBUTES.wisdom.color)
+    expect(card?.className).toContain('border-(--accent-60)')
+    // Dieselbe hervorgehobene Fläche wie Kampagnen-Rahmen und gewählte Klasse (Kontrast der Chips darauf geprüft).
+    expect(card).toHaveClass(...ACCENT_SURFACE.split(' '))
+  })
+
+  it('mit gewählter bzw. laufender Klasse trägt die Karte die Farbe dieser Klasse', async () => {
+    const selected: AdventureChoice = { blueprintId: 'body', options: { level: 'advanced', pathId: 'endurance' } }
+    await renderLibrary({ selected })
+    const card = screen.getByRole('button', { name: 'Der Weg des Körpers' }).closest('article')
+    expect(card).toHaveAttribute('data-accent', 'vitality')
+    expect(card?.style.getPropertyValue('--accent')).toBe(ATTRIBUTES.vitality.color)
+    cleanup()
+
+    // Modus „start“: Eine laufende Waldläufer-Kampagne färbt ihre (gesperrte) Karte grün.
+    await withProfile()
+    await installBlueprint('body', { level: 'beginner', pathId: 'endurance' }, TODAY)
+    await renderLibrary({ mode: 'start' })
+    const running = await screen.findByRole('button', { name: 'Der Weg des Körpers', description: /Läuft bereits/ })
+    expect(running.closest('article')?.style.getPropertyValue('--accent')).toBe(ATTRIBUTES.vitality.color)
+    // Ohne Wahl bleibt es beim Haupt-Attribut der Vorlage.
+    const scholar = screen.getByRole('button', { name: 'Der Weg des Gelehrten' }).closest('article')
+    expect(scholar?.style.getPropertyValue('--accent')).toBe(ATTRIBUTES.intellect.color)
+  })
+
+  it('Einrichtung: Klassen je in ihrer Farbe, der Dialog wechselt auf die Farbe der gewählten Klasse', async () => {
+    const { user } = await renderLibrary()
+    const dialog = await openCard(user, 'Der Weg des Körpers')
+    const red = ATTRIBUTES.strength.color
+    const green = ATTRIBUTES.vitality.color
+    const classes = within(dialog).getByRole('radiogroup', { name: /Wähle deine Klasse/ })
+    const headerIcon = dialog.querySelector<HTMLElement>('[data-dialog-accent]')
+
+    // Vor der Wahl: Haupt-Attribut der Vorlage (Stärke).
+    expect(accentOf(classes)).toBe(red)
+    expect(headerIcon).toHaveAttribute('data-dialog-accent', 'strength')
+    expect(headerIcon?.style.getPropertyValue('--accent')).toBe(red)
+
+    // Jede Klassenkarte in der Farbe ihres Haupt-Attributs.
+    const warrior = within(dialog).getByRole('radio', { name: 'Krieger – Kraftsport' })
+    const ranger = within(dialog).getByRole('radio', { name: 'Waldläufer – Ausdauersport' })
+    const gladiator = within(dialog).getByRole('radio', { name: 'Gladiator – Sport allgemein & Spielsport' })
+    expect(accentOf(warrior)).toBe(red)
+    expect(accentOf(ranger)).toBe(green)
+    expect(accentOf(gladiator)).toBe(red)
+
+    // Waldläufer gewählt: Kopf, Inhalt und Vorschau in Vitalität-Grün; die Karte ist markiert.
+    await user.click(ranger)
+    expect(ranger.closest('[data-accent]')).toHaveAttribute('data-checked', 'true')
+    expect(ranger.closest('[data-accent]')).toHaveClass(...ACCENT_SURFACE.split(' '))
+    expect(accentOf(classes)).toBe(green)
+    expect(dialog.querySelector('[data-dialog-accent]')).toHaveAttribute('data-dialog-accent', 'vitality')
+    expect(dialog.querySelector<HTMLElement>('[data-dialog-accent]')?.style.getPropertyValue('--accent')).toBe(green)
+    const preview = dialog.querySelector<HTMLElement>('[data-preview]')
+    expect(preview).toHaveAttribute('data-accent', 'vitality')
+    expect(preview?.style.getPropertyValue('--accent')).toBe(green)
+    // XP bleiben golden.
+    expect(within(questRow(dialog, 'Ausdauer-Einheit')).getByText('+40 XP').className).toContain('text-gold-bright')
+
+    // Gladiator: zurück zu Stärke-Rot.
+    await user.click(gladiator)
+    expect(accentOf(classes)).toBe(red)
+    expect(dialog.querySelector<HTMLElement>('[data-preview]')?.style.getPropertyValue('--accent')).toBe(red)
+  })
+
+  it('Vorlage ohne Pfade: Dialog und Vorschau in der Farbe der Vorlage', async () => {
+    const { user } = await renderLibrary()
+    const dialog = await openCard(user, 'Der stille Mönch')
+    const silver = ATTRIBUTES.wisdom.color
+    expect(dialog.querySelector<HTMLElement>('[data-dialog-accent]')?.style.getPropertyValue('--accent')).toBe(silver)
+    expect(dialog.querySelector<HTMLElement>('[data-preview]')?.style.getPropertyValue('--accent')).toBe(silver)
+    const chapters = within(dialog).getByRole('region', { name: /Kapitel$/ })
+    expect(chapters.querySelectorAll('[data-chapter-node]').length).toBeGreaterThanOrEqual(4)
+  })
+})
+
+describe('BlueprintLibrary – Klassen-Hinweise', () => {
+  it('zeigt vor der Klassenwahl den allgemeinen Hinweis, danach den der Klasse – auch beim Stufenwechsel', async () => {
+    const { user } = await renderLibrary()
+    const dialog = await openCard(user, 'Der Weg des Körpers')
+    const levels = within(dialog).getByRole('radiogroup', { name: 'Stufe' })
+    expect(BODY?.levelHints.beginner).toBeDefined()
+    expect(levels).toHaveAccessibleDescription(BODY?.levelHints.beginner)
+
+    await user.click(within(dialog).getByRole('radio', { name: 'Krieger – Kraftsport' }))
+    expect(levels).toHaveAccessibleDescription(pathHint('strength', 'beginner'))
+    expect(dialog).toHaveTextContent(pathHint('strength', 'beginner'))
+    expect(dialog).not.toHaveTextContent(BODY?.levelHints.beginner ?? '')
+
+    await user.click(within(levels).getByRole('radio', { name: 'Fortgeschritten' }))
+    expect(levels).toHaveAccessibleDescription(pathHint('strength', 'advanced'))
+
+    await user.click(within(dialog).getByRole('radio', { name: 'Waldläufer – Ausdauersport' }))
+    expect(levels).toHaveAccessibleDescription(pathHint('endurance', 'advanced'))
+
+    await user.click(within(dialog).getByRole('radio', { name: 'Gladiator – Sport allgemein & Spielsport' }))
+    expect(levels).toHaveAccessibleDescription(pathHint('sports', 'advanced'))
+
+    await user.click(within(levels).getByRole('radio', { name: 'Einsteiger' }))
+    expect(levels).toHaveAccessibleDescription(pathHint('sports', 'beginner'))
+  })
+
+  it('übernimmt beim Öffnen mit Vorbelegung gleich den Hinweis der gewählten Klasse', async () => {
+    const selected: AdventureChoice = { blueprintId: 'body', options: { level: 'advanced', pathId: 'endurance' } }
+    const { user } = await renderLibrary({ selected })
+    const dialog = await openCard(user, 'Der Weg des Körpers')
+    expect(within(dialog).getByRole('radiogroup', { name: 'Stufe' })).toHaveAccessibleDescription(pathHint('endurance', 'advanced'))
+    expect(accentOf(within(dialog).getByRole('radiogroup', { name: /Wähle deine Klasse/ }))).toBe(ATTRIBUTES.vitality.color)
   })
 })

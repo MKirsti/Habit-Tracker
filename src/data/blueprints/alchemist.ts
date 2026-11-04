@@ -6,7 +6,7 @@
  *   „5 am Tag“. Eine Portion ist eine Handvoll.
  * - 💧 **Wasser trinken** (aus `shared.ts`, Vitalität): das tägliche Elixier.
  * - 🍵 **Kein Naschen nach 20 Uhr** (Disziplin): ein klarer, machbarer Schnitt am Abend statt Zuckerverbot.
- * - 🍳 **Selbst kochen** (Disziplin): 2× bzw. 4× pro Woche eine Mahlzeit aus frischen Zutaten.
+ * - 🍳 **Selbst kochen** (Vitalität – Ernährung): 2× bzw. 4× pro Woche eine Mahlzeit aus frischen Zutaten.
  * - Fortgeschrittene ergänzen 🍽️ **Achtsam essen** (Weisheit) und 🛒 **Speiseplan der Woche** (Disziplin).
  *
  * Kapitel: ein schneller erster Erfolg, Serien gegen das abendliche Naschen und fürs Kochen, ein Zähler für neue
@@ -54,7 +54,7 @@ function quests(level: BlueprintLevel): BlueprintQuest[] {
       title: 'Selbst kochen',
       description:
         'Eine Mahlzeit aus frischen Zutaten, selbst zubereitet – auch einfache Gerichte zählen. Koch ruhig die doppelte Menge, dann ist für morgen schon gesorgt.',
-      attribute: 'discipline',
+      attribute: 'vitality',
       difficulty: 'medium',
       schedule: { type: 'weekly', times: advanced ? 4 : 2 },
     },

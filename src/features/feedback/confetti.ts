@@ -17,6 +17,16 @@ export const CONFETTI_COLORS: readonly string[] = [
   'var(--color-attr-discipline)',
 ]
 
+/**
+ * Farben für eine Kampagnen-Feier (Kapitel, Kampagne gemeistert): Gold und Pergament wie immer, dazu etwa zur
+ * Hälfte die Kampagnenfarbe (pur und leicht aufgehellt) – statt aller Attributfarben. Ohne Farbe: `CONFETTI_COLORS`.
+ */
+export function confettiColors(accent?: string): readonly string[] {
+  if (accent === undefined) return CONFETTI_COLORS
+  const light = `color-mix(in srgb, ${accent} 65%, var(--color-parchment))`
+  return ['var(--color-gold-bright)', 'var(--color-gold)', 'var(--color-parchment)', accent, accent, light]
+}
+
 export type ConfettiShape = 'rect' | 'sliver' | 'circle' | 'spark'
 
 /**
@@ -47,6 +57,8 @@ export interface ConfettiOptions {
   mode: ConfettiMode
   /** Typische Flugweite in px (z. B. ein Anteil der Bildschirmgröße). */
   distance: number
+  /** Farbmischung (Standard: `CONFETTI_COLORS`, für Kampagnen `confettiColors(accent)`). */
+  colors?: readonly string[]
 }
 
 const SHAPES: readonly ConfettiShape[] = ['rect', 'rect', 'sliver', 'circle', 'spark']
@@ -65,7 +77,7 @@ function round(value: number): number {
 
 /** Erzeugt `count` Partikel mit Flugbahn (erst schnell nach außen, dann mit „Schwerkraft“ nach unten). */
 export function createConfettiParticles(
-  { count, mode, distance }: ConfettiOptions,
+  { count, mode, distance, colors = CONFETTI_COLORS }: ConfettiOptions,
   random: () => number = Math.random,
 ): ConfettiParticle[] {
   const particles: ConfettiParticle[] = []
@@ -99,7 +111,7 @@ export function createConfettiParticles(
 
     particles.push({
       id,
-      color: pick(CONFETTI_COLORS, random),
+      color: pick(colors.length > 0 ? colors : CONFETTI_COLORS, random),
       shape,
       width: round(dims.width),
       height: round(dims.height),

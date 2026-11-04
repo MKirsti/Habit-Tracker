@@ -9,7 +9,12 @@
  *   tägliche Schritte, Rumpfkraft gegen Verletzungen und Schlaf als Regeneration. Fortgeschrittene ergänzen
  *   eine lange Runde pro Woche.
  * - 🛡️ **Gladiator** (Sport allgemein & Spielsport): Training oder Spiel als Kern, Sport mit anderen
- *   (Charisma), neue Sportarten ausprobieren und am Ende das erste Turnier.
+ *   (Charisma), Rumpfkraft als Fundament (1× bzw. 2× pro Woche), neue Sportarten ausprobieren und am Ende das
+ *   erste Turnier.
+ *
+ * Jede Klasse trainiert ihr Haupt-Attribut am stärksten (geplante XP pro Woche, geprüft in blueprints.test.ts) –
+ * es ist zugleich die Hauptfarbe der Kampagne. Deshalb sammelt der Gladiator keine täglichen Schritte (Vitalität
+ * läge sonst vor Stärke), sondern stärkt den Rumpf.
  *
  * Gemeinsame Bausteine: "Dehnen & Mobilität", "Wasser trinken" und "Rechtzeitig ins Bett" kommen aus
  * `shared.ts`. "Schritte sammeln" und "Rumpf & Stabilität" sind in allen Pfaden, die sie nutzen, gleich
@@ -35,6 +40,10 @@ const PATHS: BlueprintPath[] = [
     description: 'Hanteln, Geräte oder dein eigenes Körpergewicht: Du wirst stärker – Einheit für Einheit, Wiederholung für Wiederholung.',
     primaryAttribute: 'strength',
     secondaryAttributes: ['vitality', 'discipline'],
+    levelHints: {
+      beginner: '2 Krafttrainings pro Woche, jeden Tag 10 Liegestütze und 2 Portionen Eiweiß.',
+      advanced: '4 Krafttrainings pro Woche, jeden Tag 30 Liegestütze und 3 Portionen Eiweiß – dazu 2,5 L Wasser.',
+    },
   },
   {
     id: 'endurance',
@@ -44,6 +53,10 @@ const PATHS: BlueprintPath[] = [
     description: 'Laufen, Radfahren, Schwimmen oder Rudern: Du gewinnst Atem für lange Wege und ein kräftiges Herz.',
     primaryAttribute: 'vitality',
     secondaryAttributes: ['strength', 'wisdom'],
+    levelHints: {
+      beginner: '3× pro Woche 20 Minuten Ausdauer, jeden Tag 6.000 Schritte und einmal pro Woche Rumpftraining.',
+      advanced: '3× pro Woche 40 Minuten Ausdauer plus eine lange Runde von 75 Minuten, jeden Tag 10.000 Schritte.',
+    },
   },
   {
     id: 'sports',
@@ -53,6 +66,10 @@ const PATHS: BlueprintPath[] = [
     description: 'Fußball, Basketball, Tennis, Klettern, Kampfsport, Tanzen … Du trainierst, spielst und misst dich mit anderen.',
     primaryAttribute: 'strength',
     secondaryAttributes: ['charisma', 'vitality'],
+    levelHints: {
+      beginner: '2 Trainings oder Spiele pro Woche (je mindestens 30 Minuten), einmal Sport mit anderen und einmal Rumpftraining.',
+      advanced: '3 Trainings oder Spiele pro Woche (je mindestens 45 Minuten), dazu Sport mit anderen und 2× Rumpftraining.',
+    },
   },
 ]
 
@@ -363,8 +380,7 @@ function gladiatorContent(level: BlueprintLevel): BlueprintContent {
       difficulty: 'medium',
       schedule: { type: 'weekly', times: 1 },
     },
-    ...(advanced ? [coreQuest(1)] : []),
-    stepsQuest(level),
+    coreQuest(advanced ? 2 : 1),
     stretchingQuest(level),
     ...(advanced ? [waterQuest(level)] : []),
   ]
@@ -461,6 +477,7 @@ export const bodyBlueprint: CampaignBlueprint = {
   primaryAttribute: 'strength',
   secondaryAttributes: ['vitality', 'discipline'],
   durationDays: DURATION_DAYS,
+  // Allgemeiner Hinweis vor der Klassenwahl – danach zeigt die Einrichtung den der gewählten Klasse (PATHS).
   levelHints: {
     beginner: '2 Einheiten pro Woche (Ausdauer: 3× 20 Minuten) und kleine Tagesrituale wie 10 Liegestütze oder 6.000 Schritte.',
     advanced:

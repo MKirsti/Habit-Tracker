@@ -8,6 +8,7 @@
  * Kontrast: `parchment` und `muted` erfüllen auf allen Flächen WCAG AA für Fließtext (muted ≥ 5.5:1).
  * `faint` ist nur für Platzhalter, deaktivierte Elemente und dekorative Hinweise gedacht (3.15–4.04:1,
  * also nie für lesbaren Text – Beschreibungen, Beschriftungen und Details nutzen `muted`).
+ * Die Attributfarben `attr-*` erreichen als Text auf allen Flächen ≥ 4.5:1.
  * Geprüft in src/ui/theme.test.ts.
  */
 @import "tailwindcss";
@@ -64,14 +65,18 @@
   /*
    * --- Attribute ---------------------------------------------------------------------------
    * Spiegel von `src/domain/attributes.ts` (Quelle der Wahrheit). Ein Test (src/ui/theme.test.ts)
-   * stellt sicher, dass beide Stellen übereinstimmen.
+   * stellt sicher, dass beide Stellen übereinstimmen, die Farben als Text auf allen Flächen ≥ 4.5:1
+   * erreichen und sich deutlich voneinander unterscheiden. Sie sind zugleich die Kampagnenfarben
+   * (Hauptfarbe = am stärksten trainiertes Attribut, siehe docs/ARCHITECTURE.md „Kampagnenfarben“).
+   * Stärke Rot · Intelligenz Blau · Weisheit Silber/Eisblau · Charisma Bernstein · Vitalität Grün ·
+   * Disziplin Violett.
    */
   --color-attr-strength: #e0654a;
   --color-attr-intellect: #5b9bd5;
-  --color-attr-wisdom: #9b7fd1;
+  --color-attr-wisdom: #a9c6db;
   --color-attr-charisma: #e3a33b;
   --color-attr-vitality: #5dbb7a;
-  --color-attr-discipline: #8fa3b8;
+  --color-attr-discipline: #a28bd8;
 
   /* --- Schriften --------------------------------------------------------------------------- */
   /* "Questlog Digits" liefert nur die Ziffern (siehe @font-face oben). */

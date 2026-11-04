@@ -1043,6 +1043,80 @@ describe('CampaignPage – beenden, Ruhmeshalle & zurückholen', () => {
     expect(await totalXp()).toBe(xpBefore)
   })
 
+  it('lässt die Quests einer gemeisterten Kampagne standardmäßig weiterlaufen – die Gewohnheit ist gerade aufgebaut', async () => {
+    const quest = await createMainQuest(campaign([{ ...MANUAL, manualDone: true, completedDay: '2026-11-01' }]))
+    const habit = await createHabit({ ...READING, mainQuestId: quest.id }, '2026-10-25')
+    const { user } = await renderPage()
+    const victory = screen.getByRole('region', { name: 'Kampagne gemeistert!' })
+    await user.click(within(victory).getByRole('button', { name: 'In die Ruhmeshalle legen' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'In die Ruhmeshalle legen?' })
+    const toggle = within(confirm).getByRole('switch', { name: 'Zugehörige Quests ebenfalls archivieren' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(toggle).toHaveAccessibleDescription('1 Quest läuft ohne Kampagne weiter.')
+    await user.click(within(confirm).getByRole('button', { name: 'In die Ruhmeshalle legen' }))
+
+    expect(await screen.findByText('In der Ruhmeshalle')).toBeInTheDocument()
+    const data = await loadGameData()
+    expect(data.mainQuests[0].archived).toBe(true)
+    expect(data.habits.find((h) => h.id === habit.id)?.archivedDay).toBeUndefined()
+  })
+
+  it('archiviert die Quests einer gemeisterten Kampagne nur, wenn man den Schalter einschaltet', async () => {
+    const quest = await createMainQuest(campaign([{ ...MANUAL, manualDone: true, completedDay: '2026-11-01' }]))
+    const habit = await createHabit({ ...READING, mainQuestId: quest.id }, '2026-10-25')
+    const { user } = await renderPage()
+    await user.click(
+      within(screen.getByRole('region', { name: 'Kampagne gemeistert!' })).getByRole('button', {
+        name: 'In die Ruhmeshalle legen',
+      }),
+    )
+    const confirm = await screen.findByRole('alertdialog', { name: 'In die Ruhmeshalle legen?' })
+    await user.click(within(confirm).getByRole('switch', { name: 'Zugehörige Quests ebenfalls archivieren' }))
+    await user.click(within(confirm).getByRole('button', { name: 'In die Ruhmeshalle legen' }))
+    await waitFor(async () => expect((await loadGameData()).mainQuests[0].archived).toBe(true))
+    expect((await loadGameData()).habits.find((h) => h.id === habit.id)?.archivedDay).toBe(TODAY)
+  })
+
+  it('setzt den Schalter bei jedem Öffnen auf den Standard der Kampagne: gemeistert aus, laufend an', async () => {
+    const won = await createMainQuest(
+      campaign([{ ...MANUAL, manualDone: true, completedDay: '2026-11-01' }], { title: 'Erster Sieg', icon: '🏆' }),
+    )
+    await createHabit({ ...READING, mainQuestId: won.id }, '2026-10-25')
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 1))
+    const running = await createMainQuest(campaign([MANUAL], { title: 'Halbmarathon' }))
+    await createHabit({ ...READING, title: 'Laufen', mainQuestId: running.id }, '2026-10-25')
+    vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 0))
+    const { user } = await renderPage()
+    const switchIn = (dialog: HTMLElement) =>
+      within(dialog).getByRole('switch', { name: 'Zugehörige Quests ebenfalls archivieren' })
+
+    // Laufende Kampagne (Standardauswahl): an – auch nach Umschalten und erneutem Öffnen.
+    await user.click(screen.getByRole('button', { name: 'Kampagne beenden' }))
+    let confirm = await screen.findByRole('alertdialog', { name: 'Kampagne beenden?' })
+    expect(switchIn(confirm)).toHaveAttribute('aria-checked', 'true')
+    await user.click(switchIn(confirm))
+    await user.click(within(confirm).getByRole('button', { name: 'Abbrechen' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+
+    // Gemeisterte Kampagne: aus.
+    await user.click(screen.getByRole('radio', { name: /Erster Sieg/ }))
+    await user.click(
+      within(await screen.findByRole('region', { name: 'Kampagne gemeistert!' })).getByRole('button', {
+        name: 'In die Ruhmeshalle legen',
+      }),
+    )
+    confirm = await screen.findByRole('alertdialog', { name: 'In die Ruhmeshalle legen?' })
+    expect(switchIn(confirm)).toHaveAttribute('aria-checked', 'false')
+    await user.click(within(confirm).getByRole('button', { name: 'Abbrechen' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+
+    // Zurück zur laufenden: wieder an.
+    await user.click(screen.getByRole('radio', { name: /Halbmarathon/ }))
+    await user.click(await screen.findByRole('button', { name: 'Kampagne beenden' }))
+    confirm = await screen.findByRole('alertdialog', { name: 'Kampagne beenden?' })
+    expect(switchIn(confirm)).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('holt keine Kampagne zurück, wenn schon drei laufen – und sagt schon vorher warum', async () => {
     const [first] = await threeCampaigns()
     vi.setSystemTime(new Date(2026, 10, 3, 12, 0, 5))

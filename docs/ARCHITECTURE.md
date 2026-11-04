@@ -22,27 +22,32 @@ src/
   domain/        Reine Spiellogik, keine Abhängigkeit zu React/Dexie/DOM
     types.ts         Datenmodell + abgeleiteter Zustand (fix, siehe Datei)
     balancing.ts     Alle Spielzahlen, Ränge, Defaults (fix)
-    attributes.ts    Metadaten der 6 Attribute (fix)
+    attributes.ts    Metadaten der 6 Attribute inkl. Farbe (fix; zugleich die Kampagnenfarben)
     dates.ts         Spieltage (DayKey) & Kalender-Arithmetik
     leveling.ts      XP-Kurven, Level, Ränge
     schedule.ts      Wann ist eine Quest aktiv/fällig, Wochenfortschritt
     streaks.ts       Streak-Berechnung
     chapters.ts      Auswertung von Kampagnen-Kapiteln
     engine.ts        deriveGameState / getDayState / evaluateMainQuests
+    training.ts      Geplante XP pro Woche & dominantAttribute (Grundlage der Kampagnenfarbe)
     campaigns.ts     Aktive Kampagnen & Limit (isCampaignActive, campaignSlotsLeft …)
     deletion.ts      Löschen einer Quest als reine Funktion (Grabstein) + Vorschau der Folgen
   data/          Persistenz (IndexedDB via Dexie) & React-Hooks
     db.ts            Dexie-Datenbank
     repository.ts    Alle schreibenden Operationen
     backup.ts        Export/Import (JSON, zod-validiert)
-    blueprints/      Kampagnen-Bibliothek (Vorlagen, siehe unten)
+    blueprints/      Kampagnen-Bibliothek: 8 Vorlagen, gemeinsame Quests, Test-Helfer (siehe unten)
     seed.ts          Kampagnen aus Vorlagen installieren, startAdventure
     hooks.ts         useGameData / useToday / useGame
     ids.ts           newId()
   ui/            Wiederverwendbare, rein darstellende Komponenten (Design-System)
   app/           App-Rahmen: Router, Layout, Navigation
-  features/      Seitenübergreifende Features (z. B. Level-Up-Feedback)
-  pages/         Eine Datei/Ordner pro Seite
+  features/      Seitenübergreifende Features
+    feedback/        XP-, Level-Up-, Perfekter-Tag- und Kapitel-Rückmeldungen (GameFeedback)
+    blueprints/      UI der Kampagnen-Bibliothek (BlueprintLibrary, Einrichtung, Klassenwahl, Vorschau)
+    campaignTheme/   Hauptfarbe einer Kampagne (campaignColor, accentVars …), siehe „Kampagnenfarben“
+  pages/         Eine Datei/Ordner pro Seite (campaign/, dashboard/, onboarding/, quests/, hero/, settings/)
+  dev/devtools.ts  window.questlog – nur im Dev-Server
   test/setup.ts  Vitest-Setup (jest-dom)
 ```
 
@@ -156,6 +161,8 @@ XP-Regeln:
 4. `adventureDay = diffDays(profile.createdDay, today) + 1` (ohne Profil: 1).
 5. `getDayState` sortiert sichtbare Quests nach `order` (dann `title`); Streaks werden **zum Stichtag `day`** berechnet. `HabitStatus.xp` = `questXp(completion.difficulty)`, wenn erledigt (die gutgeschriebenen XP), sonst `questXp(habit.difficulty)`. `requiredCount` zählt Grabsteine mit (an früheren Tagen also ggf. mehr als die sichtbaren Pflicht-Quests). `HabitStatus.week` gibt es, wenn `scheduleOn(habit, day)` eine Wochenquest ist (frühere Tage zeigen den damals gültigen Rhythmus). `week.target` ist dasselbe Wochenziel wie bei der Wochen-Serie: das vom **Montag** der Woche (ein mitten in der Woche geändertes Ziel gilt ab dem nächsten Montag); war die Quest am Montag keine Wochenquest, das des Tages.
 
+6. **Hauptfarbe einer Kampagne** – `MainQuestState.dominantAttribute` (für `mainQuests` und `archivedMainQuests`, jeweils zum Stichtag `today`): Von den Quests in `linkedHabitIds` zählen die am Tag `today` aktiven (`isActiveOn`: angelegt, nicht archiviert, nicht pausiert). Jede gibt ihrem Attribut das Gewicht `questXp(habit.difficulty)` × Termine pro Woche laut `scheduleOn(habit, today)` (daily 7, weekdays Anzahl der Tage, weekly `times`; `plannedWeeklyXp` in `training.ts`). Das Attribut mit der größten Summe gewinnt (`dominantAttribute`); bei Gleichstand das der zuerst sortierten beteiligten Quest (Reihenfolge von `linkedHabitIds`: `order`, dann Titel). Ist **keine** Quest aktiv (alle archiviert oder pausiert – z. B. nach „Kampagne beenden“ mit ihren Quests), zählen ersatzweise alle bereits angelegten Quests mit ihrem zuletzt gültigen Rhythmus: Die Kampagne behält ihre Farbe. Ohne angelegte Quest fehlt das Feld (die UI fällt auf die Vorlage bzw. Gold zurück, siehe „Kampagnenfarben“). Nur der Plan zählt, nicht die Erledigungen; geteilte Quests zählen für jede Kampagne, die sie führt; Quests mit unbekanntem Attribut oder ohne XP zählen nicht. Beispiel: 1 schwere Quest 3× pro Woche (40 × 3 = 120) verliert gegen 3 leichte tägliche (3 × 10 × 7 = 210).
+
 Weil Pflicht/Sichtbarkeit über `scheduleOn` und Pausen laufen, ändern Rhythmus-Änderungen und das Zurückholen archivierter Quests keine vergangenen Perfekten Tage, XP, Level oder Streaks. `GameTotals.bestDayStreak`/`bestWeekStreak` berücksichtigen über `bestStreakIn` beide Einheiten. Invariante (per Zufallstest im Repository geprüft): Bearbeiten, Archivieren und Zurückholen am Tag `today` ändern `deriveGameState(…, today − 1)` (Level, XP, Attribute, Gesamtwerte, abgeschlossene Kapitel) nicht. Nur der laufende Tag darf sich ändern (z. B. wird eine heute auf „täglich“ umgestellte Quest sofort Pflicht). Löschen erhöht nie Level-XP, Perfekte Tage oder deren Bonus-XP (Zufallstest in `deletion.test.ts`; für `today` verglichen mit dem Stand „heute archiviert“).
 
 ### `deletion.ts`
@@ -226,9 +233,12 @@ export async function createMainQuest(draft: MainQuestDraft): Promise<MainQuest>
   // (Spieltag laut Uhr + gespeichertem Tageswechsel). blueprint/sharedHabitIds werden bereinigt übernommen.
 export async function updateMainQuest(id: string, patch: Partial<MainQuestDraft>): Promise<void>
   // blueprint und sharedHabitIds bleiben, solange der Patch sie nicht ausdrücklich enthält. archived → nicht
-  // archiviert gilt wie restoreMainQuest (Limit, Vorlage nicht doppelt).
+  // archiviert gilt wie restoreMainQuest (Limit, Vorlage nicht doppelt, Übernahme geteilter Quests), archiviert
+  // wie archiveMainQuest (Übergabe geteilter Quests) – jeweils ohne Quests zu archivieren bzw. zurückzuholen.
 export async function archiveMainQuest(id, today, options?, database?) / restoreMainQuest(...)  // siehe unten
-export async function deleteMainQuest(id: string): Promise<void>   // entfernt mainQuestId bei verknüpften Quests
+export async function deleteMainQuest(id: string): Promise<void>
+  // eigene Quests verlieren mainQuestId – außer geteilten, die eine andere nicht archivierte Kampagne
+  // mitbenutzt: die gehen an diese über (wie beim Beenden, siehe „Geteilte Quests“)
 export async function setChapterManual(questId: string, chapterId: string, done: boolean, today: DayKey): Promise<void>
 export async function setChapterCounter(questId: string, chapterId: string, value: number, today: DayKey): Promise<void>
   // value wird auf ≥ 0 begrenzt; completedDay wird gesetzt, wenn das Ziel erreicht wird, und entfernt, wenn nicht mehr.
@@ -263,11 +273,11 @@ export function useGame(): { data: GameData; today: DayKey; state: GameState } |
 ## UI-Schicht
 
 - `src/ui/` enthält das Design-System (Buttons, Karten, Fortschrittsbalken, Dialoge, Formularfelder, Emoji-Auswahl, Toasts …). Seiten verwenden **nur** diese Bausteine statt eigene Grundelemente zu bauen.
-- Theme „Dark Fantasy“: dunkles Braun-Schwarz, Gold-Akzente, Pergament-Text; Überschriften in *Cinzel*, Fließtext in *Inter*. Farben als Tailwind-Theme-Tokens in `src/index.css`.
+- Theme „Dark Fantasy“: dunkles Braun-Schwarz, Gold-Akzente, Pergament-Text; Überschriften in *Cinzel*, Fließtext in *Inter*. Farben als Tailwind-Theme-Tokens in `src/index.css`. Kampagnen tragen zusätzlich ihre Hauptfarbe (Attributfarbe, siehe „Kampagnenfarben“); Gold bleibt für XP, Belohnungen und den App-Rahmen.
 - Mobile first: funktioniert ab 360 px Breite, untere Navigationsleiste auf dem Handy, Seitenleiste/obere Leiste auf dem Desktop.
 - `MotionConfig reducedMotion="user"`; Effekte zusätzlich über `settings.effects` abschaltbar.
 
-Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten · `/kampagne` Kampagne (`/kampagne?id=<questId>` wählt eine bestimmte Kampagne; ohne `id` die zuletzt gewählte der Sitzung bzw. die Standardauswahl) · `/held` Charakter · `/einstellungen` Einstellungen. Ohne Profil wird das Onboarding angezeigt.
+Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten (`/quests?neu=1&kampagne=<questId>` öffnet „Neue Quest“, vorbelegt mit der Kampagne) · `/kampagne` Kampagne (`/kampagne?id=<questId>` wählt eine bestimmte Kampagne; ohne `id` die zuletzt gewählte der Sitzung bzw. die erste laufende; `/kampagne?neu=1` zeigt die Bibliothek, um eine weitere Kampagne zu beginnen) · `/held` Charakter · `/einstellungen` Einstellungen. Ohne Profil wird das Onboarding angezeigt.
 
 ## App-Ebene (`src/app`) – Spielzustand & Gate
 
@@ -286,16 +296,39 @@ Routen (Hash-Router): `/` Heute (Dashboard) · `/quests` Quests verwalten · `/k
 
 ## Kampagnen-Bibliothek (Blueprints) & mehrere Kampagnen
 
-Ziel: mehrere fertige Kampagnen-Vorlagen zur Auswahl, bis zu `BALANCING.maxActiveCampaigns` (3) gleichzeitig aktiv.
+Ziel: fertige Kampagnen-Vorlagen mit einem Tipp starten – Stufe wählen, beim Sport die Klasse – und bis zu `BALANCING.maxActiveCampaigns` (3) Kampagnen gleichzeitig führen. Eigene Kampagnen ohne Vorlage gibt es weiterhin (`CampaignFormDialog`).
 
-- **Vorlagen** liegen in `src/data/blueprints/` – eine Datei pro Vorlage (`scholar.ts`, `body.ts`, `alchemist.ts`, `monk.ts`, `earlyRiser.ts`, `fortress.ts`, `fellowship.ts`, `polyglot.ts`), jeweils `export const <name>Blueprint: CampaignBlueprint`. Typen in `types.ts`, gemeinsam genutzte Quests in `shared.ts`, Register in `index.ts` (`BLUEPRINTS`, `getBlueprint(id)`). Inhaltliche Prüfung aller Stufen/Pfade: `blueprints.test.ts`.
-- **Stufen:** `'beginner'` (Einsteiger) / `'advanced'` (Fortgeschritten) – andere Startwerte und Kapitel-Ziele.
-- **Pfade („Klassenwahl“):** Vorlagen mit `paths` verlangen genau einen Pfad (Sport: `strength` Krieger/Kraftsport, `endurance` Waldläufer/Ausdauer, `sports` Gladiator/Sport allgemein & Spielsport).
-- `MainQuest.blueprint?: { id, level, pathId? }` merkt sich die Herkunft (Anzeige von Klasse/Stufe; dieselbe Vorlage kann nicht zweimal gleichzeitig aktiv sein).
-- **Aktiv** = nicht archiviert und nicht abgeschlossen (`domain/campaigns.ts`). Abgeschlossene, nicht archivierte Kampagnen belegen keinen Platz.
-- **Geteilte Quests:** Beim Installieren wird eine vorhandene, am Tag `today` nicht archivierte Quest mit gleichem (getrimmten) Titel wiederverwendet statt verdoppelt (ihre Einstellungen und ihr Verlauf bleiben). Ist sie keiner **aktiven** Kampagne zugeordnet (keine `mainQuestId`, oder ihre Kampagne ist archiviert, abgeschlossen oder gelöscht), wird sie der neuen zugeordnet; sonst bleibt ihre Zuordnung, die Kapitel der neuen Kampagne verweisen auf sie, und sie steht in `MainQuest.sharedHabitIds` der neuen Kampagne. Bei mehreren Kandidaten gewinnt eine nicht zugeordnete, dann die erste in der Liste. Neue Quests kommen hinter alle vorhandenen.
-- `MainQuest.sharedHabitIds?: string[]` – Quests, die die Kampagne mitbenutzt, obwohl sie einer anderen zugeordnet sind (vom Installieren gepflegt; fehlt ohne geteilte Quests).
-- `MainQuestState.linkedHabitIds` = Quests mit `mainQuestId === quest.id` **plus** alle (existierenden) Quests, auf die ein Kapitel der Kampagne verweist oder die in `sharedHabitIds` stehen (ohne Doppelte, sortiert nach `order`, dann Titel; archivierte inklusive).
+### Vorlagen (`src/data/blueprints/`)
+Eine Datei pro Vorlage (`export const <name>Blueprint: CampaignBlueprint`), Register in `index.ts` (`BLUEPRINTS` in Anzeigereihenfolge, `getBlueprint(id)`), Typen in `types.ts` (`CampaignBlueprint`, `BlueprintContent`, `BlueprintQuest`, `BlueprintChapter`, `BlueprintCriterion`, `BlueprintPath`, `BlueprintOptions`, `BLUEPRINT_LEVELS`, `BLUEPRINT_LEVEL_LABELS`). Eine Vorlage ist reine Daten plus eine reine `build(options)`-Funktion, die den Inhalt (Titel, Icon, Beschreibung, Warum, Belohnung, 3–6 Quests, 4–7 Kapitel) für Stufe und Pfad liefert; gespeichert wird erst beim Installieren.
+
+| ID | Vorlage | Haupt-Attribut (`primaryAttribute`) | Laufzeit |
+|----|---------|-------------------------------------|----------|
+| `scholar` | 📚 Der Weg des Gelehrten | Intelligenz | 365 Tage |
+| `body` | ⚔️ Der Weg des Körpers (mit Pfaden) | je Pfad, typisch Stärke | 224 Tage |
+| `alchemist` | ⚗️ Der Alchemist | Vitalität | 180 Tage |
+| `monk` | 📿 Der stille Mönch | Weisheit | 180 Tage |
+| `earlyRiser` | 🌄 Der Frühaufsteher | Disziplin | 180 Tage |
+| `fortress` | 🏰 Die Festung | Disziplin | 180 Tage |
+| `fellowship` | 🧑‍🤝‍🧑 Die Gefährten | Charisma | 180 Tage |
+| `polyglot` | 🌍 Der Polyglotte | Intelligenz | 365 Tage |
+
+- **Stufen:** `'beginner'` (Einsteiger) / `'advanced'` (Fortgeschritten) – andere Startwerte (Häufigkeit, Zielwerte, Schwierigkeit) und passende Kapitel-Ziele; `levelHints` erklärt den Unterschied. Die Einsteiger-Stufe von `scholar` ist exakt die frühere Onboarding-Kampagne „Der Weg des Gelehrten“.
+- **Pfade („Klassenwahl“):** Vorlagen mit `paths` verlangen genau einen Pfad – bei `body`: `strength` 🗡️ Krieger · Kraftsport (Stärke), `endurance` 🏹 Waldläufer · Ausdauersport (Vitalität), `sports` 🛡️ Gladiator · Sport allgemein & Spielsport (Stärke). Jeder Pfad hat eigene Haupt-/Neben-Attribute, Quests und Kapitel; die Kampagne heißt nach der Klasse („Der Pfad des Kriegers“).
+- **Gemeinsame Bausteine (`shared.ts`):** Quests, die in mehreren Vorlagen vorkommen, kommen aus genau einer Funktion – gleicher Titel ⇒ beim Installieren dieselbe Quest. `waterQuest(level)` 💧 Wasser trinken, `stretchingQuest(level)` 🤸 Dehnen & Mobilität, `bedtimeQuest(level)` 🌙 Rechtzeitig ins Bett, `morningLightQuest(times)` ☀️ Morgenlicht-Spaziergang (Vitalität, Wochenquest; geteilt von „Der Frühaufsteher“ (Fortgeschritten) und „Der stille Mönch“), `candlelightQuest()` 🕯️ Kerzenlicht statt Bildschirm (Gelehrter und Mönch). Titel dort nie ändern, ohne alle Vorlagen zu prüfen.
+- **Inhaltsprüfung:** `blueprints.test.ts` prüft alle Vorlagen, Stufen und Pfade (stabile IDs, Metadaten und Textlängen, 3–6 Quests mit eindeutigen Schlüsseln, Kern-Quest trainiert das Haupt-Attribut, das Haupt-Attribut bekommt klar die meisten geplanten XP pro Woche – also die Farbe, die die Bibliothek zeigt –, Tageslast je Stufe, 4–7 machbare Kapitel, deutsche Typografie, gleich benannte Quests überall gleich gebaut, keine Beinahe-Dubletten); dazu `body.test.ts`, `wellbeing.test.ts`, `mindSocial.test.ts`. Test-Helfer **`planPace.ts`** (nur für Tests): `daysToReachAtPlanPace(content, durationDays)` spielt die Kampagne mit einem Helden durch, der genau nach Plan erledigt (Start `PLAN_START`, ein Mittwoch; Wochenquests an den ersten Tagen jeder Woche), und liefert je automatischem Kapitel den Tag, an dem es frühestens erreicht ist – mit der echten `evaluateChapter`; dazu `habitFromQuest(quest, order, start?)` und `isEveryDay(schedule)`.
+
+### Modell
+- `MainQuest.blueprint?: { id, level, pathId? }` – Herkunft (Abzeichen für Vorlage, Stufe und Klasse; dieselbe Vorlage kann nicht zweimal gleichzeitig aktiv sein). DB-Version 2 ergänzt sie für die alte Gelehrten-Kampagne (siehe `db.ts`).
+- **Aktiv** = nicht archiviert und nicht abgeschlossen (`domain/campaigns.ts`). Abgeschlossene, nicht archivierte Kampagnen belegen keinen Platz; archivierte stehen in `GameState.archivedMainQuests`.
+- `MainQuest.sharedHabitIds?: string[]` – **geteilte Quests**: Quests, die die Kampagne mitbenutzt, obwohl sie (per `mainQuestId`) einer anderen gehören. Vom Installieren, Beenden, Zurückholen und Löschen gepflegt (siehe unten); fehlt ohne geteilte Quests. Backups prüfen nur, dass die IDs nicht leer sind.
+- `MainQuestState.linkedHabitIds` = Quests mit `mainQuestId === quest.id` **plus** alle (existierenden) Quests, auf die ein Kapitel der Kampagne verweist oder die in `sharedHabitIds` stehen (ohne Doppelte, sortiert nach `order`, dann Titel; archivierte inklusive). Daraus berechnet die Engine auch `dominantAttribute` (Regel 6).
+
+### Geteilte Quests – Übergaben
+Grundregel: Eine Quest gehört (per `mainQuestId`) einer laufenden Kampagne, die sie nutzt; jede weitere Kampagne, die sie nutzt, führt sie in `sharedHabitIds`. So bleibt die Menge `linkedHabitIds` jeder Kampagne bei allen Übergaben gleich – nur die Zuordnung wandert.
+- **Installieren** (`installBlueprint`, `startAdventure`): Eine vorhandene, am Tag `today` nicht archivierte Quest mit gleichem (getrimmtem) Titel wird wiederverwendet statt verdoppelt (Einstellungen und Verlauf bleiben); die Kapitel der neuen Kampagne zählen auf sie. Ist sie keiner **aktiven** Kampagne zugeordnet (keine `mainQuestId`, oder ihre Kampagne ist archiviert, abgeschlossen oder gelöscht), geht sie an die neue – eine noch vorhandene bisherige Kampagne führt sie dann in ihren `sharedHabitIds` weiter. Sonst behält sie ihre Zuordnung und steht in `sharedHabitIds` der neuen. Bei mehreren Kandidaten gewinnt eine nicht zugeordnete, dann die erste in der Liste. Nur fehlende Quests werden neu angelegt, hinter allen vorhandenen.
+- **Beenden** (`archiveMainQuest`, auch `updateMainQuest` mit `archived: true`): Jede eigene Quest, die eine andere **nicht archivierte** Kampagne mitbenutzt (Kapitel-Verweis oder `sharedHabitIds`), geht an diese über – an eine aktive vor einer abgeschlossenen, sonst an die erste in gespeicherter Reihenfolge. Dort fällt sie aus `sharedHabitIds`, die beendete Kampagne führt sie in ihren. Mit `archiveQuests: true` werden die übrigen eigenen Quests ab `today` archiviert (wie `archiveHabit`); übergebene laufen weiter.
+- **Zurückholen** (`restoreMainQuest`, auch per `updateMainQuest`): Die Kampagne übernimmt wieder die Quests, die sie mitbenutzt und deren Kampagne archiviert ist – und Quests ohne (existierende) Kampagne, die in ihren `sharedHabitIds` stehen (Gegenstück zur Übergabe). Quests einer nicht archivierten Kampagne bleiben dort. Mit `restoreQuests: true` werden ihre archivierten eigenen Quests (inklusive der übernommenen) wie `restoreHabit` zurückgeholt.
+- **Löschen** (`deleteMainQuest`): wie Beenden – mitbenutzte Quests gehen an eine andere nicht archivierte Kampagne über, die übrigen verlieren nur ihre `mainQuestId`.
 
 ### Domain (`src/domain/campaigns.ts`)
 ```ts
@@ -308,9 +341,8 @@ export const CAMPAIGN_LIMIT_MESSAGE          // "Du hast schon 3 aktive Kampagne
 export const CAMPAIGN_RESTORE_LIMIT_MESSAGE  // "… um diese fortzusetzen."
 ```
 „Abgeschlossen“ kommt aus `evaluateMainQuests` (engine) – dieselbe Auswertung wie `MainQuestState.complete` in der UI.
-`GameState.archivedMainQuests: MainQuestState[]` – archivierte Kampagnen (gleiche Auswertung wie aktive), für die Liste „Beendete & gemeisterte Kampagnen“.
 
-### Daten (`src/data/seed.ts`, `src/data/repository.ts`)
+### Daten (`src/data/seed.ts`, `src/data/repository.ts`, `src/data/db.ts`)
 ```ts
 export function createCampaignFromBlueprint(blueprint: CampaignBlueprint, options: BlueprintOptions, today: DayKey, createdAt?: number): { mainQuest: MainQuest; habits: Habit[] }
   // rein: prüft Stufe ("Unbekannte Stufe.") und Pfad ("Bitte wähle einen Pfad." / "Unbekannter Pfad."; ohne
@@ -318,31 +350,100 @@ export function createCampaignFromBlueprint(blueprint: CampaignBlueprint, option
   // questKey → habitId; startDay today, deadline today + durationDays, blueprint { id, level, pathId? }
 export async function installBlueprint(blueprintId: string, options: BlueprintOptions, today: DayKey, database?): Promise<MainQuest>
   // EINE Transaktion; wirft (nichts gespeichert): "Diese Vorlage gibt es nicht.", Pfad-Fehler,
-  // "Diese Kampagne läuft bereits." (aktive Kampagne derselben Vorlage), CAMPAIGN_LIMIT_MESSAGE
+  // "Diese Kampagne läuft bereits." (aktive Kampagne derselben Vorlage), CAMPAIGN_LIMIT_MESSAGE.
+  // Geteilte Quests siehe oben.
 export type AdventureChoice = { blueprintId: string; options: BlueprintOptions }
 export async function startAdventure(profile: CharacterProfile, choice: AdventureChoice | null, today: DayKey, database?): Promise<void>
   // Vorlage (optional, wie installBlueprint) + Profil (wie saveProfile) in EINER Transaktion – alles oder nichts.
   // Übergangsweise auch noch 'scholar' | 'none' (veraltet: AdventureTemplate).
 // unverändert nutzbar (Einsteiger-Stufe der Gelehrten-Vorlage): createScholarCampaign(today, createdAt?), installScholarCampaign(today) → MainQuest
+export const SCHOLAR_BLUEPRINT_ID = 'scholar'
 
 // repository.ts
 createMainQuest(...)                                         // wirft, wenn das Limit erreicht ist
 export async function archiveMainQuest(id: string, today: DayKey, options?: { archiveQuests?: boolean }, database?): Promise<void>
-  // archived = true. archiveQuests: archiviert (wie archiveHabit: ab today, vorhandener archivedDay bleibt) die Quests
-  // mit mainQuestId === id, die keine andere nicht archivierte Kampagne braucht (Kapitel-Verweis oder sharedHabitIds)
+  // archived = true (bereits archiviert → bleibt), Übergabe geteilter Quests. archiveQuests: archiviert (wie archiveHabit:
+  // ab today, vorhandener archivedDay bleibt) die eigenen Quests, die keine andere nicht archivierte Kampagne braucht
 export async function restoreMainQuest(id: string, today: DayKey, options?: { restoreQuests?: boolean }, database?): Promise<void>
-  // nicht archiviert → keine Änderung. Wäre sie danach aktiv (nicht abgeschlossen): wirft CAMPAIGN_RESTORE_LIMIT_MESSAGE,
-  // wenn schon 3 andere aktiv sind, bzw. "Eine Kampagne aus dieser Vorlage läuft bereits. …". restoreQuests holt
-  // archivierte Quests mit mainQuestId === id zurück (wie restoreHabit: archivierte Zeit wird Pause, keine XP gehen verloren)
-```
+  // nicht archiviert → keine Änderung. Übernahme geteilter Quests. Wäre sie danach aktiv (nicht abgeschlossen): wirft
+  // CAMPAIGN_RESTORE_LIMIT_MESSAGE, wenn schon 3 andere aktiv sind, bzw. "Eine Kampagne aus dieser Vorlage läuft bereits. …".
+  // restoreQuests holt ihre archivierten Quests zurück (wie restoreHabit: archivierte Zeit wird Pause, keine XP gehen verloren)
+export async function deleteMainQuest(id: string, database?): Promise<void>     // Übergabe wie beim Beenden
 
-### UI (`src/features/blueprints/`)
+// db.ts
+export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>): BlueprintRef | undefined
+  // ohne blueprint und mit (getrimmtem) Titel "Der Weg des Gelehrten" → { id: 'scholar', level: 'beginner' }, sonst undefined
+```
+DB-Version 2 (Indizes unverändert) wendet `legacyBlueprintRef` beim Upgrade auf alle Kampagnen an: Die Gelehrten-Kampagne aus dem früheren Onboarding gilt damit in der Bibliothek als „Läuft bereits“ und wird nicht ein zweites Mal gestartet. Schemaänderungen immer über eine neue `version(n)`.
+
+### UI-Bausteine (`src/features/blueprints/`)
 ```tsx
 <BlueprintLibrary
-  mode="start" | "select"                 // start: direkt installieren; select: nur auswählen (Onboarding)
-  selected?: AdventureChoice | null       // nur mode="select": hervorgehobene Auswahl
-  onConfirm(choice: AdventureChoice): Promise<void> | void
-  busy?: boolean
+  mode="start" | "select"                 // start: Kampagne beginnen (Aufrufer installiert in onConfirm); select: nur auswählen (Onboarding)
+  selected?: AdventureChoice | null       // nur mode="select": hervorgehobene Auswahl (öffnet beim erneuten Antippen mit ihren Werten)
+  onConfirm(choice: AdventureChoice): Promise<void> | void   // Promise → Ladezustand, Dialog schließt erst nach Erfolg; wirft → bleibt offen
+  busy?: boolean                          // von außen beschäftigt: Karten gesperrt, Bestätigen lädt
+  cardHeadingLevel?: 'h2' | 'h3'          // Überschriften-Ebene der Kartentitel (Standard h3)
+  fullHint?: ReactNode                    // nur mode="start": Zusatz unter der Limit-Meldung (z. B. Links zu laufenden Kampagnen)
+  className?: string
 />
 ```
-Zeigt alle Vorlagen als Karten (Icon, Titel, Tagline, Haupt-/Neben-Attribute, Laufzeit, „Läuft bereits“). Ein Tipp öffnet `BlueprintSetupDialog`: Stufe wählen (Einsteiger/Fortgeschritten mit Hinweis), bei Pfaden die **Klassenwahl** (Pflicht), Live-Vorschau der Quests und Kapitel aus `build()`, Hinweis auf geteilte Quests, Bestätigen. Im Modus `start` respektiert die Bibliothek das Limit (`campaignSlotsLeft`) und blockiert bereits laufende Vorlagen.
+- `BlueprintLibrary` zeigt im Modus `start` die freien Plätze (`activeSlotsText`, `freeSlotsText`), alle Vorlagen als `BlueprintCard` (Icon, Titel, Tagline, Haupt-/Neben-Attribute, Laufzeit, „Läuft bereits“ mit Stufe/Klasse, „Gemeistert“) und sperrt laufende Vorlagen sowie – wenn alle Plätze belegt sind – das Beginnen (Ansehen bleibt möglich).
+- `BlueprintSetupDialog` (`open`, `onClose`, `blueprint`, `mode`, `initialOptions?`, `onConfirm`, `blockedReason?`, `mastered?`, `busy?`): bei Pfaden die **Klassenwahl** (`ClassPicker`, Pflicht, nichts vorausgewählt), die Stufe (Einsteiger/Fortgeschritten mit Hinweis) und die Live-Vorschau `BlueprintPreview` der Quests und Kapitel aus `build()` – mit Hinweis auf Quests, die mit vorhandenen geteilt würden, und den Unterschieden zur anderen Stufe.
+- `levelCompare.ts` (rein): `compareLevels(current, other, level)` vergleicht die Quests beider Stufen (gleicher Pfad) über den Quest-Key – Rhythmus, Tagesziel, XP – und liefert `LevelComparison` (`quests`: Key → `{ kind: 'only' }` bzw. `{ kind: 'changed', other: 'Fortgeschritten: 4× pro Woche · …' }`, `missing`: nur in der anderen Stufe); `otherLevel(level)`.
+- `libraryStatus.ts` (rein): `libraryStatus(data, today)` → `{ activeCount, maxActive, slotsLeft, running, mastered }` (dieselbe Auswertung wie Limit und Installieren); `findSharedHabit(habits, title, today, activeCampaignIds?)` (dieselbe Wahl wie beim Installieren), `blueprintOptions`, `adventureChoice`, `hasPaths`.
+- `blueprintText.ts`: deutsche Texte (`durationLabel`, `formatDeadline`, `measureText`, `criterionSummary`, `choiceSummary`, `activeSlotsText`, `freeSlotsText` …).
+
+### Seiten
+- **Onboarding, Schritt 3** (`pages/onboarding/CampaignStep.tsx`): `BlueprintLibrary mode="select"` oder „ohne Vorlage“; gespeichert wird erst mit „Los geht’s“ über `startAdventure` (Vorlage + Profil in einer Transaktion).
+- **Kampagne** (`/kampagne`, `CampaignPage.tsx` + `pages/campaign/`): Bei mehreren Kampagnen eine Auswahl (Segmente, auf schmalen Bildschirmen eine Liste) mit Farbpunkt der Kampagne; die gezeigte steht in `?id=`. Ohne Kampagne sowie mit `?neu=1` zeigt `CampaignStarter` (`variant="first" | "next"`) die Bibliothek (`mode="start"`, `fullHint` verlinkt die laufenden Kampagnen) und den Weg zur eigenen Kampagne; nach dem Beginnen wechselt die Seite auf die neue Kampagne, sobald sie in den Live-Daten auftaucht. `CampaignBanner` zeigt Herkunft (Vorlage, Stufe, Klasse – `campaignOrigin.ts`), `ChapterTimeline` die Kapitel, `CampaignVictory` die gemeisterte Kampagne. `ArchiveCampaignDialog` fragt „Kampagne beenden?“ bzw. „In die Ruhmeshalle legen?“ mit dem Schalter „Zugehörige Quests ebenfalls archivieren“ (betroffene, weiterlaufende und mitbenutzte Quests aus `campaignArchive.ts`). `ArchivedCampaigns` listet „Beendete & gemeisterte Kampagnen“ (`state.archivedMainQuests`) zum Zurückholen (mit `restoreQuests: true`; ohne freien Platz vorab gesperrt) oder endgültigen Löschen.
+- **Dashboard** (`pages/dashboard/CampaignCard.tsx`, `CampaignSection`): eine Kampagne als große Karte, mehrere als kompakte Karten (laufende zuerst, dann gemeisterte), jede verlinkt `/kampagne?id=<id>`; ohne Kampagne eine Einladung zur Bibliothek.
+
+## Kampagnenfarben
+
+Jede Kampagne hat eine **Hauptfarbe**: die Farbe des Attributs, das sie am stärksten trainiert. Gold bleibt die Farbe der App und des Belohnens.
+
+### Palette (`src/domain/attributes.ts` → `ATTRIBUTES[id].color`, gespiegelt in `--color-attr-*` in `src/index.css`)
+| Attribut | Farbe | Hex |
+|----------|-------|-----|
+| 💪 Stärke | Rot | `#e0654a` |
+| 🧠 Intelligenz | Blau | `#5b9bd5` |
+| 🧘 Weisheit | Silber/Eisblau | `#a9c6db` |
+| 🗣️ Charisma | Bernstein | `#e3a33b` |
+| ❤️ Vitalität | Grün | `#5dbb7a` |
+| 🛡️ Disziplin | Violett | `#a28bd8` |
+
+`src/ui/theme.test.ts` sichert ab: beide Stellen stimmen überein; jede Farbe erreicht als Text auf allen Flächen (`bg-deep` … `surface-hover`) ≥ 4.5:1 (ermittelt 4.6–11.4:1); die Farben sind paarweise deutlich verschieden (OKLab ΔE ≥ 0.09, kleinster Abstand Intelligenz/Disziplin); Weisheit ist klar heller und höchstens halb so bunt wie Intelligenz; jede Farbe liegt in ihrem Farbton (Rot, Bernstein, Grün, Blau, Silber, Violett).
+
+**Schrift auf getönten Flächen:** Pures Stärke-Rot läge auf seinem 12-%-Chip über `surface-raised` bei 4.3:1 (über `surface-hover` 3.9:1), Intelligenz-Blau knapp darüber. Deshalb ist getönte Schrift überall leicht mit Pergament aufgehellt (80 : 20, `TINT_TEXT_PERCENT`): `tintStyle` (Attribut-Chips, `Badge color`) im Design-System und `--accent-text` der Kampagnenfarben – dieselbe Mischung. Geprüft: Chips (12–13 %) auf allen Flächen und auf einer hervorgehobenen Karte (`theme.test.ts`), Kampagnen-Flächen und -Abzeichen (`campaignTheme.test.ts`), jeweils ≥ 4.5:1. Hinweis: Charisma-Bernstein liegt sehr nah am App-Gold (ΔE ≈ 0.02) – eine Charisma-Kampagne wirkt golden; Gold-Elemente (XP, Belohnung) bleiben über Form und Text unterscheidbar.
+
+### Welche Farbe eine Kampagne bekommt
+1. `MainQuestState.dominantAttribute` aus der Engine (Regel 6: Attribut mit den meisten planmäßigen XP pro Woche unter den heute aktiven Quests in `linkedHabitIds` – ist keine aktiv, unter allen angelegten; Gleichstand → zuerst sortierte Quest),
+2. sonst das Haupt-Attribut der Vorlage – des gewählten Pfads (`BlueprintPath.primaryAttribute`) vor der Vorlage (`CampaignBlueprint.primaryAttribute`),
+3. sonst Gold (`CAMPAIGN_FALLBACK_COLOR` = `--color-gold`).
+
+Die Farbe folgt damit dem Plan: Ändert der Held Schwierigkeit oder Rhythmus seiner Quests, kann sich die Farbe ändern. Frisch installiert trägt jede Kampagne die Farbe ihrer Vorlage bzw. Klasse – `blueprints.test.ts` stellt sicher, dass jede Vorlage in jeder Stufe und Klasse ihr Haupt-Attribut klar am stärksten trainiert (deshalb z. B. „Selbst kochen“ beim Alchemisten als Vitalität und beim Gladiator Rumpftraining statt täglicher Schritte). Archivierte Kampagnen werden ebenfalls zum heutigen Tag ausgewertet; sind ihre Quests mitarchiviert, zählt deren letzter Plan – die Farbe bleibt in der Ruhmeshalle dieselbe.
+
+### Helfer (`src/features/campaignTheme`)
+```ts
+export const CAMPAIGN_FALLBACK_COLOR = '#d4a548'
+export type CampaignColorSource = Pick<MainQuestState, 'quest' | 'dominantAttribute'>
+export function blueprintAttribute(quest: Pick<MainQuest, 'blueprint'>): AttributeId | undefined   // Pfad vor Vorlage
+export function campaignAttribute(campaign: CampaignColorSource): AttributeId | undefined
+export function attributeColor(attribute: AttributeId | undefined): string   // Hex, Gold ohne Attribut
+export function campaignColor(campaign: CampaignColorSource): string         // Hex, Gold ohne Attribut
+export function accentVars(color: string): CSSProperties
+  // --accent, --accent-5/10/20/35/60 (color-mix mit transparent) und --accent-text (Schrift: 80 % Farbe,
+  // 20 % Pergament = tintTextColor) – auf einen Container setzen
+export function attributeAccentVars(attribute?: AttributeId): CSSProperties   // Bibliothek: Vorlage/Klasse
+export function campaignAccentVars(campaign: CampaignColorSource): CSSProperties
+export const ACCENT_TEXT_PERCENT        // = TINT_TEXT_PERCENT (80) aus src/ui/tint.ts
+export const ACCENT_SURFACE             // Tailwind-Klassen: hervorgehobene Fläche (6 % über surface-raised)
+export const ACCENT_BADGE_BACKGROUND    // deckende Abzeichen-Fläche (12 % über surface), unabhängig vom Lichtschein
+```
+Darin per Tailwind-Arbitrary-Werten: `border-(--accent-35)`, `bg-(--accent-10)`, `shadow-[0_0_24px_var(--accent-20)]`, **Schrift immer `text-(--accent-text)`** (reines `text-(--accent)` nur für Symbole). Alle Bereiche nutzen dieselben Variablen: Kampagnen-Seite und Dashboard (`CampaignFrame` = goldene Ornament-Karte in der Kampagnenfarbe), Bibliothek (`attributeAccentVars` + `blueprintAccentAttribute` in `features/blueprints/blueprintAccent.ts`), Rückmeldungen (`campaignAccentById` in `features/feedback/campaignAccent.ts`). Hervorgehobene Flächen (Kampagnen-Rahmen, gemeisterte Karte, gewählte Vorlage und Klasse) nutzen einheitlich `ACCENT_SURFACE`. Keine freien Hex-Werte in Komponenten – Farben kommen immer aus `ATTRIBUTES` bzw. diesen Helfern.
+
+### Wo die Kampagnenfarbe erscheint – und wo Gold bleibt
+- **Kampagnenfarbe:** Kampagnen-Banner (Rahmen, Leuchten, Icon-Rahmen, Akzentlinie unter dem Titel), Kapitel-Zeitleiste (Knoten, Verbindungen, Hervorhebung und Leuchten des aktuellen Kapitels, Kapitel-Fortschrittsbalken), Gesamtfortschritt der Kampagne, Farbpunkt in der Kampagnen-Auswahl, Kampagnen-Karten auf dem Dashboard (Rahmen, Akzent, Fortschritt, Kapitel-Rauten), Bibliotheks-Karten und Einrichtungs-Dialog (Haupt-Attribut der Vorlage bzw. des gewählten Pfads), Zeilen der beendeten Kampagnen (behalten ihre Farbe), Kampagnen-Abzeichen der Quests auf der Quests-Seite, Kapitel-Toast (Ring um das Kampagnen-Symbol), Konfetti und Akzent der Feier-Szene „Kampagne abgeschlossen“.
+- **Gold bleibt reserviert für:** XP-Zahlen, Belohnungen (Belohnung-Box), „Gemeistert“-/Siegeszustände, Primär-Buttons und den App-Rahmen (Navigation, XP-Leiste).
+- Zurückhaltend einsetzen: Die Farbe tönt Linien, Leuchten und Fortschritt; Flächen bleiben das dunkle Braun-Schwarz, Fließtext bleibt Pergament.

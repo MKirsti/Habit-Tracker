@@ -19,6 +19,15 @@ export interface CampaignQuestsToArchive {
 }
 
 /**
+ * Standard für „Zugehörige Quests ebenfalls archivieren“: beim Beenden einer laufenden Kampagne an (sie ruht
+ * samt Quests), beim Ablegen einer gemeisterten in der Ruhmeshalle aus – die Gewohnheiten sind gerade erst
+ * aufgebaut und sollen weiterlaufen.
+ */
+export function defaultArchiveQuests(campaign: Pick<MainQuestState, 'complete'>): boolean {
+  return !campaign.complete
+}
+
+/**
  * Welche Quests einer Kampagne „Zugehörige Quests ebenfalls archivieren“ betrifft – genau wie
  * `archiveMainQuest`: eigene Quests (`mainQuestId`), die heute noch laufen; geteilte Quests, die eine andere
  * nicht archivierte Kampagne braucht (Kapitel-Verweis oder `sharedHabitIds`), laufen weiter. Dazu die

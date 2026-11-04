@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ATTRIBUTE_IDS } from './attributes'
 import { BALANCING, DIFFICULTIES } from './balancing'
 import { addDays, dayRange, isoWeekday } from './dates'
-import { deriveGameState, getDayState } from './engine'
+import { deriveGameState, evaluateMainQuests, getDayState } from './engine'
 import {
   completeRange,
   makeChapter,
@@ -527,6 +527,168 @@ describe('deriveGameState – Kampagnen', () => {
     data.completions.push(makeCompletion(pushups, '2026-11-05'))
     const state = deriveGameState(data, '2026-11-04')
     expect(state.mainQuests[0].chapters[0]).toMatchObject({ current: 3, done: false })
+  })
+})
+
+describe('deriveGameState – Hauptfarbe der Kampagne (dominantAttribute)', () => {
+  // Gewicht = questXp × Termine pro Woche: easy 10, medium 20, hard 40, epic 80; täglich 7×, Wochentage
+  // deren Anzahl, Wochenquest `times`.
+  const TODAY = '2026-11-04'
+  const quest = (
+    id: string,
+    attribute: AttributeId,
+    difficulty: Difficulty,
+    schedule: Schedule,
+    order: number,
+    extra: Partial<Habit> = {},
+  ) => makeHabit({ id, attribute, difficulty, schedule, order, mainQuestId: 'c', ...extra })
+  const campaign = makeMainQuest({ id: 'c' })
+
+  function dominant(habits: Habit[], mainQuests = [campaign], today: DayKey = TODAY) {
+    const state = deriveGameState(makeGameData({ habits, mainQuests }), today)
+    return [...state.mainQuests, ...state.archivedMainQuests].map((q) => [q.quest.id, q.dominantAttribute])
+  }
+
+  it('eine Kampagne mit nur einem Attribut bekommt dieses', () => {
+    const habits = [
+      quest('a', 'strength', 'easy', { type: 'daily' }, 0),
+      quest('b', 'strength', 'hard', { type: 'weekly', times: 2 }, 1),
+    ]
+    expect(dominant(habits)).toEqual([['c', 'strength']])
+  })
+
+  it('gewichtet nach XP pro Woche: 3 leichte tägliche (210) schlagen 1 schwere 3×/Woche (120)', () => {
+    const hard = quest('hard', 'strength', 'hard', { type: 'weekly', times: 3 }, 0) // 40 × 3 = 120
+    const easy = [1, 2, 3].map((i) => quest(`easy${i}`, 'intellect', 'easy', { type: 'daily' }, i)) // 3 × 10 × 7 = 210
+    expect(dominant([hard, ...easy])).toEqual([['c', 'intellect']])
+    // Mit nur einer leichten täglichen (70) gewinnt die schwere Wochenquest (120).
+    expect(dominant([hard, easy[0]])).toEqual([['c', 'strength']])
+  })
+
+  it('zählt bei Wochentagen die Anzahl der Tage (Mo/Mi/Fr mittel = 60 < täglich leicht = 70)', () => {
+    const weekdays = quest('w', 'wisdom', 'medium', { type: 'weekdays', days: [1, 3, 5] }, 0) // 20 × 3 = 60
+    const daily = quest('d', 'vitality', 'easy', { type: 'daily' }, 1) // 10 × 7 = 70
+    expect(dominant([weekdays, daily])).toEqual([['c', 'vitality']])
+    const epicWeekdays = quest('w', 'wisdom', 'epic', { type: 'weekdays', days: [6, 7] }, 0) // 80 × 2 = 160
+    expect(dominant([epicWeekdays, daily])).toEqual([['c', 'wisdom']])
+  })
+
+  it('Gleichstand → das Attribut der zuerst sortierten beteiligten Quest (nach order)', () => {
+    const strength = quest('s', 'strength', 'easy', { type: 'daily' }, 5) // 70
+    const vitality = quest('v', 'vitality', 'medium', { type: 'weekly', times: 2 }, 1) // 40
+    const vitality2 = quest('v2', 'vitality', 'easy', { type: 'weekly', times: 3 }, 9) // 30 → zusammen 70
+    expect(dominant([strength, vitality, vitality2])).toEqual([['c', 'vitality']])
+    // Umgekehrte Reihenfolge: Jetzt steht die Stärke-Quest vorn.
+    expect(dominant([{ ...strength, order: 0 }, vitality, vitality2])).toEqual([['c', 'strength']])
+    // Gleiche order → wie in linkedHabitIds nach Titel.
+    const a = quest('x', 'charisma', 'easy', { type: 'daily' }, 3, { title: 'B' })
+    const b = quest('y', 'discipline', 'easy', { type: 'daily' }, 3, { title: 'A' })
+    expect(dominant([a, b])).toEqual([['c', 'discipline']])
+  })
+
+  it('zählt nur heute aktive Quests: archivierte, pausierte und noch nicht begonnene nicht', () => {
+    const small = quest('small', 'intellect', 'easy', { type: 'weekly', times: 1 }, 0) // 10
+    /** Mit einer großen Stärke-Quest (episch, täglich = 560), die `extra` bekommt. */
+    const withBig = (extra: Partial<Habit>) => dominant([small, quest('big', 'strength', 'epic', { type: 'daily' }, 1, extra)])
+    expect(withBig({})).toEqual([['c', 'strength']])
+    expect(withBig({ archivedDay: TODAY })).toEqual([['c', 'intellect']])
+    expect(withBig({ archivedDay: '2026-10-01' })).toEqual([['c', 'intellect']])
+    expect(withBig({ pauses: [{ from: '2026-11-01', until: '2026-11-10' }] })).toEqual([['c', 'intellect']])
+    expect(withBig({ createdDay: '2026-11-05' })).toEqual([['c', 'intellect']])
+    // Ein Archivierungstag nach heute zählt noch nicht (isArchivedOn) – die Quest ist noch aktiv.
+    expect(withBig({ archivedDay: '2026-11-05' })).toEqual([['c', 'strength']])
+  })
+
+  it('ohne Quest gibt es kein dominantAttribute (die UI nutzt dann die Vorlage bzw. Gold)', () => {
+    expect(dominant([])).toEqual([['c', undefined]])
+    const [state] = deriveGameState(makeGameData({ mainQuests: [campaign] }), TODAY).mainQuests
+    expect(state).not.toHaveProperty('dominantAttribute')
+    // Noch nicht angelegte Quests zählen auch ersatzweise nicht.
+    const future = quest('f', 'strength', 'hard', { type: 'daily' }, 0, { createdDay: '2026-11-05' })
+    expect(dominant([future])).toEqual([['c', undefined]])
+  })
+
+  it('ist keine Quest aktiv, behält die Kampagne die Farbe ihres zuletzt gültigen Plans (archiviert/pausiert)', () => {
+    // „Kampagne beenden“ mit ihren Quests: Die Farbe springt nicht auf Vorlage oder Gold.
+    const lift = quest('lift', 'strength', 'hard', { type: 'weekly', times: 2 }, 0, { archivedDay: '2026-11-01' }) // 80
+    const walk = quest('walk', 'vitality', 'easy', { type: 'daily' }, 1, { archivedDay: '2026-11-01' }) // 70
+    expect(dominant([lift, walk])).toEqual([['c', 'strength']])
+    // Urlaub (alle pausiert): ebenso.
+    const pause = { pauses: [{ from: '2026-11-01', until: '2026-11-20' }] }
+    expect(dominant([{ ...lift, archivedDay: undefined, ...pause }, { ...walk, archivedDay: undefined, ...pause }])).toEqual([
+      ['c', 'strength'],
+    ])
+    // Rhythmus laut letztem Stand (scheduleOn): früher täglich, zuletzt 1× pro Woche → 40 < 70.
+    const changed: Habit = {
+      ...lift,
+      schedule: { type: 'weekly', times: 1 },
+      scheduleHistory: [{ until: '2026-10-20', schedule: { type: 'daily' } }],
+    }
+    expect(dominant([changed, walk])).toEqual([['c', 'vitality']])
+    // Sobald wieder eine Quest aktiv ist, zählt nur sie.
+    const read = quest('read', 'intellect', 'easy', { type: 'weekly', times: 1 }, 2) // 10
+    expect(dominant([lift, walk, read])).toEqual([['c', 'intellect']])
+  })
+
+  it('nutzt den heute gültigen Rhythmus und die aktuelle Schwierigkeit', () => {
+    // Früher täglich (70), seit 03.11. nur noch 1× pro Woche (10).
+    const changed = quest('ch', 'strength', 'easy', { type: 'weekly', times: 1 }, 0, {
+      scheduleHistory: [{ until: '2026-11-03', schedule: { type: 'daily' } }],
+    })
+    const other = quest('o', 'wisdom', 'easy', { type: 'weekly', times: 2 }, 1) // 20
+    expect(dominant([changed, other])).toEqual([['c', 'wisdom']])
+    // Zum Stichtag vor der Umstellung galt noch „täglich“.
+    expect(dominant([changed, other], [campaign], '2026-11-02')).toEqual([['c', 'strength']])
+    // Erledigungen (und deren Schnappschüsse) spielen keine Rolle – nur der Plan.
+    const completions = completeRange(other, '2026-10-01', TODAY)
+    const data = makeGameData({ habits: [changed, other], mainQuests: [campaign], completions })
+    expect(deriveGameState(data, TODAY).mainQuests[0].dominantAttribute).toBe('wisdom')
+    expect(dominant([{ ...changed, difficulty: 'epic' }, other])).toEqual([['c', 'strength']]) // 80 > 20
+  })
+
+  it('geteilte Quests zählen für jede Kampagne, die sie führt (mainQuestId, sharedHabitIds, Kapitel-Verweis)', () => {
+    // Gehört „owner“, wird von „sharer“ mitbenutzt und von einem Kapitel in „referrer“ referenziert. 20 × 7 = 140.
+    const water = quest('water', 'vitality', 'medium', { type: 'daily' }, 0, { mainQuestId: 'owner' })
+    const owner = makeMainQuest({ id: 'owner' })
+    const sharer = makeMainQuest({ id: 'sharer', sharedHabitIds: ['water'] })
+    const referrer = makeMainQuest({
+      id: 'referrer',
+      chapters: [makeChapter({ id: 'k', criterion: { type: 'habit', habitId: 'water', metric: 'completions', target: 5 } })],
+    })
+    const stranger = makeMainQuest({ id: 'stranger' })
+    const lift = quest('lift', 'strength', 'hard', { type: 'weekly', times: 3 }, 1, { mainQuestId: 'sharer' }) // 120
+    const read = quest('read', 'intellect', 'epic', { type: 'weekly', times: 2 }, 2, { mainQuestId: 'referrer' }) // 160
+    const data = makeGameData({ habits: [water, lift, read], mainQuests: [owner, sharer, referrer, stranger] })
+    const state = deriveGameState(data, TODAY)
+    expect(state.mainQuests.map((q) => [q.quest.id, q.dominantAttribute])).toEqual([
+      ['owner', 'vitality'],
+      ['sharer', 'vitality'], // 140 > 120
+      ['referrer', 'intellect'], // 160 > 140
+      ['stranger', undefined],
+    ])
+  })
+
+  it('archivierte Kampagnen werden genauso (zum heutigen Tag) ausgewertet', () => {
+    const archived = makeMainQuest({ id: 'old', archived: true })
+    const habits = [
+      quest('a', 'charisma', 'medium', { type: 'daily' }, 0, { mainQuestId: 'old' }),
+      quest('b', 'strength', 'easy', { type: 'daily' }, 1),
+      quest('gone', 'discipline', 'epic', { type: 'daily' }, 2, { mainQuestId: 'old', archivedDay: '2026-11-01' }),
+    ]
+    expect(dominant(habits, [archived, campaign])).toEqual([
+      ['c', 'strength'],
+      ['old', 'charisma'],
+    ])
+    const data = makeGameData({ habits, mainQuests: [archived, campaign] })
+    expect(evaluateMainQuests(data, TODAY).map((q) => q.dominantAttribute)).toEqual(['charisma', 'strength'])
+  })
+
+  it('ignoriert Quests mit kaputten Daten (unbekanntes Attribut oder Schwierigkeit)', () => {
+    const broken = quest('x', 'mystery' as AttributeId, 'epic', { type: 'daily' }, 0)
+    const odd = quest('y', 'strength', 'legendary' as Difficulty, { type: 'daily' }, 1)
+    const fine = quest('z', 'wisdom', 'easy', { type: 'weekly', times: 1 }, 2)
+    expect(dominant([broken, odd, fine])).toEqual([['c', 'wisdom']])
+    expect(dominant([broken, odd])).toEqual([['c', undefined]])
   })
 })
 

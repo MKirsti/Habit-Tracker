@@ -7,7 +7,7 @@
 export { cn } from './cn'
 export type { ClassValue } from './cn'
 export { clamp, countDecimals, formatDecimalInput, formatNumber, parseDecimal } from './format'
-export { tintStyle } from './tint'
+export { TINT_TEXT_PERCENT, tintStyle, tintTextColor } from './tint'
 export { useMediaQuery } from './useMediaQuery'
 export { useSvgId } from './useSvgId'
 

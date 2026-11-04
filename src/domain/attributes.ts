@@ -8,7 +8,11 @@ export interface AttributeMeta {
   icon: string
   /** Wofür das Attribut steht – Hilfe bei der Zuordnung von Quests. */
   description: string
-  /** Akzentfarbe (Hex), passt zum dunklen Theme. */
+  /**
+   * Akzentfarbe (Hex), passt zum dunklen Theme. Auch die Hauptfarbe einer Kampagne, die dieses Attribut am
+   * stärksten trainiert (`MainQuestState.dominantAttribute`, `src/features/campaignTheme`). Als Text auf allen
+   * Flächen ≥ 4.5:1 (geprüft in src/ui/theme.test.ts); gespiegelt in `--color-attr-*` (src/index.css).
+   */
   color: string
 }
 
@@ -35,7 +39,8 @@ export const ATTRIBUTES: Record<AttributeId, AttributeMeta> = {
     short: 'WEI',
     icon: '🧘',
     description: 'Achtsamkeit, Reflexion, Schlaf, Ruhe',
-    color: '#9b7fd1',
+    // Silber/Eisblau: deutlich heller und viel weniger gesättigt als Intelligenz-Blau.
+    color: '#a9c6db',
   },
   charisma: {
     id: 'charisma',
@@ -59,7 +64,8 @@ export const ATTRIBUTES: Record<AttributeId, AttributeMeta> = {
     short: 'DIS',
     icon: '🛡️',
     description: 'Haushalt, Arbeit, Finanzen, Routinen',
-    color: '#8fa3b8',
+    // Violett (Amethyst) – etwas heller als das frühere Weisheits-Violett, damit es auch auf getönten Chips lesbar bleibt.
+    color: '#a28bd8',
   },
 }
 

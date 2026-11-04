@@ -86,6 +86,13 @@ export interface BlueprintPath {
   description: string
   primaryAttribute: AttributeId
   secondaryAttributes: AttributeId[]
+  /**
+   * Optional: Hinweis pro Stufe speziell für diese Klasse – mit ihren eigenen Zahlen (z. B. Krieger: Trainings
+   * und Liegestütze, Waldläufer: Minuten und Schritte). Die Einrichtung zeigt ihn, sobald die Klasse gewählt ist;
+   * davor (und für Klassen ohne eigenen Hinweis) gilt `CampaignBlueprint.levelHints`. Wenn gesetzt, sind beide
+   * Stufen nicht leer.
+   */
+  levelHints?: Record<BlueprintLevel, string>
 }
 
 export interface CampaignBlueprint {
@@ -103,7 +110,10 @@ export interface CampaignBlueprint {
   secondaryAttributes: AttributeId[]
   /** Laufzeit in Tagen (Deadline = Start + durationDays). */
   durationDays: number
-  /** Kurzer Hinweis pro Stufe, z. B. "Du fängst gerade an – 10 Seiten am Tag." */
+  /**
+   * Kurzer Hinweis pro Stufe, z. B. "Du fängst gerade an – 10 Seiten am Tag." Bei Vorlagen mit Pfaden der
+   * allgemeine Hinweis vor der Klassenwahl; ein Pfad kann eigene `BlueprintPath.levelHints` mitbringen.
+   */
   levelHints: Record<BlueprintLevel, string>
   /** Wenn gesetzt, muss genau ein Pfad gewählt werden ("Klassenwahl"). */
   paths?: BlueprintPath[]
