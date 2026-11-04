@@ -731,3 +731,54 @@ undoPurchase(purchaseId, today?)           // Gegenstände nach canUndoItemPurch
 - **Einstellungen:** „Lebenspunkte“ (`LifePointsSettings`: an/aus = Sanfter Modus, Tabelle der Wertungen und Regel-Notizen aus `BALANCING`, `pages/settings/hpSettingsText.ts` – „Ein Anfang“ auch mit nur einer Wochenquest, „Pause“ nach `slumpPauseAfterDays` Tagen mit HP-Verlust in Folge bis zum nächsten guten Tag (Notiz: ein Durchhänger kostet höchstens `slumpPauseAfterDays × hpByScore.missed` = −18 HP, der Streak-Schutz bleibt in der Pause im Beutel), Niederlage mit Gold-Obergrenze; die Einführungskarte `hpIntroPoints` sagt dasselbe kurz) und „Rast & Urlaub“ (`RestSettings`, Logik in `restForm.ts`: planen mit Schnellwahl `restPresets(today, earliest)` – „Gestern“ nur, solange gestern noch änderbar ist –, Liste, löschen bzw. „ab heute beenden“ per `updateRestPeriod`). `?bereich=rast` scrollt zu „Rast & Urlaub“ und fokussiert den Abschnitt.
 - **Held:** Reiter **Statistik** (`?tab=statistik`, `pages/hero/stats/`): Kennzahlen, Heatmap (26 Wochen, ab ca. 600 px Diagrammbreite 52) gesamt und pro Quest, XP pro Woche, XP-/Level-Verlauf, Erfüllungsquote, Attribut-Radar. Eigene SVG-Diagramme (`role="img"`, Tabelle „Als Tabelle anzeigen“, Tastatur), kein neues Paket. Ein Tag „Ein Anfang“ ohne erledigte Tagesquest nennt im Tooltip die andere Quest (`dayStatDetails`: „0 von 3 Tagesquests, dafür 1 andere Quest“); ein Tag in der Durchhänger-Pause heißt „Pause“, nennt, was trotzdem erledigt war, und „der Schaden ruht“ („Pause · 1 von 3 Tagesquests · +10 XP · der Schaden ruht“). Der Wochenschnitt (`statsText.ts`: `weeklySummary`/`weeklyXpSummary`/`weeklySubtitle` mit optionalem `since` = `DayHistory.from`) zählt nur abgeschlossene Wochen ab dem Abenteuerbeginn; vor der ersten ganzen Woche gibt es keinen Schnitt.
 - **Kampagne:** Bereich **Ruhmeshalle** (`pages/campaign/HallOfFame.tsx`) für gemeisterte Kampagnen mit Bilanz (eine verpasste Frist wird nie erwähnt); Kapitel-Editor bietet „Bestwert“ nur für messbare Quests (`campaignText.ts`: `MEASURABLE_METRICS`, `needsMeasure`).
+
+## Phase 3a – Klassen, Kampf, Wochen-Boss, Truhen, Titel & Rahmen (Vertrag)
+
+Vom Spieler abgesegnet. Leitlinie: alles belohnt, nichts bestraft zusätzlich (ein entkommener Boss kostet nichts). Typen: `src/domain/types.ts` (Abschnitt „Phase 3a“), Zahlen: `BALANCING.combat`, `BALANCING.chests`.
+
+### Klasse (`src/domain/combat/classes.ts`, rein)
+- Ermittelt pro **Woche** (Montag, ISO-Woche wie überall): Attribut-Level am Ende des Vortags vor dem Montag (`HeroClassState.attributeLevels`). Wechsel also nur zu Wochenbeginn.
+- Höchstes Attribut < `classMinLevel` (3) → `adventurer`. Sonst: die zwei höchsten Attribute (Gleichstand → Reihenfolge `ATTRIBUTE_IDS`); liegen sie ≤ `hybridMaxLevelGap` auseinander und sind beide ≥ 3 → Hybridklasse dieses Paares (Tabelle unten), sonst Grundklasse des höchsten.
+- Grundklassen: Stärke Krieger · Intelligenz Magier · Weisheit Druide · Charisma Barde · Vitalität Paladin · Disziplin Wächter. Hybride: STR+INT Kampfmagier (battlemage) · STR+WEI Mönch (monk) · STR+CHA Bannerträger (bannerbearer) · STR+VIT Berserker · STR+DIS Ritter (knight) · INT+WEI Erzmagier (archmage) · INT+CHA Illusionist · INT+VIT Heilkundiger (healer) · INT+DIS Runenschmied (runesmith) · WEI+CHA Seher (seer) · WEI+VIT Schamane (shaman) · WEI+DIS Templer (templar) · CHA+VIT Troubadour · CHA+DIS Feldherr (warlord) · VIT+DIS Grenzwächter (sentinel).
+- Namen in drei Sprachformen (`CharacterProfile.form`, Standard `neutral`). Definitionen + Texte: `src/domain/combat/classDefinitions.ts`.
+- `classBonus`: Grundklasse `{ [attr]: 0.2 }`, Hybrid `{ [a]: 0.1, [b]: 0.1 }`, Abenteurer `{}`.
+
+### Schaden
+- Jede **erledigte** Quest-Erledigung (value ≥ target) und jede erledigte Nebenquest der Woche ist ein Angriff mit ihrem Attribut (Snapshot der Erledigung). Teilfortschritt: kein Angriff.
+- `damage = round(questXp(difficulty) × (1 + attributeBonusPerLevel × (level − 1)) × (1 + classBonus[attr] ?? 0) × (weakness ? weaknessMultiplier : 1))` – `level` = Attribut-Level der Woche (`HeroClassState.attributeLevels`), **ohne** Streak-Bonus (der bleibt XP-Sache).
+- Angriffsnamen je Attribut: Stärke „Schwerthieb“, Intelligenz „Arkaner Blitz“, Weisheit „Mondlicht“, Charisma „Schlachtruf“, Vitalität „Lebensfunke“, Disziplin „Schildstoß“.
+
+### Wochen-Boss (`src/domain/combat/boss.ts`, rein)
+- **Geplanter Wochenschaden** = Summe über alle Tage Mo–So der Woche und alle Quests, die an dem Tag Pflicht sind (`isRequiredOn`, Ruhetage zählen nicht), plus Wochenquests × `times` (Rhythmus vom Montag): jeweils der Schaden einer Erledigung nach obiger Formel **ohne** Schwäche. Ist er 0 → kein Boss (`bosses.current` fehlt).
+- `maxHp = max(bossMinHp, round(bossHpShare × geplanter Schaden))`. Rast/Urlaub, die später in der Woche eingetragen werden, senken ihn (abgeleitet); ein gespeicherter Sieg bleibt.
+- **Boss-Wahl:** Thema = Attribut mit dem größten geplanten Schaden; aus den Bossen dieses Themas (`src/domain/combat/bosses.ts`, 3 je Attribut) deterministisch per Hash von `heroSeed + weekStart` (`heroSeed` = `profile.createdDay + profile.name`). **Schwäche:** per Hash aus den Attributen mit geplantem Schaden > 0, bevorzugt **nicht** das Thema-Attribut (falls es andere gibt).
+- `damage` = Summe der Angriffe der Woche (Tage ≤ heute); `defeated` ⇔ gespeicherter Sieg für die Woche oder `damage ≥ maxHp`; `defeatedDay` = Tag, an dem die Summe maxHp erreichte.
+- `bosses.previous`: der Boss der Vorwoche, solange gestern zur Vorwoche gehört (Nachtragen am Montag zählt für die alte Woche) und er nicht besiegt ist.
+- Entkommen kostet nichts.
+
+### Truhen (`src/domain/combat/chests.ts`, rein)
+- Hash-Funktion: stabil, z. B. FNV-1a 32 bit über einen String → `[0, 1)`.
+- **Boss-Truhe:** je Boss-Sieg `boss:<weekStart>` (foundDay = defeatedDay).
+- **Quest-Truhe:** für jeden Tag: die erledigten Quest-Erledigungen des Tages (nach `id` sortiert); die erste mit `hash(heroSeed + ':' + completion.id) < questDropChance` liefert `quest:<completion.id>` – höchstens `maxQuestChestsPerDay` pro Tag **inklusive** schon gespeicherter Quest-Truhen dieses Tages.
+- **Kapitel-Truhe:** je abgeschlossenem Kapitel mit `doneDay` `chapter:<questId>:<chapterId>`.
+- **Inhalt:** Seltenheit per `hash(id + ':rarity')` gegen `rarityWeights`; common/uncommon: Gold gleichverteilt im Bereich (per Hash); rare: 50 % Streak-Schutz / 50 % ein noch nicht freigeschalteter Rahmen mit `condition.type === 'chest'` und Seltenheit rare (sonst Gold 100); legendary: ein noch nicht freigeschalteter Truhen-Titel oder -Rahmen der Seltenheit legendary (sonst Gold 150). Festgelegt beim **Fund**; gespeicherte Truhen ändern sich nie.
+- Neu gefundene Truhen erscheinen sofort im Zustand (`GameState.chests`) und werden vom Recorder gespeichert; gespeichert heißt dauerhaft (auch wenn die Quest später abgehakt wird).
+- **Öffnen:** Gold zählt ab dem Öffnen (`gold.fromChests`); Streak-Schutz → Vorrat (bei vollem Vorrat stattdessen `freezeFallbackGold`, entschieden beim Öffnen); Kosmetik → `CosmeticUnlock`.
+
+### Titel & Rahmen (`src/domain/combat/cosmetics.ts` + `cosmeticDefinitions.ts`)
+- ~20 Titel (drei Sprachformen) und ~10 Rahmen mit `CosmeticCondition` (Erfolg, Anzahl Boss-Siege, bestimmter Boss, gemeisterte Kampagnen, Level, Truhe, immer). Freigeschaltet = Bedingung erfüllt (über dauerhafte Fakten: gespeicherte Erfolge/Siege) **oder** `CosmeticUnlock`. Gewählter Titel/Rahmen im Profil; nicht (mehr) freigeschaltet → nicht angezeigt.
+
+### Daten (`src/data`)
+- Dexie `version(5)`: `bossVictories '&weekStart'`, `chests '&id, foundDay'`, `cosmeticUnlocks '&id'`. Backup (optional im Schema), Reset.
+```ts
+recordProgress({ achievementUnlocks?, bossVictories?, chests? }): Promise<void>  // idempotent, überschreibt nie Vorhandenes
+openChest(id, today): Promise<ChestContent>        // setzt openedAt; Kosmetik → cosmeticUnlocks; Freeze-Fallback
+saveProfile(...)                                     // + form, titleId, frameId (bestehende Felder bleiben)
+markCombatIntroSeen()
+```
+- Der bisherige `AchievementRecorder` wird zum `ProgressRecorder` (speichert Erfolge, Boss-Siege, Truhen).
+
+### UI
+- **Dashboard:** Klasse im Helden-Kopf („Lvl 7 · 🔮 Magierin“, Titel unter dem Namen, Rahmen um den Avatar); **Boss-Karte** direkt unter dem Helden-Kopf (Icon, Name, Lebensbalken, „noch N Tage“, Schwäche-Symbol, „🎁 Truhe beim Sieg“); beim Abhaken Treffer-Anzeige mit Angriffsname und Schaden (Schwäche hervorgehoben); Hinweis auf ungeöffnete Truhen; Montag: kurzer Hinweis, wenn der Vorwochen-Boss entkommen ist; einmalige Einführungskarte „Neu: Klassen, Bosse & Beute“ mit Wahl der Sprachform.
+- **Feedback:** Siegesszene (Boss besiegt + Truhe), Klassenwechsel-Szene (zu Wochenbeginn), Meldung „Truhe gefunden“; **Truhen-Öffnen-Dialog** mit Animation je Seltenheit.
+- **Held:** Klassen-Karte (aktuelle Klasse, warum, Attribut-Stand, mögliche nächste Klasse, Bonus); neuer Reiter **Sammlung** (`?tab=sammlung`): Bestiarium (besiegt mit Datum/Anzahl, unbekannte als Silhouette), Truhen (ungeöffnete öffnen, Chronik), Titel & Rahmen (wählen, gesperrte mit Hinweis). Profil bearbeiten + Onboarding: Sprachform (Heldin / Held / neutral).

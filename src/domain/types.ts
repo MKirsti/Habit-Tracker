@@ -185,7 +185,16 @@ export interface CharacterProfile {
   avatar: string
   /** Spieltag, an dem das Abenteuer begann. */
   createdDay: DayKey
+  /** Sprachform für Klassen und Titel (Phase 3a). Fehlt = 'neutral'. */
+  form?: GrammaticalForm
+  /** Gewählter Titel (Phase 3a, `TitleDefinition.id`), erscheint unter dem Namen. */
+  titleId?: string
+  /** Gewählter Avatar-Rahmen (Phase 3a, `FrameDefinition.id`). */
+  frameId?: string
 }
+
+/** Sprachform für Klassen- und Titelnamen: Magierin / Magier / neutral (z. B. "Magie-Kundige"). */
+export type GrammaticalForm = 'female' | 'male' | 'neutral'
 
 export interface Settings {
   /** Stunde (0–12), zu der ein neuer Spieltag beginnt. Standard: 4 → bis 3:59 Uhr zählt noch zum Vortag. */
@@ -200,6 +209,8 @@ export interface Settings {
   penalties?: { enabled: boolean; since?: DayKey }
   /** Die Einführung „Neu: Lebenspunkte“ wurde gesehen. */
   hpIntroSeen?: boolean
+  /** Die Einführung „Neu: Klassen, Bosse & Beute“ (Phase 3a) wurde gesehen. */
+  combatIntroSeen?: boolean
 }
 
 /**
@@ -243,6 +254,12 @@ export interface GameData {
   sideQuests?: SideQuest[]
   /** Dauerhaft freigeschaltete Erfolge (einmal erreicht = für immer). Fehlt = keine. */
   achievementUnlocks?: AchievementUnlock[]
+  /** Besiegte Wochen-Bosse (Phase 3a, dauerhaft). Fehlt = keine. */
+  bossVictories?: BossVictory[]
+  /** Gefundene Truhen (Phase 3a, dauerhaft; Inhalt beim Fund festgelegt). Fehlt = keine. */
+  chests?: Chest[]
+  /** Aus Truhen freigeschaltete Titel/Rahmen (Phase 3a). Bedingungs-Freischaltungen werden abgeleitet. Fehlt = keine. */
+  cosmeticUnlocks?: CosmeticUnlock[]
   /** Endgültig abgerechnete Tage (Lebenspunkte, Streak-Schutz, Niederlagen) – Phase 2b. Fehlt = keine. */
   hpLedger?: HpLedgerEntry[]
   /** Urlaub und Ruhetage – Phase 2b. Fehlt = keine. */
@@ -432,6 +449,8 @@ export interface GoldState {
   fromXp: number
   /** Summe der goldReward aller freigeschalteten Erfolge. */
   fromAchievements: number
+  /** Gold aus geöffneten Truhen (Phase 3a). */
+  fromChests: number
   /** fromXp + fromAchievements. */
   earned: number
   /** Summe aller Purchases. */
@@ -463,8 +482,10 @@ export interface HpState {
 }
 
 export interface InventoryState {
-  /** Vorrätige Streak-Schutz-Gegenstände (gekauft − verbraucht). */
+  /** Vorrätige Streak-Schutz-Gegenstände (gekauft + aus geöffneten Truhen − verbraucht). */
   streakFreezes: number
+  /** Gefundene, noch ungeöffnete Truhen (Phase 3a). */
+  unopenedChests: number
 }
 
 export interface AchievementState {
@@ -673,4 +694,168 @@ export interface GameState {
   inventory: InventoryState
   /** Heute ist Ruhetag/Urlaub. */
   restToday: boolean
+  /** Klasse des Helden für die laufende Woche (Phase 3a). */
+  heroClass: HeroClassState
+  /** Wochen-Boss (Phase 3a). */
+  bosses: {
+    /** Gegner der laufenden Woche; fehlt, wenn diese Woche kein Schaden geplant ist (keine Quests). */
+    current?: WeeklyBossState
+    /** Gegner der Vorwoche – nur solange gestern noch zur Vorwoche gehört (Gnadenfrist) und er nicht besiegt ist. */
+    previous?: WeeklyBossState
+  }
+  /** Truhen: gespeicherte (gefunden/geöffnet) plus neu gefundene, noch nicht gespeicherte. */
+  chests: Chest[]
+  /** Freigeschaltete Titel und Rahmen. */
+  cosmetics: { titles: string[]; frames: string[] }
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 3a: Klassen, Kampf, Wochen-Boss, Truhen, Titel & Rahmen
+// ---------------------------------------------------------------------------
+
+/** Grundklassen (je ein Attribut), Hybridklassen (zwei Attribute) und der Start-"Abenteurer". */
+export type HeroClassId =
+  | 'adventurer'
+  | 'warrior' | 'mage' | 'druid' | 'bard' | 'paladin' | 'warden'
+  | 'battlemage' | 'monk' | 'bannerbearer' | 'berserker' | 'knight'
+  | 'archmage' | 'illusionist' | 'healer' | 'runesmith'
+  | 'seer' | 'shaman' | 'templar'
+  | 'troubadour' | 'warlord'
+  | 'sentinel'
+
+export interface HeroClassDefinition {
+  id: HeroClassId
+  /** Name je Sprachform, z. B. { female: 'Magierin', male: 'Magier', neutral: 'Magiekundige Person' }. */
+  names: Record<GrammaticalForm, string>
+  icon: string
+  /** 0 (Abenteurer), 1 (Grundklasse) oder 2 (Hybrid) Attribute. */
+  attributes: AttributeId[]
+  /** 1–2 Sätze, Du-Form. */
+  description: string
+}
+
+export interface HeroClassState {
+  definition: HeroClassDefinition
+  /** Montag der Woche, für die diese Klasse gilt (Klassen wechseln nur zu Wochenbeginn). */
+  weekStart: DayKey
+  /** Attribut-Level, mit denen in dieser Woche gekämpft wird (Stand Ende des Vortags vor `weekStart`). */
+  attributeLevels: Record<AttributeId, number>
+  /** Klassen-Bonus je Attribut (0.2 für die Grundklasse, 0.1 je Attribut bei Hybriden). */
+  classBonus: Partial<Record<AttributeId, number>>
+  /** Klasse der Vorwoche (für die Wechsel-Szene), falls anders. */
+  previousId?: HeroClassId
+}
+
+export interface BossDefinition {
+  id: string
+  name: string
+  /** Emoji. */
+  icon: string
+  /** Thema (passt zum stärksten Attribut der geplanten Woche). */
+  theme: AttributeId
+  /** 1–2 Sätze Flavor. */
+  description: string
+  /** Satz beim Sieg. */
+  defeatLine: string
+  /** Satz, wenn er entkommt. */
+  escapeLine: string
+}
+
+export interface AttackEvent {
+  day: DayKey
+  source: 'quest' | 'sideQuest'
+  /** habitId bzw. sideQuestId. */
+  sourceId: string
+  attribute: AttributeId
+  /** Name des Angriffs der Attribut-Art, z. B. "Arkaner Blitz". */
+  attackName: string
+  damage: number
+  /** Traf die Schwäche des Bosses. */
+  weakness: boolean
+}
+
+export interface WeeklyBossState {
+  boss: BossDefinition
+  weekStart: DayKey
+  /** Sonntag der Woche. */
+  weekEnd: DayKey
+  weakness: AttributeId
+  maxHp: number
+  /** Summe des Schadens (gedeckelt auf maxHp für die Anzeige; `damage` selbst ungedeckelt). */
+  damage: number
+  /** max(0, maxHp − damage). */
+  hp: number
+  defeated: boolean
+  /** Tag, an dem der Schaden maxHp erreichte (oder gespeicherter Sieg). */
+  defeatedDay?: DayKey
+  /** Restliche Tage inkl. heute (0 nach Sonntag). */
+  daysLeft: number
+  /** Alle Angriffe der Woche, chronologisch. */
+  attacks: AttackEvent[]
+}
+
+/** Dauerhafter Boss-Sieg (Bestiarium). */
+export interface BossVictory {
+  /** Montag der Woche (eindeutig). */
+  weekStart: DayKey
+  bossId: string
+  day: DayKey
+  maxHp: number
+}
+
+export type ChestRarity = 'common' | 'uncommon' | 'rare' | 'legendary'
+export type ChestSource = 'boss' | 'quest' | 'chapter'
+export type ChestContent =
+  | { kind: 'gold'; amount: number }
+  | { kind: 'item'; itemId: 'streakFreeze' }
+  | { kind: 'cosmetic'; cosmeticKind: 'title' | 'frame'; cosmeticId: string }
+
+export interface Chest {
+  /** Deterministisch: 'boss:<weekStart>', 'quest:<completionId>', 'chapter:<questId>:<chapterId>'. */
+  id: string
+  source: ChestSource
+  foundDay: DayKey
+  rarity: ChestRarity
+  /** Beim Fund deterministisch festgelegt. */
+  content: ChestContent
+  /** Zeitpunkt des Öffnens (epoch ms); fehlt = ungeöffnet. */
+  openedAt?: number
+}
+
+export interface CosmeticUnlock {
+  id: string
+  kind: 'title' | 'frame'
+  day: DayKey
+  source: 'chest'
+}
+
+/** Bedingung, unter der ein Titel/Rahmen freigeschaltet ist (abgeleitet, dauerhaft über gespeicherte Fakten). */
+export type CosmeticCondition =
+  | { type: 'achievement'; achievementId: string }
+  | { type: 'bossVictories'; count: number }
+  | { type: 'bossDefeated'; bossId: string }
+  | { type: 'campaignsMastered'; count: number }
+  | { type: 'level'; level: number }
+  | { type: 'chest' }
+  | { type: 'always' }
+
+export interface TitleDefinition {
+  id: string
+  /** Je Sprachform, z. B. { female: 'die Unbeugsame', male: 'der Unbeugsame', neutral: 'unbeugsam' }. */
+  names: Record<GrammaticalForm, string>
+  condition: CosmeticCondition
+  /** Wie man ihn bekommt (für gesperrte Titel). */
+  hint: string
+  rarity: ChestRarity
+}
+
+export interface FrameDefinition {
+  id: string
+  name: string
+  condition: CosmeticCondition
+  hint: string
+  rarity: ChestRarity
+  /** Darstellung: Farben/Verlauf für den Ring (CSS-Farben). */
+  colors: string[]
 }

@@ -48,6 +48,35 @@ export const BALANCING = {
     streakFreeze: { price: 150, max: 5 },
     healingPotion: { price: 80, heal: 20 },
   },
+  /** Kampf (Phase 3a). */
+  combat: {
+    /** +10 % Schaden je Attribut-Level über 1. */
+    attributeBonusPerLevel: 0.1,
+    /** Klassen-Bonus: Grundklasse +20 % auf ihr Attribut, Hybrid +10 % auf beide. */
+    classBonus: 0.2,
+    hybridClassBonus: 0.1,
+    /** Ab diesem Attribut-Level gibt es eine echte Klasse (vorher "Abenteurer"). */
+    classMinLevel: 3,
+    /** Hybrid, wenn die zwei stärksten Attribute höchstens so weit auseinander liegen (beide ≥ classMinLevel). */
+    hybridMaxLevelGap: 1,
+    /** Schaden gegen die Schwäche des Bosses. */
+    weaknessMultiplier: 1.5,
+    /** Boss-HP = Anteil des geplanten Wochenschadens. */
+    bossHpShare: 0.7,
+    /** Untergrenze der Boss-HP (bei geplanter Wirkung > 0). */
+    bossMinHp: 60,
+  },
+  /** Beutetruhen (Phase 3a). */
+  chests: {
+    /** Chance je erledigter Quest (deterministisch je Erledigung). */
+    questDropChance: 0.1,
+    maxQuestChestsPerDay: 1,
+    /** Gewichte der Seltenheiten (Summe 100). */
+    rarityWeights: { common: 70, uncommon: 22, rare: 7, legendary: 1 },
+    gold: { common: [20, 50], uncommon: [60, 100] },
+    /** Ersatz-Gold, wenn ein Streak-Schutz den vollen Vorrat überschreiten würde. */
+    freezeFallbackGold: 100,
+  },
   /** Höchstens so viele aktive Kampagnen gleichzeitig (aktiv = nicht archiviert und nicht abgeschlossen). */
   maxActiveCampaigns: 3,
   /** Sicherheitsgrenze für Level-Berechnungen. */
