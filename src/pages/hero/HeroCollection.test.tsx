@@ -28,6 +28,7 @@ vi.mock('../../features/combat/ChestOpenDialog', async () => {
     chestId: string
     open: boolean
     onClose(): void
+    onOpened?: () => void
     returnFocus?: () => HTMLElement | null
   }
   class TestDialog extends Component<Omit<Props, 'open'>> {
@@ -40,11 +41,11 @@ vi.mock('../../features/combat/ChestOpenDialog', async () => {
       target?.focus()
     }
     render() {
-      const { chestId, onClose } = this.props
+      const { chestId, onClose, onOpened } = this.props
       return (
         <div role="dialog" aria-label="Truhe öffnen (Test)">
           <p>Truhe {chestId}</p>
-          <button type="button" onClick={() => void openChest(chestId, '2026-11-03')}>
+          <button type="button" onClick={() => void openChest(chestId, '2026-11-03').then(() => onOpened?.())}>
             Aufklappen
           </button>
           <button type="button" onClick={onClose}>
@@ -58,6 +59,13 @@ vi.mock('../../features/combat/ChestOpenDialog', async () => {
     ChestOpenDialog: ({ open, ...props }: Props) => (open ? <TestDialog {...props} /> : null),
   }
 })
+
+// Klang & Vibration: nur prüfen, dass im richtigen Moment gerufen wird.
+const sounds = vi.hoisted(() => ({ play: vi.fn(), vibrate: vi.fn() }))
+vi.mock('../../features/sound', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../features/sound')>()),
+  useGameSounds: () => sounds,
+}))
 
 /** Dienstag, 3. November 2026, 12:00 Uhr (Ortszeit) → Spieltag 2026-11-03; die Woche begann am Montag, 2. November. */
 const TODAY: DayKey = '2026-11-03'
@@ -249,8 +257,12 @@ describe('Held → Sammlung', () => {
     await user.click(within(items[0]).getByRole('button', { name: 'Seltene Kapitel-Truhe öffnen' }))
     const dialog = screen.getByRole('dialog', { name: 'Truhe öffnen (Test)' })
     expect(dialog).toHaveTextContent('Truhe chapter:dev-a')
+    expect(sounds.play).not.toHaveBeenCalledWith('chest')
     await user.click(within(dialog).getByRole('button', { name: 'Aufklappen' }))
     await waitFor(() => expect(within(section).getByRole('list', { name: /^Chronik/ })).toHaveTextContent('Streak-Schutz'))
+    // Das Öffnen klingt (und summt) – wie eine Truhe aus der Siegesszene.
+    expect(sounds.play).toHaveBeenCalledWith('chest')
+    expect(sounds.vibrate).toHaveBeenCalled()
     await user.click(within(dialog).getByRole('button', { name: 'Schließen' }))
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()

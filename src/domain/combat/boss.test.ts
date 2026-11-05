@@ -5,20 +5,27 @@ import { addDays } from '../dates'
 import { TEST_ATTACK_NAMES, makeBoss, makeBossRoster, makeBossVictory, makeHabit } from '../testing'
 import type { AttributeId, DayKey } from '../types'
 import {
+  SECOND_THEME_SHARE,
   attacksOf,
   bossMaxHp,
   bossTheme,
   chooseBoss,
   chooseWeakness,
+  createBossResolver,
   heroSeedOf,
+  isSecondThemeWeek,
   plannedWeekAttacks,
   plannedWeekDamage,
+  secondBossTheme,
   unrecordedVictories,
+  weekBoss,
+  weekBossTheme,
   weekDays,
   weekEndOf,
   weeklyBossState,
+  withCompanionHits,
 } from './boss'
-import type { AttackSource, CombatStats, WeeklyBossInput } from './boss'
+import type { AttackSource, BossWeekPlan, CombatStats, CompanionAttackInput, WeeklyBossInput } from './boss'
 
 // 2026-11-02 ist ein Montag.
 const MONDAY: DayKey = '2026-11-02'
@@ -156,13 +163,24 @@ describe('plannedWeekDamage & bossMaxHp', () => {
     expect(split.wisdom).toBe(30)
   })
 
-  it('maxHp = max(60, round(0,7 × geplant)), ohne Plan 0', () => {
+  it('maxHp = max(min(60, geplant), round(0,7 × geplant)), ohne Plan 0', () => {
     expect(bossMaxHp(282)).toBe(197) // 197,4
     expect(bossMaxHp(140)).toBe(98)
     expect(bossMaxHp(80)).toBe(BALANCING.combat.bossMinHp) // 56 → 60
-    expect(bossMaxHp(1)).toBe(60)
+    expect(bossMaxHp(60)).toBe(60) // 42 → 60 = genau der Plan
+    expect(bossMaxHp(40)).toBe(40) // nie mehr als geplant
+    expect(bossMaxHp(1)).toBe(1)
     expect(bossMaxHp(0)).toBe(0)
     expect(bossMaxHp(Number.NaN)).toBe(0)
+  })
+
+  it('Nachbesserung 3a: maxHp liegt nie über dem geplanten Schaden – und mit vollem Plan ist der Boss schaffbar', () => {
+    for (let planned = 1; planned <= 2_000; planned++) {
+      const maxHp = bossMaxHp(planned)
+      expect(maxHp, `geplant ${planned}`).toBeLessThanOrEqual(planned)
+      expect(maxHp, `geplant ${planned}`).toBeGreaterThanOrEqual(Math.min(BALANCING.combat.bossMinHp, planned))
+      expect(maxHp, `geplant ${planned}`).toBe(Math.max(Math.min(60, planned), Math.round(0.7 * planned)))
+    }
   })
 })
 
@@ -332,7 +350,7 @@ describe('weeklyBossState', () => {
   })
 
   it('genau maxHp Schaden reicht; einer weniger nicht', () => {
-    const planned = [{ attribute: 'strength' as const, difficulty: 'easy' as const, count: 2 }] // 20 → 60 HP (Untergrenze)
+    const planned = [{ attribute: 'strength' as const, difficulty: 'easy' as const, count: 6 }] // 60 → 60 HP (Untergrenze)
     // Schwäche = Stärke (einziges Attribut): mittel 30, leicht 15
     const exact = weeklyBossState(
       input({ planned, sources: [attack(MONDAY, 'strength'), attack('2026-11-03', 'strength')] }),
@@ -351,6 +369,19 @@ describe('weeklyBossState', () => {
     expect(short?.damage).toBe(45)
     expect(short?.defeated).toBe(false)
     expect(short?.hp).toBe(15)
+  })
+
+  it('Nachbesserung 3a: ein kleiner Plan bekommt einen kleinen Boss – zwei leichte Erledigungen reichen', () => {
+    const planned = [{ attribute: 'strength' as const, difficulty: 'easy' as const, count: 2 }] // 20 geplant → 20 HP
+    const state = weeklyBossState(
+      input({
+        planned,
+        sources: [attack(MONDAY, 'strength', { difficulty: 'easy' }), attack('2026-11-03', 'strength', { difficulty: 'easy' })],
+      }),
+    )
+    expect(state?.maxHp).toBe(20)
+    expect(state?.damage).toBe(30) // 2 × 15 gegen die Schwäche
+    expect(state?.defeated).toBe(true)
   })
 
   it('gespeicherter Sieg bleibt: auch wenn der Schaden später sinkt oder der Plan wächst', () => {
@@ -406,8 +437,273 @@ describe('unrecordedVictories', () => {
     )
     const open = weeklyBossState(input({ weekStart: '2026-10-26', today: '2026-11-02' }))
     expect(unrecordedVictories([defeated, open, undefined], undefined)).toEqual([
-      { weekStart: MONDAY, bossId: defeated?.boss.id, day: MONDAY, maxHp: 60 },
+      { weekStart: MONDAY, bossId: defeated?.boss.id, day: MONDAY, maxHp: 20 }, // 20 geplant → 20 HP
     ])
     expect(unrecordedVictories([defeated], [makeBossVictory(MONDAY)])).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Nachbesserung 3a: Boss-Vielfalt
+// ---------------------------------------------------------------------------
+
+/** Plan mit diesen Schadenswerten je Attribut. */
+function plan(values: Partial<Record<AttributeId, number>>, victory?: BossWeekPlan['victory']): BossWeekPlan {
+  const split = byAttribute(values)
+  const total = ATTRIBUTE_IDS.reduce((sum, id) => sum + split[id], 0)
+  return victory === undefined ? { byAttribute: split, total } : { byAttribute: split, total, victory }
+}
+
+/** Die Montage ab `from` (n Wochen). */
+function mondays(from: DayKey, n: number): DayKey[] {
+  return Array.from({ length: n }, (_, i) => addDays(from, 7 * i))
+}
+
+describe('Nachbesserung 3a: Thema – etwa jede 4. Woche das zweitstärkste Attribut', () => {
+  it('secondBossTheme: zweitgrößter geplanter Schaden > 0, Gleichstand → ATTRIBUTE_IDS', () => {
+    expect(secondBossTheme(byAttribute({ strength: 100, wisdom: 50, charisma: 20 }))).toBe('wisdom')
+    expect(secondBossTheme(byAttribute({ strength: 100, wisdom: 50, intellect: 50 }))).toBe('intellect')
+    expect(secondBossTheme(byAttribute({ strength: 100 }))).toBeUndefined()
+    expect(secondBossTheme(byAttribute({}))).toBeUndefined()
+  })
+
+  it('weekBossTheme: in Nebenthema-Wochen das zweitstärkste, sonst das stärkste; ohne zweites immer das stärkste', () => {
+    const split = byAttribute({ strength: 100, wisdom: 50 })
+    for (const week of mondays(MONDAY, 60)) {
+      expect(weekBossTheme(split, 'Aria', week)).toBe(isSecondThemeWeek('Aria', week) ? 'wisdom' : 'strength')
+      expect(weekBossTheme(byAttribute({ strength: 100 }), 'Aria', week)).toBe('strength')
+    }
+    expect(weekBossTheme(byAttribute({}), 'Aria', MONDAY)).toBeUndefined()
+  })
+
+  it('isSecondThemeWeek: deterministisch je Held und Woche (jeder Tag der Woche gleich), Anteil ≈ 25 %', () => {
+    expect(isSecondThemeWeek('Aria', '2026-11-05')).toBe(isSecondThemeWeek('Aria', MONDAY))
+    let second = 0
+    let total = 0
+    for (let seed = 0; seed < 40; seed++) {
+      for (const week of mondays('2026-01-05', 52)) {
+        total++
+        if (isSecondThemeWeek(`2026-01-01Held${seed}`, week)) second++
+      }
+    }
+    expect(SECOND_THEME_SHARE).toBe(0.25)
+    expect(second / total).toBeGreaterThan(0.21)
+    expect(second / total).toBeLessThan(0.29)
+  })
+
+  it('chooseBoss: der Boss der Vorwoche kommt nicht in Frage – außer er ist der einzige des Themas', () => {
+    for (const week of mondays(MONDAY, 30)) {
+      const free = chooseBoss('strength', 'Aria', week, ROSTER)
+      const excluded = chooseBoss('strength', 'Aria', week, ROSTER, free.id)
+      expect(excluded.id).not.toBe(free.id)
+      expect(excluded.theme).toBe('strength')
+      // Ein anderer ausgeschlossener Boss ändert die Wahl nicht.
+      const other = ROSTER.find((boss) => boss.theme === 'strength' && boss.id !== free.id)?.id
+      if (other !== undefined) expect(chooseBoss('strength', 'Aria', week, ROSTER, other).id).toBe(free.id)
+    }
+    const single = [makeBoss('only', 'wisdom')]
+    expect(chooseBoss('wisdom', 'Aria', MONDAY, single, 'only').id).toBe('only')
+  })
+
+  it('weekBoss: gespeicherter Sieg gewinnt; ohne Plan und Sieg kein Boss', () => {
+    expect(weekBoss(plan({}), 'Aria', MONDAY, undefined, ROSTER)).toBeUndefined()
+    const stored = weekBoss(plan({ strength: 100 }, makeBossVictory(MONDAY, { bossId: 'charisma-2' })), 'Aria', MONDAY, 'charisma-2', ROSTER)
+    expect(stored?.id).toBe('charisma-2')
+  })
+})
+
+describe('Nachbesserung 3a: createBossResolver – nie derselbe Boss zwei Wochen in Folge', () => {
+  const weeks = mondays('2026-01-05', 52)
+
+  function resolverFor(planOf: (week: DayKey) => BossWeekPlan, heroSeed = '2026-01-05Aria') {
+    let calls = 0
+    const resolver = createBossResolver({
+      heroSeed,
+      fromWeek: weeks[0],
+      bosses: ROSTER,
+      planOf: (week) => {
+        calls++
+        return planOf(week)
+      },
+    })
+    return { resolver, calls: () => calls }
+  }
+
+  it('52 Wochen nur ein Thema: kein Boss zweimal in Folge, alle drei kommen vor', () => {
+    for (let seed = 0; seed < 20; seed++) {
+      const { resolver } = resolverFor(() => plan({ strength: 300 }), `2026-01-05Held${seed}`)
+      const ids = weeks.map((week) => resolver.bossOf(week)?.id)
+      for (let i = 1; i < ids.length; i++) expect(ids[i], `Held ${seed}, Woche ${weeks[i]}`).not.toBe(ids[i - 1])
+      expect(new Set(ids)).toEqual(new Set(['strength-1', 'strength-2', 'strength-3']))
+    }
+  })
+
+  it('nach einer Woche ohne Boss (z. B. Urlaub) kommt nie der Boss von davor wieder', () => {
+    for (let seed = 0; seed < 40; seed++) {
+      // Jede 3. Woche ohne Plan (Urlaub), sonst nur Stärke.
+      const isGap = (week: DayKey) => weeks.indexOf(week) % 3 === 1
+      const { resolver } = resolverFor((week) => (isGap(week) ? plan({}) : plan({ strength: 300 })), `2026-01-05Held${seed}`)
+      let lastBossId: string | undefined
+      for (const week of weeks) {
+        const boss = resolver.bossOf(week)
+        if (isGap(week)) {
+          expect(boss, `Held ${seed}, Urlaubswoche ${week}`).toBeUndefined()
+          continue
+        }
+        expect(boss?.id, `Held ${seed}, Woche ${week}`).not.toBe(lastBossId)
+        lastBossId = boss?.id
+      }
+    }
+  })
+
+  it('52 Wochen mit zwei Themen: kein Boss zweimal in Folge; etwa jede 4. Woche kommt das zweite Thema', () => {
+    let second = 0
+    let total = 0
+    for (let seed = 0; seed < 30; seed++) {
+      const { resolver } = resolverFor(() => plan({ intellect: 400, wisdom: 250, charisma: 40 }), `2026-01-05Held${seed}`)
+      const bosses = weeks.map((week) => resolver.bossOf(week))
+      for (let i = 1; i < bosses.length; i++) expect(bosses[i]?.id).not.toBe(bosses[i - 1]?.id)
+      for (const boss of bosses) {
+        total++
+        if (boss?.theme === 'wisdom') second++
+        expect(['intellect', 'wisdom']).toContain(boss?.theme) // nie das drittstärkste
+      }
+    }
+    expect(second / total).toBeGreaterThan(0.2)
+    expect(second / total).toBeLessThan(0.3)
+  })
+
+  it('ohne Vielfalts-Regel kämen Wiederholungen vor – die Kette verhindert genau die', () => {
+    let repeatsWithout = 0
+    const { resolver } = resolverFor(() => plan({ strength: 300 }))
+    for (let i = 1; i < weeks.length; i++) {
+      const free = chooseBoss('strength', '2026-01-05Aria', weeks[i], ROSTER)
+      const previousFree = chooseBoss('strength', '2026-01-05Aria', weeks[i - 1], ROSTER)
+      if (free.id === previousFree.id) repeatsWithout++
+      expect(resolver.bossOf(weeks[i])?.id).not.toBe(resolver.bossOf(weeks[i - 1])?.id)
+    }
+    expect(repeatsWithout).toBeGreaterThan(5) // bei 3 Bossen je Thema ≈ ⅓ der Wochen
+  })
+
+  it('ein gespeicherter Sieg legt den Boss fest – auch für die Regel der Folgewoche', () => {
+    const victoryWeek = weeks[10]
+    const plans = (stored: string | undefined) => (week: DayKey) =>
+      plan({ strength: 300 }, week === victoryWeek && stored !== undefined ? makeBossVictory(week, { bossId: stored }) : undefined)
+    for (const stored of ['strength-1', 'strength-2', 'strength-3', 'wisdom-1']) {
+      const { resolver } = resolverFor(plans(stored))
+      expect(resolver.bossOf(victoryWeek)?.id).toBe(stored)
+      expect(resolver.bossOf(weeks[11])?.id).not.toBe(stored)
+    }
+  })
+
+  it('Wochen ohne Plan haben keinen Boss und unterbrechen die Kette; vor dem Abenteuerbeginn gibt es keinen', () => {
+    const empty = new Set([weeks[5], weeks[6]])
+    const { resolver } = resolverFor((week) => (empty.has(week) ? plan({}) : plan({ strength: 300 })))
+    expect(resolver.bossOf(weeks[5])).toBeUndefined()
+    expect(resolver.bossOf(weeks[7])?.id).toBe(chooseBoss('strength', '2026-01-05Aria', weeks[7], ROSTER).id)
+    expect(resolver.bossOf(addDays(weeks[0], -7))).toBeUndefined()
+  })
+
+  it('rechnet nur so weit zurück wie nötig – wechselt das Thema, endet die Kette', () => {
+    const { resolver, calls } = resolverFor((week) =>
+      plan(weeks.indexOf(week) % 2 === 0 ? { strength: 300 } : { charisma: 300 }),
+    )
+    resolver.bossOf(weeks[51])
+    expect(calls()).toBeLessThanOrEqual(2)
+    // Ein Thema über alle Wochen: bis zum Abenteuerbeginn, jede Woche höchstens einmal geplant.
+    const mono = resolverFor(() => plan({ strength: 300 }))
+    mono.resolver.bossOf(weeks[51])
+    mono.resolver.bossOf(weeks[50])
+    expect(mono.calls()).toBe(52)
+  })
+
+  it('weeklyBossState: previousBossId wird nicht noch einmal gewählt', () => {
+    const free = weeklyBossState(input())
+    const excluded = weeklyBossState(input({ previousBossId: free?.boss.id }))
+    expect(excluded?.boss.id).not.toBe(free?.boss.id)
+    expect(excluded?.boss.theme).toBe('strength')
+    // Die Schwäche bleibt eine andere als das Thema des Bosses.
+    const mixed = weeklyBossState(
+      input({ planned: [{ attribute: 'strength', difficulty: 'medium', count: 7 }, { attribute: 'wisdom', difficulty: 'easy', count: 3 }] }),
+    )
+    expect(mixed?.weakness).not.toBe(mixed?.boss.theme)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 3b: Treffer des Gefährten
+// ---------------------------------------------------------------------------
+
+describe('Phase 3b: withCompanionHits – Bonus-Treffer an Perfekten Tagen', () => {
+  const companion = (overrides: Partial<CompanionAttackInput> = {}): CompanionAttackInput => ({
+    species: 'fox',
+    name: 'Flink',
+    perfectDays: new Set([MONDAY]),
+    ...overrides,
+  })
+
+  it('10 % des Quest-Schadens des Tages, direkt nach den Angriffen des Tages; Nebenquests zählen nicht mit', () => {
+    const attacks = attacksOf(
+      [
+        attack(MONDAY, 'strength', { difficulty: 'hard' }), // 40
+        attack(MONDAY, 'wisdom', { sourceId: 'w', difficulty: 'medium' }), // 20 × 1,5 = 30 (Schwäche)
+        attack(MONDAY, 'charisma', { source: 'sideQuest', sourceId: 's', difficulty: 'epic' }), // 80 – zählt nicht
+        attack('2026-11-03', 'strength'),
+      ],
+      LEVEL_1,
+      'wisdom',
+      TEST_ATTACK_NAMES,
+    )
+    const result = withCompanionHits(attacks, companion())
+    expect(result.map((hit) => [hit.day, hit.source, hit.sourceId, hit.damage])).toEqual([
+      [MONDAY, 'quest', 'strength-quest', 40],
+      [MONDAY, 'quest', 'w', 30],
+      [MONDAY, 'sideQuest', 's', 80],
+      [MONDAY, 'companion', 'fox', 7], // round(0,1 × 70)
+      ['2026-11-03', 'quest', 'strength-quest', 20],
+    ])
+    expect(result[3]).toMatchObject({ attribute: 'strength', attackName: 'Flink', weakness: false })
+  })
+
+  it('rundet kaufmännisch, ein Treffer von 0 entfällt; ohne Gefährten oder Perfekte Tage unverändert', () => {
+    const fortyFive = attacksOf([attack(MONDAY, 'strength', { difficulty: 'easy' }), attack(MONDAY, 'strength', { sourceId: 'b', difficulty: 'hard' })], { attributeLevels: levels(), classBonus: { strength: 0.125 } }, undefined)
+    expect(fortyFive.reduce((sum, hit) => sum + hit.damage, 0)).toBe(56) // 11 + 45
+    expect(withCompanionHits(fortyFive, companion()).at(-1)?.damage).toBe(6) // 5,6 → 6
+    const small = attacksOf([attack(MONDAY, 'strength', { difficulty: 'easy' })], LEVEL_1, undefined) // 10 → 1
+    expect(withCompanionHits(small, companion()).at(-1)?.damage).toBe(1)
+    const tiny = [{ ...small[0], damage: 4 }]
+    expect(withCompanionHits(tiny, companion())).toEqual(tiny) // 0,4 → 0: kein Treffer
+    expect(withCompanionHits(small, undefined)).toEqual(small)
+    expect(withCompanionHits(small, companion({ perfectDays: new Set() }))).toEqual(small)
+  })
+
+  it('erst ab dem Tag der Wahl; Attribut = das mit dem meisten Quest-Schaden des Tages', () => {
+    const attacks = attacksOf(
+      [attack(MONDAY, 'intellect'), attack('2026-11-03', 'vitality'), attack('2026-11-03', 'charisma', { sourceId: 'c', difficulty: 'hard' })],
+      LEVEL_1,
+      undefined,
+    )
+    const result = withCompanionHits(attacks, companion({ perfectDays: new Set([MONDAY, '2026-11-03']), fromDay: '2026-11-03' }))
+    const hits = result.filter((hit) => hit.source === 'companion')
+    expect(hits).toEqual([
+      { day: '2026-11-03', source: 'companion', sourceId: 'fox', attribute: 'charisma', attackName: 'Flink', damage: 6, weakness: false },
+    ])
+  })
+
+  it('weeklyBossState: die Treffer zählen zum Schaden (und können den Sieg bringen), nicht zu den geplanten HP', () => {
+    const planned = [{ attribute: 'strength' as const, difficulty: 'medium' as const, count: 7 }] // 140 → 98 HP
+    const sources = [MONDAY, '2026-11-03', '2026-11-04'].map((day) => attack(day, 'strength', { sourceId: `s-${day}` }))
+    const today = '2026-11-04'
+    const without = weeklyBossState(input({ planned, sources, today }))
+    expect(without).toMatchObject({ maxHp: 98, damage: 90, defeated: false }) // 3 × 30 (Stärke = Schwäche)
+    const withCompanion = weeklyBossState(
+      input({ planned, sources, today, companion: companion({ perfectDays: new Set([MONDAY, '2026-11-03', '2026-11-04', '2026-11-05']) }) }),
+    )
+    expect(withCompanion).toMatchObject({ maxHp: 98, damage: 99, defeated: true, defeatedDay: '2026-11-04', hp: 0 })
+    expect(withCompanion?.attacks.filter((hit) => hit.source === 'companion').map((hit) => [hit.day, hit.damage])).toEqual([
+      [MONDAY, 3],
+      ['2026-11-03', 3],
+      ['2026-11-04', 3],
+    ]) // der Perfekte Tag nach heute zählt (noch) nicht
   })
 })

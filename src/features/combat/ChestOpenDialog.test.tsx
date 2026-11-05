@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { useGameContext } from '../../app/gameContext'
 import { db } from '../../data/db'
 import { loadGameData, purchaseItem, recordProgress, resetAllData, saveProfile, updateSettings } from '../../data/repository'
+import { BALANCING } from '../../domain/balancing'
 import type { Chest, ChestContent, ChestRarity } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { ChestOpenDialog } from './ChestOpenDialog'
@@ -132,7 +133,8 @@ describe('ChestOpenDialog', () => {
     const dialog = await renderDialog('chapter:mq:c1')
     const user = userEvent.setup()
     await user.click(within(dialog).getByRole('button', { name: 'Truhe öffnen' }))
-    await within(dialog).findByText('+100 Gold')
+    // Ersatz-Gold laut Balancing (halbiert wie das übrige Truhen-Gold, Nachbesserung 3a).
+    await within(dialog).findByText(`+${BALANCING.chests.freezeFallbackGold} Gold`)
     expect(dialog).toHaveTextContent('Dein Beutel war schon voll mit Streak-Schutz')
   })
 

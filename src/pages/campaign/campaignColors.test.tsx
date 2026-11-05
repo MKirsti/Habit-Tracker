@@ -12,6 +12,7 @@ import { ACCENT_BADGE_BACKGROUND, CAMPAIGN_FALLBACK_COLOR } from '../../features
 import { renderWithGame } from '../../test/renderWithGame'
 import { tintTextColor } from '../../ui'
 import { CampaignPage } from '../CampaignPage'
+import { BOSS_COLOR } from '../dashboard/bossTheme'
 import { CampaignSection } from '../dashboard/CampaignCard'
 import { CampaignBanner } from './CampaignBanner'
 
@@ -212,6 +213,8 @@ describe('Kampagnenfarbe auf der Kampagnen-Seite (mit Engine)', () => {
       chapters: [
         { ...MANUAL, manualDone: true, completedDay: '2026-10-05' },
         { id: 'next', title: 'Weiter', criterion: { type: 'counter', target: 3, label: 'Bücher beendet' }, counter: 1 },
+        // Das letzte Kapitel ist der Endgegner (Phase 3b) – er trägt Boss-Violett statt der Kampagnenfarbe.
+        { id: 'finale', title: 'Finale', criterion: { type: 'manual' } },
       ],
       blueprint: { id: 'scholar', level: 'beginner' },
     })
@@ -232,6 +235,9 @@ describe('Kampagnenfarbe auf der Kampagnen-Seite (mit Engine)', () => {
     expect(chapters?.style.getPropertyValue('--accent')).toBe(silver)
     expect(fillOf(screen.getByRole('progressbar', { name: 'Fortschritt: Weiter' })).style.backgroundColor).toBe(rgb(silver))
     expect(within(chapters as HTMLElement).getByText('Aktuelles Kapitel').style.color).toBe(tintTextColor(silver))
+    expect(fillOf(screen.getByRole('progressbar', { name: 'Lebenspunkte: Der Bibliothekar der Ewigkeit' })).style.backgroundColor).toBe(
+      rgb(BOSS_COLOR),
+    )
 
     // Auswahl: ein Farbpunkt je Kampagne (Gold für die eigene ohne Quests).
     const selector = screen.getByRole('radiogroup', { name: 'Kampagne wählen' })

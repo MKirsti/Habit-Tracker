@@ -28,16 +28,18 @@ export interface ChestSourceContext {
   bosses?: readonly (WeeklyBossState | undefined)[]
 }
 
-/** „Boss-Truhe“ / „Quest-Truhe“ / „Kapitel-Truhe“ (wie in der Sammlung). */
+/** „Boss-Truhe“ / „Quest-Truhe“ / „Kapitel-Truhe“ / „Endgegner-Truhe“ (wie in der Sammlung). */
 export const CHEST_SOURCE_LABELS: Record<Chest['source'], string> = {
   boss: 'Boss-Truhe',
   quest: 'Quest-Truhe',
   chapter: 'Kapitel-Truhe',
+  campaign: 'Endgegner-Truhe',
 }
 
 /**
  * Wofür es die Truhe gab – aus ihrer deterministischen ID: „🛋️ Sofagolem besiegt“, „📖 Lesen“,
- * „📚 Kapitel „Erste Seiten““. Unbekanntes → „Wochen-Boss besiegt“ / „Eine erledigte Quest“ / „Ein abgeschlossenes Kapitel“.
+ * „📚 Kapitel „Erste Seiten““, Phase 3b (`campaign:<questId>`, Endgegner-Truhe): „📚 „Der Weg des Gelehrten“ gemeistert“.
+ * Unbekanntes → „Wochen-Boss besiegt“ / „Eine erledigte Quest“ / „Ein abgeschlossenes Kapitel“ / „Eine gemeisterte Kampagne“.
  */
 export function chestSourceLine(chest: Pick<Chest, 'id' | 'source'>, context: ChestSourceContext): string {
   const source = chest.source
@@ -55,6 +57,10 @@ export function chestSourceLine(chest: Pick<Chest, 'id' | 'source'>, context: Ch
       if (chapter) return `${quest.icon} Kapitel „${chapter.title}“`
     }
     return 'Ein abgeschlossenes Kapitel'
+  }
+  if (source === 'campaign') {
+    const quest = context.mainQuests?.find((entry) => entry.id === rest)
+    return quest ? `${quest.icon} „${quest.title}“ gemeistert` : 'Eine gemeisterte Kampagne'
   }
   // Quest-Truhe: `quest:<Erledigung>`, die ID einer Erledigung ist `<habitId>:<Tag>`.
   const habit = context.habits?.find((entry) => rest.startsWith(`${entry.id}:`))

@@ -9,6 +9,8 @@ import { ATTRIBUTES } from '../../domain/attributes'
 import { BALANCING } from '../../domain/balancing'
 import { ATTACK_NAMES } from '../../domain/combat/classDefinitions'
 import { classNameFor } from '../../domain/combat/classes'
+import { isCompanionSpecies } from '../../domain/companion'
+import { COMPANIONS } from '../../domain/companionDefinitions'
 import { addDays, isoWeekday, startOfWeek } from '../../domain/dates'
 import type {
   AttackEvent,
@@ -156,21 +158,43 @@ export function damageLabel(damage: number): string {
   return `−${formatNumber(Math.max(0, Math.round(damage)))}`
 }
 
-/** Sichtbarer Treffer: „🧠 Arkaner Blitz −36“. */
-export function hitText(attack: Pick<AttackEvent, 'attribute' | 'attackName' | 'damage'>): string {
-  return `${attackIcon(attack.attribute)} ${attack.attackName} ${damageLabel(attack.damage)}`
+/** Ein Bonus-Treffer des Gefährten (Phase 3b, an einem Perfekten Tag)? */
+export function isCompanionHit(attack: Pick<AttackEvent, 'source'>): boolean {
+  return attack.source === 'companion'
+}
+
+/** Symbol eines Treffers: das Attribut-Symbol – beim Gefährten das Emoji seiner Art (`sourceId`). */
+export function hitIcon(attack: Pick<AttackEvent, 'source' | 'sourceId' | 'attribute'>): string {
+  if (isCompanionHit(attack)) return isCompanionSpecies(attack.sourceId) ? COMPANIONS[attack.sourceId].icon : '🐾'
+  return attackIcon(attack.attribute)
+}
+
+/** Was der Gefährte bei seinem Treffer tut (steht zwischen Name und Schaden). */
+export const COMPANION_HIT_VERB = 'springt mit an'
+
+/** Sichtbarer Treffer: „🧠 Arkaner Blitz −36“, beim Gefährten „🦊 Flink springt mit an −8“. */
+export function hitText(attack: Pick<AttackEvent, 'source' | 'sourceId' | 'attribute' | 'attackName' | 'damage'>): string {
+  const label = isCompanionHit(attack) ? `${attack.attackName} ${COMPANION_HIT_VERB}` : attack.attackName
+  return `${hitIcon(attack)} ${label} ${damageLabel(attack.damage)}`
 }
 
 /** Hervorhebung eines Treffers auf die Schwäche. */
 export const WEAK_SPOT_TEXT = 'Schwachstelle!'
 
-/** Vorgelesen: „Treffer gegen Sofagolem: Arkaner Blitz, 36 Schaden. Schwachstelle!“ (+ „Sofagolem ist besiegt!“) */
+/**
+ * Vorgelesen: „Treffer gegen Sofagolem: Arkaner Blitz, 36 Schaden. Schwachstelle!“ (+ „Sofagolem ist besiegt!“) – beim
+ * Gefährten „Flink springt mit an: 8 Schaden gegen Sofagolem.“
+ */
 export function hitSpoken(
-  attack: Pick<AttackEvent, 'attackName' | 'damage' | 'weakness'>,
+  attack: Pick<AttackEvent, 'attackName' | 'damage' | 'weakness'> & Partial<Pick<AttackEvent, 'source'>>,
   bossName: string,
   defeated = false,
 ): string {
-  const parts = [`Treffer gegen ${bossName}: ${attack.attackName}, ${formatNumber(Math.max(0, Math.round(attack.damage)))} Schaden.`]
+  const damage = formatNumber(Math.max(0, Math.round(attack.damage)))
+  const parts =
+    attack.source === 'companion'
+      ? [`${attack.attackName} ${COMPANION_HIT_VERB}: ${damage} Schaden gegen ${bossName}.`]
+      : [`Treffer gegen ${bossName}: ${attack.attackName}, ${damage} Schaden.`]
   if (attack.weakness) parts.push(WEAK_SPOT_TEXT)
   if (defeated) parts.push(`${bossName} ist besiegt!`)
   return parts.join(' ')

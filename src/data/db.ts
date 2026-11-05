@@ -8,6 +8,7 @@ import type {
   CosmeticUnlock,
   Habit,
   HpLedgerEntry,
+  JournalNote,
   MainQuest,
   Purchase,
   RestPeriod,
@@ -66,6 +67,12 @@ const SCHEMA_V5 = {
   cosmeticUnlocks: '&id',
 } as const
 
+/** Ab Version 6 (Phase 3b): Tagebuch-Notizen – höchstens eine pro Spieltag (Schlüssel `day`). */
+const SCHEMA_V6 = {
+  ...SCHEMA_V5,
+  journalNotes: '&day',
+} as const
+
 /** Titel der Kampagne, die das Onboarding vor der Kampagnen-Bibliothek angelegt hat. */
 const LEGACY_SCHOLAR_TITLE = 'Der Weg des Gelehrten'
 
@@ -89,6 +96,7 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  * - `hpLedger`: Primärschlüssel `day` (höchstens ein abgerechneter Eintrag pro Spieltag); `restPeriods`: `from`
  * - `bossVictories`: Primärschlüssel `weekStart` (höchstens ein Sieg pro Woche); `chests`: `foundDay` (Quest-Truhen
  *   je Tag zählen); `cosmeticUnlocks`: Primärschlüssel `id` (Titel- bzw. Rahmen-ID)
+ * - `journalNotes`: Primärschlüssel `day` (höchstens eine Tagebuch-Notiz pro Spieltag)
  *
  * Schemaänderungen immer über eine neue `version(n)` mit Upgrade-Funktion – niemals `version(1)` ändern.
  *
@@ -109,6 +117,10 @@ export function legacyBlueprintRef(quest: Pick<MainQuest, 'title' | 'blueprint'>
  *    Titel und Rahmen). Sie starten leer; vorhandene Daten bleiben unverändert. Klasse, Bosse und Truhen werden aus
  *    dem gespeicherten Verlauf abgeleitet – neue Truhen nur ab dem Fenster der Engine (`chestWindowStart`), Bosse nur
  *    für die laufende (und in der Gnadenfrist die vorige) Woche; nichts davon rückwirkend.
+ * 6. Phase 3b: neue Tabelle `journalNotes` (Tagebuch-Notizen, eine pro Tag, Schlüssel `day`). Sie startet leer;
+ *    vorhandene Daten bleiben unverändert. Gefährte (`profile.companion`) und die neuen Einstellungen (`sound`,
+ *    `haptics`, `companionIntroSeen`, `weeklyReviewSeen`) sind optionale Felder – fehlen sie, gilt „keiner gewählt“
+ *    bzw. „aus“ / „noch nicht gesehen“. Gefährte, Endgegner und Wochenrückblick werden abgeleitet.
  */
 export class QuestlogDB extends Dexie {
   habits!: Table<Habit, string>
@@ -124,6 +136,7 @@ export class QuestlogDB extends Dexie {
   bossVictories!: Table<BossVictory, string>
   chests!: Table<Chest, string>
   cosmeticUnlocks!: Table<CosmeticUnlock, string>
+  journalNotes!: Table<JournalNote, string>
 
   /** @param name Datenbankname – Tests verwenden pro Test einen eigenen Namen. */
   constructor(name: string = DEFAULT_DB_NAME) {
@@ -143,6 +156,7 @@ export class QuestlogDB extends Dexie {
     this.version(3).stores(SCHEMA_V3)
     this.version(4).stores(SCHEMA_V4)
     this.version(5).stores(SCHEMA_V5)
+    this.version(6).stores(SCHEMA_V6)
   }
 }
 
@@ -166,6 +180,7 @@ export function allTables(database: QuestlogDB) {
     database.bossVictories,
     database.chests,
     database.cosmeticUnlocks,
+    database.journalNotes,
   ]
 }
 

@@ -135,6 +135,13 @@ describe('Truhen', () => {
     expect(chestSource({ id: 'quest:weg:2026-11-02', source: 'quest' }, context).detail).toBe('Eine erledigte Quest')
     expect(chestSource({ id: 'chapter:dev-123', source: 'chapter' }, context).detail).toBe('Ein abgeschlossenes Kapitel')
     expect(chestSource({ id: 'boss:2026-09-07', source: 'boss' }, context).detail).toBe('Wochen-Boss besiegt')
+    // Phase 3b: Endgegner-Truhe einer gemeisterten Kampagne.
+    expect(chestSource({ id: 'campaign:q1', source: 'campaign' }, context)).toEqual({
+      kind: 'campaign',
+      label: 'Endgegner-Truhe',
+      detail: '📚 „Der Weg des Gelehrten“ gemeistert',
+    })
+    expect(chestSource({ id: 'campaign:weg', source: 'campaign' }, context).detail).toBe('Eine gemeisterte Kampagne')
   })
 
   it('beschreibt den Inhalt – Titel in der Sprachform des Helden', () => {

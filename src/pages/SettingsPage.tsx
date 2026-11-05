@@ -9,12 +9,13 @@ import { InstallCard } from './settings/InstallCard'
 import { LifePointsSettings } from './settings/LifePointsSettings'
 import { RestSettings } from './settings/RestSettings'
 import { SETTINGS_SECTION_PARAM } from './settings/settingsText'
+import { SoundCard } from './settings/SoundSettings'
 
 /** Version, die im Fuß der Einstellungen steht. */
 export const APP_VERSION_LABEL = 'Version 0.1 (MVP)'
 
 /**
- * „Einstellungen“: Tageswechsel, Effekte, Lebenspunkte (an/aus = Sanfter Modus), Rast & Urlaub, Datensicherung,
+ * „Einstellungen“: Tageswechsel, Effekte, Klänge & Vibration (Phase 3b, standardmäßig aus), Lebenspunkte (an/aus = Sanfter Modus), Rast & Urlaub, Datensicherung,
  * Installation und Gefahrenzone. Ohne eigenen Eintrag in der Navigation – erreichbar über das Zahnrad der Held-Seite,
  * zurück geht es über „Zurück zum Helden“. `?bereich=rast` (aus „Urlaub planen“ auf der Tagesübersicht) springt direkt
  * zu „Rast & Urlaub“.
@@ -53,6 +54,9 @@ export function SettingsPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             <DayStartCard />
             <EffectsCard />
+            <div className="lg:col-span-2">
+              <SoundCard />
+            </div>
           </div>
         </section>
 

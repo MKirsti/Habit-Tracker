@@ -1,10 +1,13 @@
 /**
  * Warteschlange der großen Szenen (Level-Up, Kampagne gemeistert, die würdevolle Niederlage-Szene der Lebenspunkte –
- * Phase 3a: Boss besiegt und Klassenwechsel). Sie werden nacheinander gezeigt; der erste Eintrag ist der sichtbare.
+ * Phase 3a: Boss besiegt und Klassenwechsel; Phase 3b: Endgegner besiegt und die Entwicklung des Gefährten). Sie werden
+ * nacheinander gezeigt; der erste Eintrag ist der sichtbare.
  */
 import { compareDays } from '../../domain/dates'
 import type { DayKey, GameState } from '../../domain/types'
 import type { BossDefeatedEvent, ClassChangedEvent } from './combatFeedback'
+import type { CompanionEvolvedEvent } from './companionFeedback'
+import type { EndBossDefeatedEvent } from './endBossFeedback'
 import { feedbackStillHolds } from './feedbackEvents'
 import type { CampaignCompletedEvent, FeedbackEvent, LevelUpEvent } from './feedbackEvents'
 import type { DefeatEvent } from './hpFeedback'
@@ -15,11 +18,15 @@ export type Celebration =
   | { id: number; kind: 'defeat'; event: DefeatEvent }
   | { id: number; kind: 'boss'; event: BossDefeatedEvent }
   | { id: number; kind: 'class'; event: ClassChangedEvent }
+  | { id: number; kind: 'end-boss'; event: EndBossDefeatedEvent }
+  | { id: number; kind: 'evolve'; event: CompanionEvolvedEvent }
 
 /**
  * Hängt die Szenen aus `events` an die Warteschlange an: zuerst eine Niederlage (Nachricht der Abrechnung), dann ein
- * Klassenwechsel (neue Woche), Boss-Siege und Kampagnen (Ursache), dann der Level-Up (Folge). Ein Level-Up, der auf einen noch nicht gezeigten Level-Up folgt, wird mit diesem
- * zusammengefasst (Level 3 → 5 statt zweier Szenen). Der sichtbare erste Eintrag bleibt unverändert.
+ * Klassenwechsel (neue Woche), Boss-Siege, besiegte Endgegner und – direkt danach – ihre gemeisterten Kampagnen
+ * (Ursache), die Entwicklung des Gefährten, dann der Level-Up (Folge). Ein Level-Up, der auf einen noch nicht gezeigten
+ * Level-Up folgt, wird mit diesem zusammengefasst (Level 3 → 5 statt zweier Szenen). Der sichtbare erste Eintrag bleibt
+ * unverändert.
  *
  * @param nextId liefert fortlaufende, eindeutige IDs.
  */
@@ -39,7 +46,13 @@ export function enqueueCelebrations(
     if (event.type === 'boss-defeated') result.push({ id: nextId(), kind: 'boss', event })
   }
   for (const event of events) {
+    if (event.type === 'end-boss-defeated') result.push({ id: nextId(), kind: 'end-boss', event })
+  }
+  for (const event of events) {
     if (event.type === 'campaign-completed') result.push({ id: nextId(), kind: 'campaign', event })
+  }
+  for (const event of events) {
+    if (event.type === 'companion-evolved') result.push({ id: nextId(), kind: 'evolve', event })
   }
   for (const event of events) {
     if (event.type !== 'level-up') continue
@@ -71,14 +84,19 @@ export function hasCelebration(events: readonly FeedbackEvent[]): boolean {
   return events.some(isCelebrationEvent)
 }
 
-/** Level-Up, Kampagne, Niederlage, Boss-Sieg und Klassenwechsel bekommen eine Szene, alles andere einen Toast. */
+/**
+ * Level-Up, Kampagne, Niederlage, Boss-Sieg, Klassenwechsel, Endgegner und Entwicklung des Gefährten bekommen eine
+ * Szene, alles andere einen Toast.
+ */
 export function isCelebrationEvent(event: FeedbackEvent): boolean {
   return (
     event.type === 'level-up' ||
     event.type === 'campaign-completed' ||
     event.type === 'defeat' ||
     event.type === 'boss-defeated' ||
-    event.type === 'class-changed'
+    event.type === 'class-changed' ||
+    event.type === 'end-boss-defeated' ||
+    event.type === 'companion-evolved'
   )
 }
 
@@ -126,6 +144,10 @@ export interface CelebrationMemory {
   lastDefeatDay?: DayKey
   /** Wochen (Montag), deren Boss-Sieg schon gefeiert wurde (bzw. beim Start schon feststand). */
   bossWeeks: ReadonlySet<DayKey>
+  /** Kampagnen, deren Endgegner schon gefeiert wurde (bzw. beim Start schon besiegt war). */
+  endBosses: ReadonlySet<string>
+  /** Höchste Stufe des Gefährten, die schon gefeiert wurde (bzw. beim Start erreicht war; ohne Gefährten 0). */
+  companionStage: number
 }
 
 /** Ausgangspunkt: Alles, was im Zustand schon erreicht ist, gilt als gefeiert. */
@@ -136,6 +158,10 @@ export function celebrationMemoryOf(state: GameState): CelebrationMemory {
     bossWeeks: new Set(
       [state.bosses.current, state.bosses.previous].flatMap((boss) => (boss?.defeated ? [boss.weekStart] : [])),
     ),
+    endBosses: new Set(
+      state.mainQuests.filter((campaign) => campaign.endBoss?.defeated === true).map((campaign) => campaign.quest.id),
+    ),
+    companionStage: state.companion?.stage ?? 0,
   }
   const lastDefeat = state.hp.lastDefeat?.day
   if (lastDefeat !== undefined) memory.lastDefeatDay = lastDefeat
@@ -159,6 +185,10 @@ export function rememberCelebration(memory: CelebrationMemory, celebration: Cele
     case 'class':
       // Je Held und Woche nur einmal – das merkt sich der `ClassSceneStore` (combatFeedback.ts) dauerhaft.
       return memory
+    case 'end-boss':
+      return { ...memory, endBosses: new Set([...memory.endBosses, celebration.event.campaignId]) }
+    case 'evolve':
+      return { ...memory, companionStage: Math.max(memory.companionStage, celebration.event.to) }
   }
 }
 
@@ -169,6 +199,8 @@ export function withoutCelebrated(events: readonly FeedbackEvent[], memory: Cele
     if (event.type === 'campaign-completed') return !memory.campaigns.has(event.campaignId)
     if (event.type === 'defeat') return memory.lastDefeatDay === undefined || compareDays(event.day, memory.lastDefeatDay) > 0
     if (event.type === 'boss-defeated') return !memory.bossWeeks.has(event.weekStart)
+    if (event.type === 'end-boss-defeated') return !memory.endBosses.has(event.campaignId)
+    if (event.type === 'companion-evolved') return event.to > memory.companionStage
     return true
   })
 }

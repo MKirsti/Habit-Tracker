@@ -20,13 +20,16 @@
  *   lassen sich nur für Tage anlegen, ändern oder löschen, die noch nicht vorbei bzw. abgerechnet sind.
  * - Fortschritt (Phase 2a/3a): Erfolge, Boss-Siege und gefundene Truhen werden nur hinzugefügt, nie überschrieben
  *   (`recordProgress`). Eine Truhe ändert sich genau einmal – beim Öffnen (`openChest`).
+ * - Phase 3b: Der Gefährte steht im Profil (`setCompanion`), Tagebuch-Notizen in `journalNotes` (eine pro Tag,
+ *   `saveJournalNote`); Klänge, Vibration und gesehene Einführungen/Wochenrückblicke in den Einstellungen.
  */
 import { ATTRIBUTE_IDS } from '../domain/attributes'
 import { BALANCING, DEFAULT_SETTINGS, DIFFICULTIES } from '../domain/balancing'
 import { CAMPAIGN_LIMIT_MESSAGE, CAMPAIGN_RESTORE_LIMIT_MESSAGE, isCampaignActive } from '../domain/campaigns'
 import { heroSeedOf } from '../domain/combat/boss'
 import { FRAMES, TITLES } from '../domain/combat/cosmeticDefinitions'
-import { addDays, compareDays, diffDays, formatDay, isoWeekday, isValidDayKey, toDayKey } from '../domain/dates'
+import { isCompanionSpecies } from '../domain/companion'
+import { addDays, compareDays, diffDays, formatDay, isoWeekday, isValidDayKey, startOfWeek, toDayKey } from '../domain/dates'
 import { habitTombstone, withTombstone } from '../domain/deletion'
 import { deriveGameState, evaluateMainQuests } from '../domain/engine'
 import { canUndoItemPurchase, settleDays } from '../domain/hp'
@@ -44,6 +47,7 @@ import type {
   ChestContent,
   ChestRarity,
   ChestSource,
+  CompanionChoice,
   Completion,
   CosmeticUnlock,
   DayKey,
@@ -57,6 +61,7 @@ import type {
   HpLedgerEntry,
   IsoWeekday,
   ItemId,
+  JournalNote,
   MainQuest,
   Measure,
   Purchase,
@@ -91,6 +96,12 @@ export const DEFAULT_SIDE_QUEST_ICON = '📜'
 export const MAX_REWARD_PRICE = 1_000_000
 /** Eine Rast (Ruhetag bzw. Urlaub) dauert höchstens so viele Tage am Stück. */
 export const MAX_REST_PERIOD_DAYS = 60
+/** Höchstlänge des Namens eines Gefährten (Phase 3b, Zeichen nach dem Trimmen). */
+export const MAX_COMPANION_NAME_LENGTH = 20
+/** Höchstlänge einer Tagebuch-Notiz (Phase 3b, Zeichen nach dem Trimmen). */
+export const MAX_JOURNAL_NOTE_LENGTH = 280
+/** Höchstlänge der Stimmung einer Notiz (ein Emoji – auch zusammengesetzte wie 👨‍👩‍👧 passen hinein). */
+export const MAX_JOURNAL_MOOD_LENGTH = 16
 
 /**
  * Gegenstände der Schatzkammer (Phase 2b): Name, Icon und Preis – so landen sie als Momentaufnahme in der Chronik.
@@ -108,7 +119,7 @@ const GRAMMATICAL_FORM_SET = { female: true, male: true, neutral: true } satisfi
 /** Alle Sprachformen: Heldin, Held, neutral (Standard). */
 export const GRAMMATICAL_FORMS = Object.keys(GRAMMATICAL_FORM_SET) as readonly GrammaticalForm[]
 /** Fundorte von Truhen (Phase 3a). */
-const CHEST_SOURCE_SET = { boss: true, quest: true, chapter: true } satisfies Record<ChestSource, true>
+const CHEST_SOURCE_SET = { boss: true, quest: true, chapter: true, campaign: true } satisfies Record<ChestSource, true>
 /** Seltenheiten von Truhen (Phase 3a). */
 const CHEST_RARITY_SET = { common: true, uncommon: true, rare: true, legendary: true } satisfies Record<ChestRarity, true>
 
@@ -121,6 +132,13 @@ export type RewardDraft = Omit<Reward, 'id' | 'order' | 'createdAt' | 'archived'
 export type SideQuestDraft = Omit<SideQuest, 'id' | 'order' | 'createdDay' | 'doneDay'>
 /** Die bearbeitbaren Felder einer Rast (Ruhetag bzw. Urlaub, `from`/`until` inklusive). */
 export type RestPeriodDraft = Omit<RestPeriod, 'id' | 'createdAt'>
+/**
+ * Wahl eines Gefährten (Phase 3b): Art und Name. Den Tag der Wahl (`chosenDay`) pflegt `setCompanion` – ein
+ * mitgegebener gilt nur, wenn kein Spieltag übergeben wird.
+ */
+export type CompanionDraft = Pick<CompanionChoice, 'species' | 'name'> & { chosenDay?: DayKey }
+/** Inhalt einer Tagebuch-Notiz (Phase 3b): Text (darf leer sein, wenn eine Stimmung da ist) und optionale Stimmung. */
+export type JournalNoteDraft = { text: string; mood?: string }
 
 /** Alle Messgrößen automatischer Kapitel – `satisfies` hält die Liste vollständig zu `ChapterMetric`. */
 const HABIT_METRICS = { completions: true, total: true, streak: true, best: true } satisfies Record<ChapterMetric, true>
@@ -155,6 +173,14 @@ const MSG = {
   invalidChest: 'Ungültige Truhe.',
   chestNotFound: 'Diese Truhe gibt es nicht (mehr).',
   chestOpened: 'Diese Truhe hast du schon geöffnet.',
+  unknownCompanion: 'Diesen Gefährten gibt es nicht.',
+  companionName: 'Wie soll dein Gefährte heißen? Gib ihm einen Namen.',
+  companionNameTooLong: `Der Name deines Gefährten darf höchstens ${MAX_COMPANION_NAME_LENGTH} Zeichen lang sein.`,
+  noteTooLong: `Eine Notiz hat höchstens ${MAX_JOURNAL_NOTE_LENGTH} Zeichen – fasse dich ruhig kurz.`,
+  noteText: 'Die Notiz muss ein Text sein.',
+  noteMood: 'Die Stimmung ist ein einzelnes Emoji.',
+  noteFuture: 'Ins Tagebuch schreibst du für heute oder vergangene Tage – die Zukunft ist noch ungeschrieben.',
+  noteBeforeStart: 'Vor deinem Abenteuerbeginn gibt es noch kein Tagebuch.',
 } as const
 
 /** Meldung, wenn das Gold für eine Belohnung nicht reicht, z. B. "Dafür fehlen dir noch 150 Gold." */
@@ -179,6 +205,8 @@ export function missingGoldMessage(missing: number): string {
  *   noch nie abgerechnet“ (`penaltiesEnabled` aus `domain/hp.ts`); `since` setzt erst `settleHpDays`.
  * - Phase 3a: `bossVictories` nach Woche, `chests` nach Fundtag (dann ID), `cosmeticUnlocks` nach Tag (dann ID) –
  *   ebenso nur, wenn es welche gibt; `settings.combatIntroSeen` geprüft übernommen.
+ * - Phase 3b: `journalNotes` nach Tag – nur, wenn es welche gibt; `settings.sound`, `haptics`, `companionIntroSeen`
+ *   und `weeklyReviewSeen` geprüft übernommen (fehlen sie, gilt „aus“ bzw. „noch nicht gesehen“).
  */
 export async function loadGameData(database: QuestlogDB = db): Promise<GameData> {
   return database.transaction('r', allTables(database), async () => {
@@ -198,6 +226,7 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
       bossVictories,
       chests,
       cosmeticUnlocks,
+      journalNotes,
     ] = await Promise.all([
       database.habits.toArray(),
       database.completions.toArray(),
@@ -214,6 +243,7 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
       database.bossVictories.toArray(),
       database.chests.toArray(),
       database.cosmeticUnlocks.toArray(),
+      database.journalNotes.toArray(),
     ])
 
     const data: GameData = {
@@ -235,6 +265,7 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
     if (bossVictories.length > 0) data.bossVictories = bossVictories.sort((a, b) => compareDays(a.weekStart, b.weekStart))
     if (chests.length > 0) data.chests = chests.sort(compareChests)
     if (cosmeticUnlocks.length > 0) data.cosmeticUnlocks = cosmeticUnlocks.sort(compareUnlocks)
+    if (journalNotes.length > 0) data.journalNotes = journalNotes.sort((a, b) => compareDays(a.day, b.day))
     return data
   })
 }
@@ -255,6 +286,9 @@ export async function loadGameData(database: QuestlogDB = db): Promise<GameData>
  *   freigeschaltet ist, entscheidet die Anzeige (`activeTitle`/`activeFrame`: gesperrte werden nicht gezeigt).
  * - Helden-Seed (`heroSeed`): Benennt sich derselbe Held (gleicher `createdDay`) um, bleibt sein bisheriger Seed
  *   festgehalten – Boss der Woche, Schwäche und offene Truhen-Funde bleiben, wie sie sind (`pinnedHeroSeed`).
+ * - Phase 3b – Gefährte (`companion`): wie Titel und Rahmen – fehlt das Feld, bleibt der gespeicherte Gefährte
+ *   („Held bearbeiten“ verliert ihn nie); steht es da, wird es geprüft (bekannte Art, Name 1–20 Zeichen, gültiger
+ *   Tag) bzw. mit `undefined` entfernt. Bequemer und mit gepflegtem Tag der Wahl: `setCompanion`.
  * Für einzelne Änderungen (z. B. nur den Titel) ist `updateProfile` bequemer.
  */
 export async function saveProfile(profile: CharacterProfile, database: QuestlogDB = db): Promise<void> {
@@ -311,6 +345,10 @@ function cleanProfile(
     ? normalizeCosmeticId(choices.frameId, FRAMES, MSG.unknownFrame)
     : optionalId(stored?.frameId)
   if (frameId !== undefined) clean.frameId = frameId
+  const companion = Object.hasOwn(choices, 'companion')
+    ? normalizeCompanion(choices.companion)
+    : storedCompanion(stored?.companion)
+  if (companion !== undefined) clean.companion = companion
   const heroSeed = pinnedHeroSeed(clean, stored)
   if (heroSeed !== undefined) clean.heroSeed = heroSeed
   return clean
@@ -355,6 +393,35 @@ function normalizeCosmeticId(value: unknown, known: readonly { id: string }[], m
   return value
 }
 
+/** Übergebener Gefährte: `undefined` entfernt ihn, sonst muss er vollständig gültig sein (Art, Name, Tag der Wahl). */
+function normalizeCompanion(value: unknown): CompanionChoice | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new Error(MSG.unknownCompanion)
+  assertDayKey(value.chosenDay, 'Datum der Gefährten-Wahl')
+  return { species: requireCompanionSpecies(value.species), name: normalizeCompanionName(value.name), chosenDay: value.chosenDay }
+}
+
+/** Gespeicherter Gefährte – ein ungültiger fällt weg (gilt dann als „keiner gewählt“). */
+function storedCompanion(value: unknown): CompanionChoice | undefined {
+  try {
+    return normalizeCompanion(value)
+  } catch {
+    return undefined
+  }
+}
+
+function requireCompanionSpecies(value: unknown): CompanionChoice['species'] {
+  if (!isCompanionSpecies(value)) throw new Error(MSG.unknownCompanion)
+  return value
+}
+
+/** Name eines Gefährten: getrimmt, 1 bis `MAX_COMPANION_NAME_LENGTH` Zeichen. */
+function normalizeCompanionName(value: unknown): string {
+  const name = requireText(value, MSG.companionName)
+  if (name.length > MAX_COMPANION_NAME_LENGTH) throw new Error(MSG.companionNameTooLong)
+  return name
+}
+
 /**
  * Ändert einzelne Einstellungen. Gespeichert werden nur explizit gesetzte Werte –
  * nicht gesetzte fallen beim Laden auf `DEFAULT_SETTINGS` zurück.
@@ -363,6 +430,9 @@ function normalizeCosmeticId(value: unknown, known: readonly { id: string }[], m
  * Phase 2b: `hpIntroSeen` wird übernommen; von `penalties` nur `enabled` – `since` bleibt immer, wie es ist (nie
  * rückwirkend abrechnen). Zum Umschalten der Lebenspunkte besser `setPenaltiesEnabled` (mit Spieltag) verwenden.
  * Phase 3a: `combatIntroSeen` wird übernommen.
+ * Phase 3b: `sound`, `haptics` und `companionIntroSeen` werden übernommen (fehlen sie, gilt „aus“ bzw. „noch nicht
+ * gesehen“); `weeklyReviewSeen` muss ein gültiger Tag sein und wird auf den Montag seiner Woche gesetzt (anders als
+ * `markWeeklyReviewSeen` auch rückwärts – etwa zum Ausprobieren).
  */
 export async function updateSettings(patch: Partial<Settings>, database: QuestlogDB = db): Promise<void> {
   const changes: Partial<Settings> = {}
@@ -373,6 +443,13 @@ export async function updateSettings(patch: Partial<Settings>, database: Questlo
   if (patch.effects !== undefined) changes.effects = Boolean(patch.effects)
   if (patch.hpIntroSeen !== undefined) changes.hpIntroSeen = Boolean(patch.hpIntroSeen)
   if (patch.combatIntroSeen !== undefined) changes.combatIntroSeen = Boolean(patch.combatIntroSeen)
+  if (patch.sound !== undefined) changes.sound = Boolean(patch.sound)
+  if (patch.haptics !== undefined) changes.haptics = Boolean(patch.haptics)
+  if (patch.companionIntroSeen !== undefined) changes.companionIntroSeen = Boolean(patch.companionIntroSeen)
+  if (patch.weeklyReviewSeen !== undefined) {
+    assertDayKey(patch.weeklyReviewSeen, 'Datum des Wochenrückblicks')
+    changes.weeklyReviewSeen = startOfWeek(patch.weeklyReviewSeen)
+  }
   const penalties = patch.penalties
 
   await updateStoredSettings(database, (stored) =>
@@ -465,6 +542,130 @@ export async function markHpIntroSeen(database: QuestlogDB = db): Promise<void> 
 /** Merkt sich, dass die Einführung „Neu: Klassen, Bosse & Beute“ gesehen wurde (`settings.combatIntroSeen`, Phase 3a). */
 export async function markCombatIntroSeen(database: QuestlogDB = db): Promise<void> {
   await updateStoredSettings(database, () => ({ combatIntroSeen: true }))
+}
+
+// ---------------------------------------------------------------------------
+// Gefährte, Tagebuch, Wochenrückblick (Phase 3b)
+// ---------------------------------------------------------------------------
+
+/** Merkt sich, dass die Einführung „Neu: Gefährten“ gesehen wurde (`settings.companionIntroSeen`, Phase 3b). */
+export async function markCompanionIntroSeen(database: QuestlogDB = db): Promise<void> {
+  await updateStoredSettings(database, () => ({ companionIntroSeen: true }))
+}
+
+/**
+ * Merkt sich, dass der Wochenrückblick („Bericht des Gildenmeisters“) der Woche ab `weekStart` gesehen bzw.
+ * weggeklickt wurde (`settings.weeklyReviewSeen`, Phase 3b). `weekStart` wird auf den Montag seiner Woche gesetzt.
+ * Geht nie zurück: Ist schon eine spätere Woche gesehen, bleibt sie (ein alter Rückblick aus dem Tagebuch lässt den
+ * aktuellen nicht wieder erscheinen).
+ */
+export async function markWeeklyReviewSeen(weekStart: DayKey, database: QuestlogDB = db): Promise<void> {
+  assertDayKey(weekStart, 'Datum des Wochenrückblicks')
+  const monday = startOfWeek(weekStart)
+  await updateStoredSettings(database, (stored) =>
+    stored.weeklyReviewSeen !== undefined && compareDays(stored.weeklyReviewSeen, monday) >= 0
+      ? {}
+      : { weeklyReviewSeen: monday },
+  )
+}
+
+/**
+ * Wählt, benennt oder wechselt den Gefährten des Helden (`profile.companion`, Phase 3b) – `undefined` entfernt ihn.
+ * - Art muss bekannt sein („Diesen Gefährten gibt es nicht.“), der Name wird getrimmt und hat 1 bis
+ *   `MAX_COMPANION_NAME_LENGTH` (20) Zeichen.
+ * - Tag der Wahl (`chosenDay`): Gibt es schon einen Gefährten, bleibt er – beim Umbenennen wie beim Wechsel der Art
+ *   (derselbe Begleiter in neuer Gestalt; ein Wechsel nimmt dem Boss der Woche so keine schon verdienten Treffer und
+ *   verschiebt den Tagebuch-Eintrag nicht). Nur eine neue Wahl (ohne bzw. nach dem Entfernen des bisherigen) bekommt den
+ *   Spieltag `today` (fehlt er: ein mitgegebener `choice.chosenDay`, sonst der Spieltag laut Uhr und gespeichertem
+ *   Tageswechsel) – nie vor dem Abenteuerbeginn. Die Stufe hängt nicht daran (nur an den aktiven Tagen des Helden); ab
+ *   dem Tag der Wahl trifft der Gefährte an Perfekten Tagen mit.
+ * - Ohne Held: „Es gibt noch keinen Helden – beginne zuerst dein Abenteuer.“
+ * @returns der gespeicherte Gefährte (bzw. `undefined` nach dem Entfernen).
+ */
+export async function setCompanion(
+  choice: CompanionDraft | undefined,
+  today?: DayKey,
+  database: QuestlogDB = db,
+): Promise<CompanionChoice | undefined> {
+  if (today !== undefined) assertDayKey(today)
+  let saved: CompanionChoice | undefined
+  await database.transaction('rw', database.kv, async () => {
+    const fallbackDay = today ?? choice?.chosenDay ?? toDayKey(new Date(), await storedDayStartHour(database))
+    await writeProfile(database, (stored) => {
+      if (stored === undefined) throw new Error(MSG.noHero)
+      let next: CompanionChoice | undefined
+      if (choice !== undefined) {
+        if (!isRecord(choice)) throw new Error(MSG.unknownCompanion)
+        const species = requireCompanionSpecies(choice.species)
+        const name = normalizeCompanionName(choice.name)
+        // Umbenennen und Art wechseln behalten den Tag der Wahl: Der Gefährte bleibt derselbe Begleiter (Wachstum und
+        // Treffer hängen nicht an der Art) – ein Wechsel mitten in der Woche nähme dem Boss sonst verdiente Treffer.
+        const previous = storedCompanion(stored.companion)
+        let chosenDay = previous !== undefined ? previous.chosenDay : fallbackDay
+        assertDayKey(chosenDay, 'Datum der Gefährten-Wahl')
+        if (isDayKeyValue(stored.createdDay) && compareDays(chosenDay, stored.createdDay) < 0) chosenDay = stored.createdDay
+        next = { species, name, chosenDay }
+      }
+      saved = next
+      return cleanProfile({ ...stored, companion: next }, { companion: next }, stored)
+    })
+  })
+  return saved
+}
+
+/**
+ * Schreibt, ändert oder löscht die Tagebuch-Notiz des Tages `day` (Phase 3b, eine pro Tag – `journalNotes '&day'`).
+ * - Text wird getrimmt, höchstens `MAX_JOURNAL_NOTE_LENGTH` (280) Zeichen; die Stimmung (optional, ein Emoji) ebenso,
+ *   leer = keine. Leerer Text **und** keine Stimmung → die Notiz des Tages wird gelöscht (fehlt sie, passiert nichts).
+ * - Nur für `day ≤ today` und ab dem Abenteuerbeginn (`profile.createdDay`); ohne Held: Fehler.
+ * - `updatedAt` = `now` (Standard: jetzt).
+ * @returns die gespeicherte Notiz bzw. `undefined`, wenn gelöscht wurde.
+ */
+export async function saveJournalNote(
+  day: DayKey,
+  note: JournalNoteDraft,
+  today: DayKey,
+  database: QuestlogDB = db,
+  now: number = Date.now(),
+): Promise<JournalNote | undefined> {
+  assertDayKey(day, 'Datum der Notiz')
+  assertDayKey(today)
+  if (compareDays(day, today) > 0) throw new Error(MSG.noteFuture)
+  const text = normalizeNoteText(note?.text)
+  const mood = normalizeMood(note?.mood)
+  return database.transaction('rw', database.kv, database.journalNotes, async () => {
+    const entry = await database.kv.get(KV_KEYS.profile)
+    const profile = isRecord(entry?.value) ? (entry.value as unknown as CharacterProfile) : undefined
+    if (profile === undefined) throw new Error(MSG.noHero)
+    if (isDayKeyValue(profile.createdDay) && compareDays(day, profile.createdDay) < 0) throw new Error(MSG.noteBeforeStart)
+    if (text === '' && mood === undefined) {
+      await database.journalNotes.delete(day)
+      return undefined
+    }
+    const saved: JournalNote = { day, text, updatedAt: now }
+    if (mood !== undefined) saved.mood = mood
+    await database.journalNotes.put(saved)
+    return saved
+  })
+}
+
+/** Text einer Notiz: getrimmt (fehlt = leer), höchstens `MAX_JOURNAL_NOTE_LENGTH` Zeichen. */
+function normalizeNoteText(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new Error(MSG.noteText)
+  const text = value.trim()
+  if (text.length > MAX_JOURNAL_NOTE_LENGTH) throw new Error(MSG.noteTooLong)
+  return text
+}
+
+/** Stimmung einer Notiz: getrimmt, leer = keine; ein einzelnes (auch zusammengesetztes) Emoji ohne Leerzeichen. */
+function normalizeMood(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new Error(MSG.noteMood)
+  const mood = value.trim()
+  if (mood === '') return undefined
+  if (mood.length > MAX_JOURNAL_MOOD_LENGTH || /\s/.test(mood)) throw new Error(MSG.noteMood)
+  return mood
 }
 
 // ---------------------------------------------------------------------------
@@ -1706,8 +1907,9 @@ async function withinQuestChestLimit(database: QuestlogDB, fresh: readonly Chest
 // ---------------------------------------------------------------------------
 
 /**
- * Löscht ALLE Daten (Profil, Einstellungen, Quests, Erledigungen, Kampagnen, Belohnungen, Einlösungen,
- * Nebenquests, Erfolge, abgerechnete Tage, Rast & Urlaub, Boss-Siege, Truhen, Titel & Rahmen) in einer Transaktion.
+ * Löscht ALLE Daten (Profil samt Gefährte, Einstellungen, Quests, Erledigungen, Kampagnen, Belohnungen, Einlösungen,
+ * Nebenquests, Erfolge, abgerechnete Tage, Rast & Urlaub, Boss-Siege, Truhen, Titel & Rahmen, Tagebuch-Notizen) in
+ * einer Transaktion.
  */
 export async function resetAllData(database: QuestlogDB = db): Promise<void> {
   const tables = allTables(database)
@@ -1920,7 +2122,8 @@ async function storedDayStartHour(database: QuestlogDB): Promise<number> {
 function pickValidSettings(stored: unknown): Partial<Settings> {
   const result: Partial<Settings> = {}
   if (!isRecord(stored)) return result
-  const { dayStartHour, effects, penalties, hpIntroSeen, combatIntroSeen } = stored
+  const { dayStartHour, effects, penalties, hpIntroSeen, combatIntroSeen, sound, haptics, companionIntroSeen, weeklyReviewSeen } =
+    stored
   if (typeof dayStartHour === 'number' && Number.isInteger(dayStartHour) && dayStartHour >= 0 && dayStartHour <= 12) {
     result.dayStartHour = dayStartHour
   }
@@ -1931,6 +2134,10 @@ function pickValidSettings(stored: unknown): Partial<Settings> {
   }
   if (typeof hpIntroSeen === 'boolean') result.hpIntroSeen = hpIntroSeen
   if (typeof combatIntroSeen === 'boolean') result.combatIntroSeen = combatIntroSeen
+  if (typeof sound === 'boolean') result.sound = sound
+  if (typeof haptics === 'boolean') result.haptics = haptics
+  if (typeof companionIntroSeen === 'boolean') result.companionIntroSeen = companionIntroSeen
+  if (isDayKeyValue(weeklyReviewSeen)) result.weeklyReviewSeen = weeklyReviewSeen
   return result
 }
 

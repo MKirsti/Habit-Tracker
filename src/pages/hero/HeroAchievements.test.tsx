@@ -66,6 +66,7 @@ describe('Held-Seite: Reiter', () => {
       // Mit etwas Glück liegt eine Quest-Truhe bereit (10 % je Erledigung, zufällige Quest-ID) – dann trägt der Reiter
       // die Zahl ungeöffneter Truhen.
       expect.stringMatching(/^Sammlung/),
+      'Tagebuch',
     ])
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
     for (const tab of tabs.slice(1)) {
@@ -81,7 +82,7 @@ describe('Held-Seite: Reiter', () => {
 
   it('verweist per aria-controls nur auf das Panel, das es gibt (gültiges ARIA)', async () => {
     const { user } = await setup()
-    for (const name of [/^Erfolge/, 'Statistik', /^Sammlung/, 'Übersicht']) {
+    for (const name of [/^Erfolge/, 'Statistik', /^Sammlung/, 'Tagebuch', 'Übersicht']) {
       for (const tab of screen.getAllByRole('tab')) {
         const controls = tab.getAttribute('aria-controls')
         if (controls !== null) expect(document.getElementById(controls)).toHaveAttribute('role', 'tabpanel')
@@ -116,15 +117,17 @@ describe('Held-Seite: Reiter', () => {
     expect(screen.getByRole('tab', { name: 'Statistik' })).toHaveFocus()
     await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('tab', { name: /^Sammlung/ })).toHaveFocus()
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: 'Tagebuch' })).toHaveFocus()
     // Umlauf: vom letzten Reiter wieder zum ersten.
     await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('tab', { name: 'Übersicht' })).toHaveFocus()
     await user.keyboard('{ArrowLeft}')
-    expect(screen.getByRole('tab', { name: /^Sammlung/ })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: 'Tagebuch' })).toHaveFocus()
     await user.keyboard('{Home}')
     expect(screen.getByRole('tab', { name: 'Übersicht' })).toHaveAttribute('aria-selected', 'true')
     await user.keyboard('{End}')
-    expect(screen.getByRole('tab', { name: /^Sammlung/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Tagebuch' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('öffnet die Erfolge direkt per Adresse; unbekannte Reiter fallen auf die Übersicht zurück', async () => {
@@ -133,6 +136,7 @@ describe('Held-Seite: Reiter', () => {
     expect(parseHeroTab('erfolge')).toBe('erfolge')
     expect(parseHeroTab('statistik')).toBe('statistik')
     expect(parseHeroTab('sammlung')).toBe('sammlung')
+    expect(parseHeroTab('tagebuch')).toBe('tagebuch')
     expect(parseHeroTab('bestiarium')).toBe('uebersicht')
     expect(parseHeroTab(null)).toBe('uebersicht')
   })

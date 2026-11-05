@@ -75,8 +75,8 @@ export const BALANCING = {
     rarityWeights: { common: 70, uncommon: 22, rare: 7, legendary: 1 },
     /** Halbiert (vom Spieler gewünscht): Truhen sollen das Gold-Gefüge nicht sprengen. */
     gold: { common: [10, 25], uncommon: [30, 50] },
-    /** Ersatz-Gold, wenn ein Streak-Schutz den vollen Vorrat überschreiten würde. */
-    freezeFallbackGold: 100,
+    /** Ersatz-Gold, wenn ein Streak-Schutz den vollen Vorrat überschreiten würde (halbiert wie das übrige Truhen-Gold). */
+    freezeFallbackGold: 50,
   },
   /** Gefährte (Phase 3b). */
   companion: {

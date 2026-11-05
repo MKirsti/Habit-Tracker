@@ -29,8 +29,10 @@ const SCHEMA_V3 = {
 }
 /** Schema der Version 4 (Phase 2b). */
 const SCHEMA_V4 = { ...SCHEMA_V3, hpLedger: '&day', restPeriods: '&id, from' }
+/** Schema der Version 5 (Phase 3a). */
+const SCHEMA_V5 = { ...SCHEMA_V4, bossVictories: '&weekStart', chests: '&id, foundDay', cosmeticUnlocks: '&id' }
 /** Aktuelle Version der Datenbank. */
-const CURRENT_VERSION = 5
+const CURRENT_VERSION = 6
 
 const names: string[] = []
 
@@ -155,6 +157,7 @@ describe('QuestlogDB – Version 3 (Phase 2a)', () => {
       'cosmeticUnlocks',
       'habits',
       'hpLedger',
+      'journalNotes',
       'kv',
       'mainQuests',
       'purchases',
@@ -329,7 +332,7 @@ describe('QuestlogDB – Version 5 (Phase 3a)', () => {
     upgraded.close()
   })
 
-  it('Upgrade direkt von Version 1 durchläuft alle Versionen bis 5', async () => {
+  it('Upgrade direkt von Version 1 durchläuft alle Versionen bis zur aktuellen', async () => {
     const name = 'questlog-test-db-upgrade-v1-v5'
     names.push(name)
     const legacy = new Dexie(name)
@@ -361,5 +364,72 @@ describe('QuestlogDB – Version 5 (Phase 3a)', () => {
     await database.cosmeticUnlocks.add({ id: 'aurora', kind: 'frame', day: '2026-10-14', source: 'chest' })
     await expect(database.cosmeticUnlocks.add({ id: 'aurora', kind: 'frame', day: '2026-10-15', source: 'chest' })).rejects.toThrow()
     database.close()
+  })
+})
+
+describe('QuestlogDB – Version 6 (Phase 3b)', () => {
+  const START = '2026-10-05' // Montag
+  const TODAY = '2026-10-21' // Mittwoch, gut zwei Wochen später
+
+  it('Upgrade von Version 5 behält alle Daten und den Spielstand; Tagebuch-Notizen starten leer', async () => {
+    const name = 'questlog-test-db-upgrade-v6'
+    names.push(name)
+    // Stand nach Phase 3a (Version 5): Verlauf, Schatzkammer, Ledger, Boss-Sieg, Truhen, Titel aus einer Truhe.
+    const legacy = new Dexie(name)
+    legacy.version(5).stores(SCHEMA_V5)
+    const habit = makeHabit({ id: 'h1', title: 'Lesen', attribute: 'intellect', createdDay: START })
+    const completions = ['2026-10-05', '2026-10-06', '2026-10-12', '2026-10-19', '2026-10-20'].map((day) => makeCompletion(habit, day))
+    const reward = { id: 'r1', title: 'Pizza', icon: '🍕', price: 5, repeatable: true, order: 0, createdAt: 1 }
+    const purchase = { id: 'p1', kind: 'reward', rewardId: 'r1', title: 'Pizza', icon: '🍕', price: 5, day: '2026-10-08', createdAt: 2 }
+    const ledger = { day: '2026-10-05', score: 'perfect', frozen: false, hpDelta: 0, hpAfter: 50, maxHp: 50, penalties: true }
+    const victory = makeBossVictory('2026-10-12', { day: '2026-10-14' })
+    const chest = { ...makeChest('boss:2026-10-12', { foundDay: '2026-10-14' }), openedAt: 1_760_000_000_000 }
+    const unlock = { id: 'aurora', kind: 'frame', day: '2026-10-14', source: 'chest' }
+    const profile = { name: 'Aria', avatar: '🧙', createdDay: START, form: 'female', titleId: 'daring' }
+    const settings = { dayStartHour: 5, effects: false, penalties: { enabled: true, since: START }, hpIntroSeen: true, combatIntroSeen: true }
+    await legacy.table('habits').add(habit)
+    await legacy.table('completions').bulkAdd(completions)
+    await legacy.table('rewards').add(reward)
+    await legacy.table('purchases').add(purchase)
+    await legacy.table('hpLedger').add(ledger)
+    await legacy.table('bossVictories').add(victory)
+    await legacy.table('chests').add(chest)
+    await legacy.table('cosmeticUnlocks').add(unlock)
+    await legacy.table('kv').bulkAdd([
+      { key: KV_KEYS.profile, value: profile },
+      { key: KV_KEYS.settings, value: settings },
+    ])
+    legacy.close()
+
+    const upgraded = new QuestlogDB(name)
+    await upgraded.open()
+    expect(upgraded.verno).toBe(CURRENT_VERSION)
+    const data = await loadGameData(upgraded)
+    // Keine Notizen, kein Gefährte, keine neuen Einstellungen: alles optional, nichts wird ergänzt.
+    expect(data).toStrictEqual({
+      profile,
+      settings,
+      habits: [habit],
+      completions,
+      mainQuests: [],
+      rewards: [reward],
+      purchases: [purchase],
+      hpLedger: [ledger],
+      bossVictories: [victory],
+      chests: [chest],
+      cosmeticUnlocks: [unlock],
+    })
+    expect(await upgraded.journalNotes.count()).toBe(0)
+    const state = deriveGameState(data, TODAY)
+    expect(state.companion).toBeUndefined()
+    expect(state.gold.fromChests).toBe(20)
+
+    // Die neue Tabelle ist nutzbar (eine Notiz pro Tag) und wird mit allem anderen zurückgesetzt.
+    await upgraded.journalNotes.add({ day: TODAY, text: 'Guter Tag.', updatedAt: 1 })
+    await expect(upgraded.journalNotes.add({ day: TODAY, text: 'Noch einer?', updatedAt: 2 })).rejects.toThrow()
+    expect((await loadGameData(upgraded)).journalNotes).toStrictEqual([{ day: TODAY, text: 'Guter Tag.', updatedAt: 1 }])
+    await resetAllData(upgraded)
+    for (const table of allTables(upgraded)) expect(await table.count()).toBe(0)
+    upgraded.close()
   })
 })

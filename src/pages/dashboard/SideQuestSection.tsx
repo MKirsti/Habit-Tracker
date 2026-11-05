@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { ATTRIBUTES } from '../../domain/attributes'
 import type { DayKey, SideQuest, SideQuestState } from '../../domain/types'
+import { FEEDBACK_CUES, useFeedbackCue } from '../../features/feedback/feedbackSounds'
 import { Button, Card, SectionTitle, cn, formatNumber } from '../../ui'
 import { SideQuestDueBadge } from '../quests/SideQuestDueBadge'
 import { SideQuestFormDialog } from '../quests/SideQuestFormDialog'
@@ -40,6 +41,7 @@ export function SideQuestSection({ entries, hasAny, today, otherDaySelected = fa
   const headingId = useId()
   const listId = useId()
   const actions = useSideQuestActions(today)
+  const cue = useFeedbackCue()
   const [expanded, setExpanded] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   // Hatte der Haken den Fokus, als abgehakt wurde? Dann bekommt er ihn nach dem Umsortieren zurück – bzw., wenn
@@ -78,6 +80,8 @@ export function SideQuestSection({ entries, hasAny, today, otherDaySelected = fa
     const hadFocus = document.activeElement?.id === checkButtonId(quest.id)
     // Vor dem Speichern vormerken: Die Live-Daten können schon vor dem Ende von `setDone` ankommen.
     if (hadFocus) refocus.current = { questId: quest.id, index, done }
+    // Klang & Vibration sofort beim Tippen (nur wenn eingeschaltet).
+    cue(done ? FEEDBACK_CUES.check : FEEDBACK_CUES.uncheck)
     const ok = await actions.setDone(quest.id, done)
     if (!ok && refocus.current?.questId === quest.id) refocus.current = null
   }

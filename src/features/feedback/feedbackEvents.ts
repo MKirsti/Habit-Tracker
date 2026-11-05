@@ -27,6 +27,10 @@ import type {
 } from '../../domain/types'
 import { combatFeedbackStillHolds } from './combatFeedback'
 import type { CombatFeedbackEvent } from './combatFeedback'
+import { companionEvolutionStillHolds } from './companionFeedback'
+import type { CompanionEvolvedEvent } from './companionFeedback'
+import { endBossVictoryStillHolds } from './endBossFeedback'
+import type { EndBossDefeatedEvent } from './endBossFeedback'
 import type { HpFeedbackEvent } from './hpFeedback'
 
 /**
@@ -158,7 +162,8 @@ export interface AchievementUnlockedEvent {
 /**
  * Alle Rückmeldungen. Die Lebenspunkte-Ereignisse (Niederlage, Streak-Schutz, Heiltrank) erkennt `hpFeedbackEvents`
  * (`hpFeedback.ts`) aus Ledger und Käufen, die Kampf-Ereignisse (Boss besiegt, Truhe gefunden, Klassenwechsel)
- * `combatFeedback.ts` – nicht `diffGameStates`.
+ * `combatFeedback.ts`, Phase 3b die Entwicklung des Gefährten (`companionFeedback.ts`) und den besiegten
+ * Kampagnen-Endgegner (`endBossFeedback.ts`) – nicht `diffGameStates`.
  */
 export type FeedbackEvent =
   | XpGainedEvent
@@ -170,6 +175,8 @@ export type FeedbackEvent =
   | AchievementUnlockedEvent
   | HpFeedbackEvent
   | CombatFeedbackEvent
+  | CompanionEvolvedEvent
+  | EndBossDefeatedEvent
 
 /**
  * Massenänderung? Dann gibt es keine Rückmeldung, nur der neue Zustand wird zur Vergleichsbasis.
@@ -530,5 +537,9 @@ export function feedbackStillHolds(event: FeedbackEvent, state: GameState): bool
     case 'chest-found':
     case 'class-changed':
       return combatFeedbackStillHolds(event, state)
+    case 'companion-evolved':
+      return companionEvolutionStillHolds(event, state)
+    case 'end-boss-defeated':
+      return endBossVictoryStillHolds(event, state)
   }
 }

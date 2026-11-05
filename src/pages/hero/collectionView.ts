@@ -200,9 +200,9 @@ export interface ChestSourceContext {
 
 export interface ChestSourceInfo {
   kind: Chest['source']
-  /** „Boss-Truhe“, „Quest-Truhe“, „Kapitel-Truhe“. */
+  /** „Boss-Truhe“, „Quest-Truhe“, „Kapitel-Truhe“, „Endgegner-Truhe“. */
   label: string
-  /** Wofür, z. B. „🛋️ Sofagolem besiegt“, „📖 Lesen“, „Kapitel „Erste Seiten““. */
+  /** Wofür, z. B. „🛋️ Sofagolem besiegt“, „📖 Lesen“, „Kapitel „Erste Seiten““, „📚 „Der Weg des Gelehrten“ gemeistert“. */
   detail: string
 }
 
@@ -210,9 +210,13 @@ const SOURCE_LABELS: Record<Chest['source'], string> = {
   boss: 'Boss-Truhe',
   quest: 'Quest-Truhe',
   chapter: 'Kapitel-Truhe',
+  campaign: 'Endgegner-Truhe',
 }
 
-/** Fundort einer Truhe in Worten – aus ihrer deterministischen ID (`boss:…`, `quest:…`, `chapter:…`). */
+/**
+ * Fundort einer Truhe in Worten – aus ihrer deterministischen ID (`boss:…`, `quest:…`, `chapter:…`, Phase 3b:
+ * `campaign:<questId>` – die Truhe des Endgegners einer gemeisterten Kampagne).
+ */
 export function chestSource(chest: Pick<Chest, 'id' | 'source'>, context: ChestSourceContext): ChestSourceInfo {
   const kind: Chest['source'] = chest.source in SOURCE_LABELS ? chest.source : 'quest'
   const label = SOURCE_LABELS[kind]
@@ -230,6 +234,10 @@ export function chestSource(chest: Pick<Chest, 'id' | 'source'>, context: ChestS
       if (chapter) return { kind, label, detail: `${quest.icon} Kapitel „${chapter.title}“` }
     }
     return { kind, label, detail: 'Ein abgeschlossenes Kapitel' }
+  }
+  if (kind === 'campaign') {
+    const quest = context.mainQuests.find((entry) => entry.id === rest)
+    return { kind, label, detail: quest ? `${quest.icon} „${quest.title}“ gemeistert` : 'Eine gemeisterte Kampagne' }
   }
   // Quest-Truhe: `quest:<habitId>:<day>`.
   const habit = context.habits.find((entry) => rest.startsWith(`${entry.id}:`))

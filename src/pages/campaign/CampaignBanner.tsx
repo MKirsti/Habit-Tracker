@@ -1,13 +1,15 @@
 import { CalendarDays, Flag, Flame, Hourglass, Sparkles, Sprout, Trophy } from 'lucide-react'
 import type { ReactNode, Ref } from 'react'
 import { useId } from 'react'
-import type { DayKey, MainQuestState } from '../../domain/types'
+import type { DayKey, EndBossState, MainQuestState } from '../../domain/types'
 import { ACCENT_BADGE_BACKGROUND, campaignColor } from '../../features/campaignTheme'
-import { Badge, ProgressBar, formatNumber } from '../../ui'
+import { Badge, ProgressBar, cn, formatNumber } from '../../ui'
+import { bossVars } from '../dashboard/bossTheme'
 import { CampaignFrame } from './CampaignFrame'
 import { campaignOrigin, pathLabel } from './campaignOrigin'
 import { campaignDayText, deadlineText, formatDate, xpHint } from './campaignText'
 import type { DeadlineTone } from './campaignText'
+import { END_BOSS_PHASE_LABELS, endBossPhase } from './endBossText'
 
 export interface CampaignBannerProps {
   campaign: MainQuestState
@@ -24,7 +26,8 @@ const TONE_CLASS: Record<DeadlineTone, string> = {
 
 /**
  * Kopf der Kampagne: Symbol, Titel, bei Vorlagen Klasse und Stufe, Beschreibung, das „Warum“ als
- * Pergament-Zitat, Belohnung, Zeitrahmen und Gesamtfortschritt.
+ * Pergament-Zitat, Belohnung, Endgegner (Phase 3b: „Endgegner: Der Bibliothekar der Ewigkeit · schläft noch“),
+ * Zeitrahmen und Gesamtfortschritt.
  *
  * Rahmen, Leuchten, Symbol, Abzeichen und Fortschritt tragen die Hauptfarbe der Kampagne (`campaignColor`);
  * Gold bleibt für „Gemeistert“, die Belohnung und den XP-Hinweis.
@@ -136,6 +139,10 @@ export function CampaignBanner({ campaign, today, headingRef }: CampaignBannerPr
         </p>
       )}
 
+      {campaign.endBoss !== undefined && (
+        <EndBossHint endBoss={campaign.endBoss} className={quest.reward !== '' ? 'mt-2.5' : 'mt-4'} />
+      )}
+
       <dl className="relative mt-5 grid grid-cols-2 gap-2.5 sm:gap-3">
         <Stat
           icon={<CalendarDays />}
@@ -196,6 +203,34 @@ export function CampaignBanner({ campaign, today, headingRef }: CampaignBannerPr
         {xpHint()}
       </p>
     </CampaignFrame>
+  )
+}
+
+/** Wer am Ende der Kampagne wartet – der Endgegner (das letzte Kapitel) samt Zustand. */
+function EndBossHint({ endBoss, className }: { endBoss: EndBossState; className?: string }) {
+  const phase = endBossPhase(endBoss)
+  return (
+    <p
+      className={cn('relative flex items-start gap-2.5 text-[0.9375rem]', className)}
+      style={bossVars()}
+      data-end-boss-hint={phase}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          'grid size-8 shrink-0 place-items-center rounded-lg text-base leading-none ring-1 ring-inset',
+          phase === 'defeated' ? 'bg-gold/12 ring-gold/30' : 'bg-(--boss-20) ring-(--boss-35)',
+          phase === 'asleep' && 'grayscale-[0.4]',
+        )}
+      >
+        {endBoss.definition.icon}
+      </span>
+      <span className="min-w-0 self-center">
+        <span className="text-muted">Endgegner: </span>
+        <span className="font-medium text-parchment">{endBoss.definition.name}</span>
+        <span className={phase === 'defeated' ? 'text-gold-bright' : 'text-muted'}> · {END_BOSS_PHASE_LABELS[phase]}</span>
+      </span>
+    </p>
   )
 }
 

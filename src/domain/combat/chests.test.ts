@@ -3,9 +3,12 @@ import { BALANCING } from '../balancing'
 import { makeChest, makeCompletion, makeFrame, makeHabit, makeTitle } from '../testing'
 import type { Chest, ChestRarity, Completion, DayKey } from '../types'
 import {
+  CHEST_RARITIES,
   LEGENDARY_FALLBACK_GOLD,
+  MIN_CHEST_RARITY,
   RARE_FALLBACK_GOLD,
   bossChestId,
+  campaignChestId,
   chapterChestId,
   chestContent,
   chestGold,
@@ -153,7 +156,7 @@ describe('Seltenheit & Inhalt', () => {
     expect([...frames].sort()).toEqual(['ember', 'frost'])
   })
 
-  it('rare ohne freien Truhen-Rahmen → 100 Gold (der Streak-Schutz-Anteil bleibt)', () => {
+  it('rare ohne freien Truhen-Rahmen → 50 Gold (der Streak-Schutz-Anteil bleibt)', () => {
     const taken = new Set(['frame:ember', 'frame:frost'])
     const kinds = new Set<string>()
     for (let i = 0; i < 200; i++) {
@@ -163,7 +166,7 @@ describe('Seltenheit & Inhalt', () => {
     expect([...kinds].sort()).toEqual([`gold:${RARE_FALLBACK_GOLD}`, 'item'])
   })
 
-  it('legendary: Truhen-Titel oder -Rahmen der Seltenheit legendary, sonst 150 Gold', () => {
+  it('legendary: Truhen-Titel oder -Rahmen der Seltenheit legendary, sonst 75 Gold', () => {
     const context = { taken: new Set<string>(), titles: LEGENDARY_TITLES, frames: [...RARE_FRAMES, ...LEGENDARY_FRAMES] }
     const picks = new Set<string>()
     for (let i = 0; i < 200; i++) {
@@ -382,5 +385,111 @@ describe('mit dem echten Inhalt', () => {
       }
     }
     expect([...seen].sort()).toEqual([...pool.keys()].sort())
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Nachbesserung 3a: Truhen-Gold halbiert
+// ---------------------------------------------------------------------------
+
+describe('Nachbesserung 3a: Truhen-Gold halbiert', () => {
+  it('common 10–25, uncommon 30–50; Ersatz-Gold rare 50, legendary 75', () => {
+    expect(BALANCING.chests.gold).toEqual({ common: [10, 25], uncommon: [30, 50] })
+    expect(RARE_FALLBACK_GOLD).toBe(50)
+    expect(LEGENDARY_FALLBACK_GOLD).toBe(75)
+    const amounts = { common: new Set<number>(), uncommon: new Set<number>() }
+    for (let i = 0; i < 4000; i++) {
+      for (const rarity of ['common', 'uncommon'] as const) amounts[rarity].add(chestGoldAmount(`gold${i}`, rarity))
+    }
+    expect(Math.min(...amounts.common)).toBe(10)
+    expect(Math.max(...amounts.common)).toBe(25)
+    expect(Math.min(...amounts.uncommon)).toBe(30)
+    expect(Math.max(...amounts.uncommon)).toBe(50)
+  })
+
+  it('neue Truhen bekommen halbiertes Gold – gespeicherte behalten ihren alten Inhalt', () => {
+    const [id] = idsWithRarity('quest:old', 'common', 1)
+    const old = makeChest(id, { foundDay: '2026-11-03', content: { kind: 'gold', amount: 47 } }) // aus der Zeit vor 3a-Nachbesserung
+    const chests = find({ stored: [old], victories: [{ weekStart: '2026-11-02', day: '2026-11-04' }] })
+    expect(chests.find((chest) => chest.id === id)).toEqual(old)
+    const boss = chests.find((chest) => chest.id === 'boss:2026-11-02')
+    if (boss?.content.kind === 'gold' && (boss.rarity === 'common' || boss.rarity === 'uncommon')) {
+      const [min, max] = BALANCING.chests.gold[boss.rarity]
+      expect(boss.content.amount).toBeGreaterThanOrEqual(min)
+      expect(boss.content.amount).toBeLessThanOrEqual(max)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 3b: Endgegner-Truhe
+// ---------------------------------------------------------------------------
+
+describe('Phase 3b: Endgegner-Truhe je gemeisterter Kampagne', () => {
+  it('ID campaign:<questId>, Quelle campaign, Fundtag = Abschlusstag', () => {
+    expect(campaignChestId('q1')).toBe('campaign:q1')
+    const chests = find({ campaigns: [{ questId: 'q1', doneDay: '2026-11-03' }] })
+    expect(chests.map((chest) => [chest.id, chest.source, chest.foundDay])).toEqual([['campaign:q1', 'campaign', '2026-11-03']])
+  })
+
+  it('Fenster wie bei Kapiteln: nur Abschlusstage ab dem Montag der Woche von gestern bis heute; ohne Tag keine', () => {
+    const chests = find({
+      campaigns: [
+        { questId: 'old', doneDay: '2026-10-20' }, // längst gespeichert (bzw. vor dem Update gemeistert)
+        { questId: 'future', doneDay: '2026-11-05' },
+        { questId: 'unknown' },
+        { questId: 'now', doneDay: TODAY },
+      ],
+    })
+    expect(chests.map((chest) => chest.id)).toEqual(['campaign:now'])
+  })
+
+  it('Seltenheit mindestens selten – gewürfelt über rare 7 : legendary 1', () => {
+    expect(MIN_CHEST_RARITY).toEqual({ boss: 'common', quest: 'common', chapter: 'common', campaign: 'rare' })
+    const counts: Record<ChestRarity, number> = { common: 0, uncommon: 0, rare: 0, legendary: 0 }
+    const n = 20_000
+    for (let i = 0; i < n; i++) counts[chestRarity(chestRollKey(SEED, campaignChestId(`q${i}`)), 'rare')]++
+    expect(counts.common + counts.uncommon).toBe(0)
+    expect(counts.legendary / n).toBeGreaterThan(0.11)
+    expect(counts.legendary / n).toBeLessThan(0.14)
+    // Über findChests: jede Endgegner-Truhe ist mindestens selten.
+    const campaigns = Array.from({ length: 200 }, (_, i) => ({ questId: `q${i}`, doneDay: '2026-11-03' }))
+    for (const chest of find({ campaigns })) expect(['rare', 'legendary']).toContain(chest.rarity)
+  })
+
+  it('ohne Mindest-Seltenheit würfelt chestRarity genau wie bisher', () => {
+    for (let i = 0; i < 2000; i++) {
+      const key = chestRollKey(SEED, `quest:h${i}:2026-11-04`)
+      expect(chestRarity(key, 'common')).toBe(chestRarity(key))
+    }
+    expect(CHEST_RARITIES.indexOf(MIN_CHEST_RARITY.campaign)).toBe(2)
+  })
+
+  it('deterministisch: gleiche Kampagne → gleiche Truhe (Seltenheit und Inhalt), gespeichert bleibt sie unverändert', () => {
+    const a = find({ campaigns: [{ questId: 'q7', doneDay: '2026-11-03' }] })
+    const b = find({ campaigns: [{ questId: 'q7', doneDay: '2026-11-03' }] })
+    expect(a).toEqual(b)
+    const stored = makeChest('campaign:q7', { foundDay: '2026-11-03', rarity: 'rare', content: { kind: 'gold', amount: 1 } })
+    expect(makeChest('campaign:q7').source).toBe('campaign')
+    expect(find({ stored: [stored], campaigns: [{ questId: 'q7', doneDay: '2026-11-03' }] })).toEqual([stored])
+  })
+
+  it('Inhalt nach den Regeln der Seltenheit; keine Kosmetik doppelt (auch nicht mit Kapitel-Truhen zusammen)', () => {
+    const campaigns = Array.from({ length: 40 }, (_, i) => ({ questId: `q${i}`, doneDay: '2026-11-03' }))
+    const chests = find({ campaigns, titles: LEGENDARY_TITLES, frames: [...RARE_FRAMES, ...LEGENDARY_FRAMES] })
+    const cosmetics = chests.flatMap((chest) => (chest.content.kind === 'cosmetic' ? [chest.content.cosmeticId] : []))
+    expect(new Set(cosmetics).size).toBe(cosmetics.length)
+    for (const chest of chests) {
+      if (chest.rarity === 'rare') {
+        expect(
+          chest.content.kind === 'item' ||
+            (chest.content.kind === 'cosmetic' && chest.content.cosmeticKind === 'frame') ||
+            (chest.content.kind === 'gold' && chest.content.amount === RARE_FALLBACK_GOLD),
+        ).toBe(true)
+      }
+      if (chest.rarity === 'legendary') {
+        expect(chest.content.kind === 'cosmetic' || (chest.content.kind === 'gold' && chest.content.amount === LEGENDARY_FALLBACK_GOLD)).toBe(true)
+      }
+    }
   })
 })

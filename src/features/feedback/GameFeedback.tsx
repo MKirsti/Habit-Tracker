@@ -36,8 +36,13 @@ import {
 } from './celebrations'
 import type { Celebration } from './celebrations'
 import { browserClassSceneStore, classChangeOf, classSceneSeen, combatFeedbackEvents } from './combatFeedback'
-import type { ChestFoundEvent, ClassSceneStore } from './combatFeedback'
+import type { ChestFoundEvent, ClassSceneStore, CombatFeedbackEvent } from './combatFeedback'
 import { chestFoundToastText } from './combatSceneText'
+import { companionEvolution } from './companionFeedback'
+import { companionGlow } from './companionTheme'
+import { campaignChestId, endBossVictories } from './endBossFeedback'
+import type { EndBossDefeatedEvent } from './endBossFeedback'
+import { FEEDBACK_CUES, sceneCue, toastCue, useFeedbackCue } from './feedbackSounds'
 import { Confetti } from './Confetti'
 import type { ConfettiBurstSpec } from './Confetti'
 import {
@@ -109,6 +114,11 @@ type ConfettiChoice = Pick<ConfettiBurstSpec, 'intensity' | 'accent'>
  *   Der Klassenwechsel zu Wochenbeginn erscheint als Szene, sobald die App in der neuen Woche läuft – einmal je Held
  *   und Woche (gemerkt auf diesem Gerät, `ClassSceneStore`), erst nach der Einführung „Neu: Klassen, Bosse & Beute“
  *   (vorher gilt die Woche still als gesehen: Die Einführung stellt die Klasse ja gerade vor).
+ * - Phase 3b: Ein besiegter Kampagnen-Endgegner (letztes Kapitel) zeigt seine Siegesszene – vor „Kampagne gemeistert“,
+ *   in der Farbe der Kampagne und mit der Endgegner-Truhe (die dann nicht zusätzlich als „Truhe gefunden“ erscheint).
+ *   Erreicht der Gefährte eine neue Stufe, zeigt die Entwicklungs-Szene alte → neue Stufe (in der Farbe der Stufe).
+ * - Klang & Vibration (`feedbackSounds.ts`, nur wenn eingeschaltet): jede große Szene, sobald sie sichtbar wird; zu den
+ *   Meldungen einer Änderung höchstens ein Klang (Erfolg/Kapitel vor Truhe); eine geöffnete Truhe.
  */
 export function GameFeedback({ classScenes = browserClassSceneStore }: { classScenes?: ClassSceneStore } = {}) {
   const { data, state } = useGameContext()
@@ -117,6 +127,16 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
 
   const ownedToasts = useOwnedToasts()
   const { present, revoke, syncPerfectBonus, resetSessions } = useFeedbackToasts(ownedToasts)
+  const cue = useFeedbackCue()
+  /** Zeigt Meldungen und spielt dazu (höchstens) einen Klang. */
+  const presentWithCue = useCallback(
+    (events: readonly FeedbackEvent[], current: GameState) => {
+      const confetti = present(events, current)
+      cue(toastCue(events.filter((event) => feedbackStillHolds(event, current))))
+      return confetti
+    },
+    [present, cue],
+  )
   const { bursts, addBurst, removeBurst } = useConfettiBursts()
 
   // Die Warteschlange wird synchron über die Ref geführt (für die Logik im Effekt) und als State
@@ -187,11 +207,22 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
       { ledger: previous.hpLedger, purchases: previous.purchases, state: previous.state },
       { ledger: data.hpLedger, purchases: data.purchases, state },
     )
-    const combatEvents = combatFeedbackEvents(previous.state, state, BULK_CHANGE_LIMIT).map((event) =>
-      event.type === 'chest-found' ? withChestSources(event, data, state) : event,
+    // Phase 3b: besiegte Endgegner (ihre Truhe steht in der Szene) und die Entwicklung des Gefährten.
+    const endBosses = endBossVictories(previous.state, state)
+    const endBossEvents = endBosses.length > BULK_CHANGE_LIMIT ? [] : endBosses
+    const evolution = companionEvolution(previous.state, state)
+    const combatEvents = combatFeedbackEvents(previous.state, state, BULK_CHANGE_LIMIT).flatMap(
+      (event): CombatFeedbackEvent[] =>
+        event.type === 'chest-found' ? withoutSceneChests(withChestSources(event, data, state), endBossEvents) : [event],
     )
     const events = withoutCelebrated(
-      [...diffGameStates(previous.state, state, credits), ...hpEvents, ...combatEvents],
+      [
+        ...diffGameStates(previous.state, state, credits),
+        ...hpEvents,
+        ...combatEvents,
+        ...endBossEvents,
+        ...(evolution !== undefined ? [evolution] : []),
+      ],
       memory.current,
     )
     if (events.length === 0) return
@@ -206,7 +237,7 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
       return
     }
     // Höchstens ein Konfetti pro Änderung.
-    const confetti = present(toastEvents, state)
+    const confetti = presentWithCue(toastEvents, state)
     if (confetti && fancy) addBurst({ ...confetti, ...toastOrigin() })
   }, [
     state,
@@ -218,7 +249,7 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
     data.hpLedger,
     data.purchases,
     fancy,
-    present,
+    presentWithCue,
     revoke,
     syncPerfectBonus,
     resetSessions,
@@ -251,11 +282,12 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
 
   // Nach der letzten Szene: die zurückgehaltenen Toasts zeigen (soweit sie noch stimmen).
   useEffect(() => {
-    if (queue.length > 0 || deferred.current.length === 0) return
+    // Die Ref zählt: Eine gerade (im selben Durchlauf) eingereihte Szene steht noch nicht in `queue`.
+    if (queue.length > 0 || queueRef.current.length > 0 || deferred.current.length === 0) return
     const events = deferred.current
     deferred.current = []
-    present(events, baseline.current.state)
-  }, [queue, present])
+    presentWithCue(events, baseline.current.state)
+  }, [queue, presentWithCue])
 
   const close = useCallback(
     (id: number) => {
@@ -280,16 +312,33 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
   )
 
   const current = queue[0]
-  // Kampagne gemeistert: in der Hauptfarbe der Kampagne, Klassenwechsel: in der Farbe des (ersten) Klassen-Attributs.
-  // Level-Up, Boss-Sieg und Kampagnen ohne Attribut bleiben golden.
+
+  // Klang der Szene, sobald sie sichtbar wird – je Szene einmal (auch wenn Effekte im StrictMode doppelt laufen).
+  const soundedScene = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (current === undefined || soundedScene.current === current.id) return
+    soundedScene.current = current.id
+    cue(sceneCue(current.kind))
+  }, [current, cue])
+
+  // Kampagne gemeistert und ihr Endgegner: in der Hauptfarbe der Kampagne, Klassenwechsel: in der Farbe des (ersten)
+  // Klassen-Attributs, Entwicklung: im Glanz der neuen Stufe. Level-Up, Boss-Sieg und Kampagnen ohne Attribut bleiben
+  // golden.
   const accent =
-    current?.kind === 'campaign'
+    current?.kind === 'campaign' || current?.kind === 'end-boss'
       ? campaignAccentById(state, current.event.campaignId)
       : current?.kind === 'class' && current.event.to.attributes.length > 0
         ? attributeColor(current.event.to.attributes[0])
+        : current?.kind === 'evolve'
+          ? companionGlow(current.event.to).color
+          : undefined
+  const sceneChestId =
+    current?.kind === 'boss'
+      ? (current.event.chestId ?? `boss:${current.event.weekStart}`)
+      : current?.kind === 'end-boss' && current.event.campaignComplete
+        ? (current.event.chestId ?? campaignChestId(current.event.campaignId))
         : undefined
-  const bossChestId = current?.kind === 'boss' ? (current.event.chestId ?? `boss:${current.event.weekStart}`) : undefined
-  const bossChest = bossChestId !== undefined ? state.chests.find((chest) => chest.id === bossChestId) : undefined
+  const sceneChest = sceneChestId !== undefined ? state.chests.find((chest) => chest.id === sceneChestId) : undefined
   return (
     <>
       {typeof document !== 'undefined' &&
@@ -305,7 +354,7 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
                 accent={accent}
                 today={state.today}
                 form={data.profile?.form}
-                bossChest={bossChest}
+                sceneChest={sceneChest}
                 onOpenChest={openChestDialog}
               />
             )}
@@ -317,6 +366,7 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
           chestId={chestDialog.chestId}
           open={chestDialog.open}
           onClose={closeChestDialog}
+          onOpened={() => cue(FEEDBACK_CUES.chest)}
           returnFocus={sceneContinueButton}
         />
       )}
@@ -328,6 +378,17 @@ export function GameFeedback({ classScenes = browserClassSceneStore }: { classSc
 /** „Weiter“ der sichtbaren Szene – Fokusziel, wenn „Öffnen“ nach dem Öffnen der Truhe verschwunden ist. */
 function sceneContinueButton(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[data-scene-continue]')
+}
+
+/**
+ * Ohne die Endgegner-Truhen, die in einer Endgegner-Szene derselben Änderung liegen (dort mit „Öffnen“); bleibt keine
+ * Truhe übrig, entfällt die Meldung.
+ */
+function withoutSceneChests(event: ChestFoundEvent, endBosses: readonly EndBossDefeatedEvent[]): ChestFoundEvent[] {
+  const inScene = new Set(endBosses.flatMap((victory) => (victory.chestId !== undefined ? [victory.chestId] : [])))
+  if (inScene.size === 0) return [event]
+  const chests = event.chests.filter((chest) => !inScene.has(chest.id))
+  return chests.length > 0 ? [{ ...event, chests }] : []
 }
 
 /** Ergänzt die gefundenen Truhen um ihren Fundort in Worten („📖 Lesen“). */
@@ -601,6 +662,8 @@ function useFeedbackToasts({ toast, dismiss }: ToastApi) {
           case 'defeat':
           case 'boss-defeated':
           case 'class-changed':
+          case 'end-boss-defeated':
+          case 'companion-evolved':
             break
         }
       }

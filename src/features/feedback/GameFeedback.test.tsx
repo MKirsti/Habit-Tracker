@@ -23,6 +23,7 @@ import {
 } from '../../data/repository'
 import type { HabitDraft } from '../../data/repository'
 import { ATTRIBUTES } from '../../domain/attributes'
+import { END_BOSSES } from '../../domain/combat/endBosses'
 import type { DayKey } from '../../domain/types'
 import { renderWithGame } from '../../test/renderWithGame'
 import { ToastProvider } from '../../ui'
@@ -382,13 +383,17 @@ describe('GameFeedback', () => {
 
     // Kapitel (+100) + Kampagne (+500) → 600 XP → Level 3 (Rang Lehrling).
     await setChapterCounter(quest.id, 'books', 1, TODAY)
+    const user = userEvent.setup()
+    // Phase 3b: Das letzte Kapitel ist der Endgegner – seine Siegesszene kommt zuerst.
+    const endBoss = await screen.findByRole('dialog', { name: `${END_BOSSES.custom.name} ist besiegt!` })
+    expect(screen.queryByRole('dialog', { name: 'Kampagne gemeistert!' })).not.toBeInTheDocument()
+    await user.click(within(endBoss).getByRole('button', { name: 'Weiter' }))
     const campaign = await screen.findByRole('dialog', { name: 'Kampagne gemeistert!' })
     expect(within(campaign).getByText('Ein Wochenende im Antiquariat')).toBeInTheDocument()
     expect(within(campaign).getByText('Der Weg des Gelehrten')).toBeInTheDocument()
     // Der Kapitel-Toast wartet, bis alle Szenen gesehen sind.
     expect(screen.queryByText('Kapitel abgeschlossen: Der erste Funke · +100 XP')).not.toBeInTheDocument()
 
-    const user = userEvent.setup()
     await user.click(within(campaign).getByRole('button', { name: 'Weiter' }))
     const levelUp = await screen.findByRole('dialog', { name: 'Level 3 erreicht!' })
     expect(within(levelUp).getByText('Lehrling')).toBeInTheDocument()
@@ -437,8 +442,14 @@ describe('GameFeedback', () => {
     expect(icon?.style.getPropertyValue('--accent')).toBe(silver)
     expect(document.querySelector('[data-confetti] [data-accent]')).toHaveAttribute('data-accent', silver)
 
-    // Kampagne gemeistert: Szene in Silber, Pokal und Belohnung golden.
+    // Endgegner (letztes Kapitel) und Kampagne gemeistert: beide Szenen in Silber, Pokal und Belohnung golden.
     await setChapterCounter(quest.id, 'second', 1, TODAY)
+    const endBoss = await screen.findByRole('dialog', { name: `${END_BOSSES.monk.name} ist besiegt!` })
+    const endBossRoot = endBoss.closest<HTMLElement>('[data-tone]')
+    expect(endBossRoot).toHaveAttribute('data-tone', 'accent')
+    expect(endBossRoot?.style.getPropertyValue('--accent')).toBe(silver)
+    expect(endBoss.querySelector('[data-end-boss-campaign]')).toHaveTextContent('📿 Die stille Probe')
+    await userEvent.setup().click(within(endBoss).getByRole('button', { name: 'Weiter' }))
     const scene = await screen.findByRole('dialog', { name: 'Kampagne gemeistert!' })
     const root = scene.closest<HTMLElement>('[data-tone]')
     expect(root).toHaveAttribute('data-tone', 'accent')
@@ -460,6 +471,9 @@ describe('GameFeedback', () => {
     })
     await renderFeedback()
     await setChapterCounter(quest.id, 'only', 1, TODAY)
+    const endBoss = await screen.findByRole('dialog', { name: `${END_BOSSES.custom.name} ist besiegt!` })
+    expect(endBoss.closest('[data-tone]')).toHaveAttribute('data-tone', 'gold')
+    await userEvent.setup().click(within(endBoss).getByRole('button', { name: 'Weiter' }))
     const scene = await screen.findByRole('dialog', { name: 'Kampagne gemeistert!' })
     const root = scene.closest<HTMLElement>('[data-tone]')
     expect(root).toHaveAttribute('data-tone', 'gold')

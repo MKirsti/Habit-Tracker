@@ -165,8 +165,9 @@ describe('GameFeedback – Truhe gefunden', () => {
 
 describe('GameFeedback – Klassenwechsel', () => {
   /**
-   * Intelligenz erreicht bis Sonntag, 25. Oktober Level 3 (Magierin), Weisheit bis Sonntag, 1. November → ab Montag
-   * Erzmagierin.
+   * Intelligenz erreicht bis Sonntag, 18. Oktober Level 3 (Magierin), Weisheit holt bis Sonntag, 1. November auf Level 3
+   * auf → ab Montag Erzmagierin (die normale Ermittlung ergibt eine Hybridklasse mit Intelligenz – die entsteht trotz
+   * Klassen-Trägheit, Nachbesserung 3a).
    */
   async function heroWhoAscends(form: GrammaticalForm) {
     await saveProfile({ name: 'Aria', avatar: '🧙', createdDay: '2026-10-01', form })

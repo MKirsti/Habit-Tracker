@@ -2,8 +2,9 @@
  * Anzeige der Heldenklasse (Held → Übersicht, Klassen-Karte): warum diese Klasse, Klassen-Bonus, Angriffskraft je
  * Attribut, die Klasse ab nächster Woche und mögliche nächste Klassen. Rein (ohne React), damit einzeln testbar.
  *
- * Grundlage sind die Regeln aus `domain/combat/classes.ts` (`heroClassIdFor`) – hier wird nichts neu entschieden, nur
- * erklärt und vorausgerechnet. Die Klasse der Woche hängt am Stand zu Wochenbeginn (`HeroClassState.attributeLevels`);
+ * Grundlage sind die Regeln aus `domain/combat/classes.ts` (`heroClassIdFor`, mit Trägheit `heroClassIdWithInertia`) –
+ * hier wird nichts neu entschieden, nur erklärt und vorausgerechnet. Hält die Trägheit eine Klasse, die neu ermittelt
+ * anders wäre, sagt „Warum“ genau das (statt einen Vorsprung zu behaupten, den es nicht gibt). Die Klasse der Woche hängt am Stand zu Wochenbeginn (`HeroClassState.attributeLevels`);
  * Vorschau und Wege rechnen mit dem **aktuellen** Stand (`GameState.attributes`), denn der zählt ab dem nächsten Montag.
  *
  * Texte in Du-Form und für alle Sprachformen gleich (Klassennamen kommen in der Form des Helden über
@@ -13,7 +14,13 @@
 import { ATTRIBUTES, ATTRIBUTE_IDS } from '../../domain/attributes'
 import { BALANCING } from '../../domain/balancing'
 import { ATTACK_NAMES } from '../../domain/combat/classDefinitions'
-import { classDefinition, heroClassIdFor, normalizeLevels, topAttributes } from '../../domain/combat/classes'
+import {
+  classDefinition,
+  heroClassIdFor,
+  heroClassIdWithInertia,
+  normalizeLevels,
+  topAttributes,
+} from '../../domain/combat/classes'
 import { xpToNextAttributeLevel } from '../../domain/leveling'
 import type { AttributeId, HeroClassDefinition, HeroClassId, HeroClassState, LevelInfo } from '../../domain/types'
 import { formatNumber } from '../../ui/format'
@@ -42,6 +49,9 @@ function levelWord(count: number): string {
   return count === 1 ? 'ein Level' : `${formatNumber(count)} Level`
 }
 
+/** Schluss der Erklärung, wenn die Trägheit die Klasse hält. */
+const INERTIA_TEXT = 'nah genug, dass deine Klasse bleibt. So springt sie nicht bei jedem Level hin und her.'
+
 /** Warum der Held diese Woche diese Klasse hat – nach den Regeln aus `classes.ts`. */
 export function classReason(heroClass: Pick<HeroClassState, 'definition' | 'attributeLevels'>): ClassReason {
   const levels = normalizeLevels(heroClass.attributeLevels)
@@ -52,10 +62,16 @@ export function classReason(heroClass: Pick<HeroClassState, 'definition' | 'attr
   ]
   const { classMinLevel } = BALANCING.combat
   const attributes = heroClass.definition.attributes
+  // Neu ermittelt wäre es eine andere Klasse – die der Vorwoche bleibt (Trägheit gegen Flackern).
+  const keptByInertia = attributes.length > 0 && heroClassIdFor(levels) !== heroClass.definition.id
 
   if (attributes.length === 2) {
     const [a, b] = attributes
     const gap = Math.abs(levels[a] - levels[b])
+    if (keptByInertia) {
+      const apart = gap === 0 ? 'liegen gleichauf' : `liegen ${levelWord(gap)} auseinander`
+      return { top, text: `${attributeName(a)} und ${attributeName(b)} ${apart} – ${INERTIA_TEXT}` }
+    }
     const text =
       gap === 0
         ? `${attributeName(a)} und ${attributeName(b)} sind gleich stark – beide auf Level ${formatNumber(levels[a])}.`
@@ -65,6 +81,11 @@ export function classReason(heroClass: Pick<HeroClassState, 'definition' | 'attr
 
   if (attributes.length === 1) {
     const [main] = attributes
+    if (keptByInertia && main !== first) {
+      const behind = Math.max(0, levels[first] - levels[main])
+      const position = behind === 0 ? 'liegt gleichauf mit' : `liegt nur ${levelWord(behind)} hinter`
+      return { top, text: `${attributeName(main)} ${position} ${attributeName(first)} – ${INERTIA_TEXT}` }
+    }
     const runnerUp = main === first ? top[1] : top[0]
     if (runnerUp.level < classMinLevel) {
       return { top, text: `${attributeName(main)} hat als einziges Attribut Level ${formatNumber(classMinLevel)} erreicht.` }
@@ -163,14 +184,15 @@ function levelsOf(attributes: Readonly<Record<AttributeId, AttributeProgress>>):
 
 /**
  * Die Klasse, die der aktuelle Stand ab dem nächsten Montag ergäbe – nur, wenn sie sich von der laufenden Woche
- * unterscheidet. (Bis Sonntagabend kann sich der Stand noch ändern; Klassen wechseln nur zu Wochenbeginn.)
+ * unterscheidet. (Bis Sonntagabend kann sich der Stand noch ändern; Klassen wechseln nur zu Wochenbeginn.) Mit
+ * Trägheit wie die Engine: Passt die Klasse dieser Woche noch annähernd, bleibt sie.
  */
 export function upcomingClass(
   heroClass: Pick<HeroClassState, 'definition'>,
   attributes: Readonly<Record<AttributeId, AttributeProgress>>,
   definitions?: Readonly<Partial<Record<HeroClassId, HeroClassDefinition>>>,
 ): HeroClassDefinition | undefined {
-  const next = heroClassIdFor(levelsOf(attributes))
+  const next = heroClassIdWithInertia(levelsOf(attributes), heroClass.definition.id)
   return next === heroClass.definition.id ? undefined : classDefinition(next, definitions)
 }
 
@@ -201,15 +223,20 @@ export function nextClassPaths(
   attributes: Readonly<Record<AttributeId, AttributeProgress>>,
   limit = 2,
   definitions?: Readonly<Partial<Record<HeroClassId, HeroClassDefinition>>>,
+  /** Klasse dieser Woche: Mit ihr gilt die Trägheit (wie in der Engine) – ohne sie die normale Ermittlung. */
+  classId?: HeroClassId,
 ): ClassPath[] {
   const levels = levelsOf(attributes)
-  const current = heroClassIdFor(levels)
+  const classFor = (candidate: Readonly<Record<AttributeId, number>>, previous: HeroClassId | undefined) =>
+    previous !== undefined ? heroClassIdWithInertia(candidate, previous) : heroClassIdFor(candidate)
+  // Die Klasse ab Montag – von ihr aus hält die Trägheit in den Wochen danach.
+  const current = classFor(levels, classId)
   const byClass = new Map<HeroClassId, ClassPath & { order: number }>()
   ATTRIBUTE_IDS.forEach((attribute, order) => {
     const progress: AttributeProgress = attributes[attribute] ?? { level: 1, xpIntoLevel: 0, xpForNextLevel: xpToNextAttributeLevel(1) }
     const start = levels[attribute]
     for (let targetLevel = start + 1; targetLevel <= start + MAX_PATH_STEPS; targetLevel++) {
-      const id = heroClassIdFor({ ...levels, [attribute]: targetLevel })
+      const id = classFor({ ...levels, [attribute]: targetLevel }, classId !== undefined ? current : undefined)
       if (id === current) continue
       const xpNeeded = xpUntil({ ...progress, level: start }, targetLevel)
       const known = byClass.get(id)

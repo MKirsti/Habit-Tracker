@@ -8,13 +8,14 @@
  * Neue **optionale** Felder (z. B. `scheduleHistory`, `pauses` einer Quest, `deletedHabits`, `blueprint` und
  * `sharedHabitIds` einer Kampagne, die Phase-2a-Listen `rewards`, `purchases`, `sideQuests` und
  * `achievementUnlocks`, Phase 2b: `hpLedger`, `restPeriods`, `settings.penalties`, `settings.hpIntroSeen`, Phase 3a:
- * `bossVictories`, `chests`, `cosmeticUnlocks`, `settings.combatIntroSeen`, `profile.form/titleId/frameId`)
+ * `bossVictories`, `chests`, `cosmeticUnlocks`, `settings.combatIntroSeen`, `profile.form/titleId/frameId`, Phase 3b:
+ * `journalNotes`, `profile.companion`, `settings.sound/haptics/companionIntroSeen/weeklyReviewSeen`)
  * erhöhen die Schema-Version nicht: Ältere Backups ohne sie bleiben gültig.
  */
 import { z } from 'zod'
 import { ATTRIBUTE_IDS } from '../domain/attributes'
-import { DIFFICULTIES } from '../domain/balancing'
-import { BALANCING } from '../domain/balancing'
+import { BALANCING, DIFFICULTIES } from '../domain/balancing'
+import { COMPANION_SPECIES } from '../domain/companion'
 import { addDays, compareDays, diffDays, isoWeekday, isValidDayKey, toDayKey } from '../domain/dates'
 import { nextUnsettledDay, sortedLedger } from '../domain/hp'
 import type {
@@ -22,6 +23,7 @@ import type {
   ChapterMetric,
   ChestRarity,
   ChestSource,
+  CompanionSpecies,
   DayKey,
   DayScore,
   GameData,
@@ -38,6 +40,9 @@ import {
   GRAMMATICAL_FORMS,
   ITEM_IDS,
   loadGameData,
+  MAX_COMPANION_NAME_LENGTH,
+  MAX_JOURNAL_MOOD_LENGTH,
+  MAX_JOURNAL_NOTE_LENGTH,
   MAX_REST_PERIOD_DAYS,
   MAX_REWARD_PRICE,
   resetAllData,
@@ -336,7 +341,7 @@ const bossVictorySchema = z.object({
 })
 
 /** Fundorte und Seltenheiten von Truhen – `satisfies` hält die Listen vollständig zu den Typen. */
-const CHEST_SOURCE_SET = { boss: true, quest: true, chapter: true } satisfies Record<ChestSource, true>
+const CHEST_SOURCE_SET = { boss: true, quest: true, chapter: true, campaign: true } satisfies Record<ChestSource, true>
 const CHEST_SOURCES = Object.keys(CHEST_SOURCE_SET) as [ChestSource, ...ChestSource[]]
 const CHEST_RARITY_SET = { common: true, uncommon: true, rare: true, legendary: true } satisfies Record<ChestRarity, true>
 const CHEST_RARITIES = Object.keys(CHEST_RARITY_SET) as [ChestRarity, ...ChestRarity[]]
@@ -367,6 +372,38 @@ const cosmeticUnlockSchema = z.object({
   source: z.literal('chest'),
 })
 
+/**
+ * Tagebuch-Notiz (`JournalNote`, Phase 3b): wie im Repository – Text höchstens `MAX_JOURNAL_NOTE_LENGTH` Zeichen,
+ * Stimmung ein einzelnes Emoji; eine Notiz ohne Text braucht eine Stimmung (sonst gäbe es sie nicht).
+ */
+const journalNoteSchema = z
+  .object({
+    day: dayKeySchema,
+    text: z.string().max(MAX_JOURNAL_NOTE_LENGTH),
+    mood: z
+      .string()
+      .min(1)
+      .max(MAX_JOURNAL_MOOD_LENGTH)
+      .refine((mood) => mood.trim() === mood && !/\s/.test(mood), { error: 'Die Stimmung ist ein einzelnes Emoji.' })
+      .optional(),
+    updatedAt: z.number(),
+  })
+  .refine((note) => note.text.trim() !== '' || note.mood !== undefined, {
+    path: ['text'],
+    error: 'Eine Notiz braucht Text oder eine Stimmung.',
+  })
+
+/** Gewählter Gefährte (`CompanionChoice`, Phase 3b): bekannte Art, Name wie im Repository (getrimmt, 1–20 Zeichen). */
+const companionSchema = z.object({
+  species: z.enum(COMPANION_SPECIES as [CompanionSpecies, ...CompanionSpecies[]]),
+  name: z
+    .string()
+    .refine((name) => name.trim() === name && name !== '' && name.length <= MAX_COMPANION_NAME_LENGTH, {
+      error: `Der Name des Gefährten braucht 1 bis ${MAX_COMPANION_NAME_LENGTH} Zeichen.`,
+    }),
+  chosenDay: dayKeySchema,
+})
+
 const profileSchema = z.object({
   name: z.string(),
   avatar: z.string(),
@@ -377,6 +414,8 @@ const profileSchema = z.object({
   frameId: idSchema.optional(),
   /** Phase 3a: nach einer Umbenennung festgehaltener Helden-Seed (Boss-Wahl, Truhen) – nicht leer. */
   heroSeed: idSchema.optional(),
+  /** Phase 3b: gewählter Gefährte. */
+  companion: companionSchema.optional(),
 })
 
 const settingsSchema = z.object({
@@ -387,6 +426,11 @@ const settingsSchema = z.object({
   hpIntroSeen: z.boolean().optional(),
   /** Phase 3a: Einführung „Neu: Klassen, Bosse & Beute“ gesehen. */
   combatIntroSeen: z.boolean().optional(),
+  /** Phase 3b: Klänge, Vibration, Einführung „Neu: Gefährten“, zuletzt gesehener Wochenrückblick (Montag). */
+  sound: z.boolean().optional(),
+  haptics: z.boolean().optional(),
+  companionIntroSeen: z.boolean().optional(),
+  weeklyReviewSeen: dayKeySchema.optional(),
 })
 
 /** Meldet doppelte IDs innerhalb einer Liste als Fehler am betroffenen Eintrag. */
@@ -415,13 +459,19 @@ function checkUniqueWeeks(victories: { weekStart: string }[], ctx: z.RefinementC
   })
 }
 
-/** Höchstens ein abgerechneter Eintrag pro Spieltag (Schlüssel der Tabelle `hpLedger`). */
-function checkUniqueDays(entries: { day: string }[], ctx: z.RefinementCtx): void {
+/**
+ * Höchstens ein Eintrag pro Spieltag (Schlüssel der Tabellen `hpLedger` und – Phase 3b – `journalNotes`).
+ * @param message Meldung für einen doppelten Tag.
+ */
+function checkUniqueDays(
+  entries: { day: string }[],
+  path: PropertyKey,
+  message: (day: string) => string,
+  ctx: z.RefinementCtx,
+): void {
   const seen = new Set<string>()
   entries.forEach((entry, index) => {
-    if (seen.has(entry.day)) {
-      ctx.addIssue({ code: 'custom', path: ['hpLedger', index, 'day'], message: `Der Tag ${entry.day} ist doppelt abgerechnet.` })
-    }
+    if (seen.has(entry.day)) ctx.addIssue({ code: 'custom', path: [path, index, 'day'], message: message(entry.day) })
     seen.add(entry.day)
   })
 }
@@ -462,6 +512,7 @@ export const gameDataSchema = z
     bossVictories: z.array(bossVictorySchema).optional(),
     chests: z.array(chestSchema).optional(),
     cosmeticUnlocks: z.array(cosmeticUnlockSchema).optional(),
+    journalNotes: z.array(journalNoteSchema).optional(),
   })
   .superRefine((data, ctx) => {
     checkUniqueIds(data.habits, ['habits'], ctx)
@@ -472,7 +523,10 @@ export const gameDataSchema = z
     if (data.purchases) checkUniqueIds(data.purchases, ['purchases'], ctx)
     if (data.sideQuests) checkUniqueIds(data.sideQuests, ['sideQuests'], ctx)
     if (data.achievementUnlocks) checkUniqueIds(data.achievementUnlocks, ['achievementUnlocks'], ctx)
-    if (data.hpLedger) checkUniqueDays(data.hpLedger, ctx)
+    if (data.hpLedger) checkUniqueDays(data.hpLedger, 'hpLedger', (day) => `Der Tag ${day} ist doppelt abgerechnet.`, ctx)
+    if (data.journalNotes) {
+      checkUniqueDays(data.journalNotes, 'journalNotes', (day) => `Für den ${day} gibt es schon eine Notiz.`, ctx)
+    }
     if (data.restPeriods) {
       checkUniqueIds(data.restPeriods, ['restPeriods'], ctx)
       checkRestOverlaps(data.restPeriods, ctx)
@@ -554,7 +608,8 @@ export function parseBackup(json: unknown): ParseBackupResult {
  * Onboarding-Kampagne (siehe `legacyOnboardingRef`) – sonst ließe sich der Gelehrte danach ein zweites Mal
  * starten. Alle anderen Daten kommen unverändert zurück. Backups ohne die Phase-2a-Listen (Belohnungen,
  * Einlösungen, Nebenquests, Erfolge) bzw. ohne die Phase-2b-Listen (abgerechnete Tage, Rast & Urlaub) und
- * Phase-3a-Listen (Boss-Siege, Truhen, Titel & Rahmen aus Truhen) hinterlassen diese Tabellen leer. Ein Backup ohne `settings.penalties` startet wie nach dem Update auf Phase 2b:
+ * Phase-3a-Listen (Boss-Siege, Truhen, Titel & Rahmen aus Truhen) bzw. ohne Tagebuch-Notizen (Phase 3b) hinterlassen
+ * diese Tabellen leer. Ein Backup ohne `settings.penalties` startet wie nach dem Update auf Phase 2b:
  * abgerechnet wird erst ab dem nächsten `settleHpDays` – nie rückwirkend.
  *
  * Lebenspunkte: Tage nach dem Export kennt das Backup nicht (vielleicht wurde auf dem alten Gerät weitergespielt).
@@ -592,6 +647,7 @@ export async function restoreBackup(backup: BackupFile, database: QuestlogDB = d
     if (data.bossVictories) await database.bossVictories.bulkAdd(data.bossVictories)
     if (data.chests) await database.chests.bulkAdd(data.chests)
     if (data.cosmeticUnlocks) await database.cosmeticUnlocks.bulkAdd(data.cosmeticUnlocks)
+    if (data.journalNotes) await database.journalNotes.bulkAdd(data.journalNotes)
   })
 }
 

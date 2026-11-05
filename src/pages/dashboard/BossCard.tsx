@@ -4,27 +4,34 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router'
-import type { WeeklyBossState } from '../../domain/types'
+import { ATTRIBUTES } from '../../domain/attributes'
+import type { AttackEvent, CompanionState, WeeklyBossState } from '../../domain/types'
+import { companionGlow } from '../../features/feedback/companionTheme'
+import { FEEDBACK_CUES, useFeedbackCue } from '../../features/feedback/feedbackSounds'
+import { ParticleBurst } from '../../features/feedback/ParticleBurst'
 import { Badge, Button, Card, ProgressBar, cn } from '../../ui'
 import { BOSS_COLOR, bossVars } from './bossTheme'
 import {
   CHEST_ON_VICTORY_TEXT,
   COLLECTION_PATH,
   NEXT_BOSS_TEXT,
+  COMPANION_HIT_VERB,
   WEAK_SPOT_TEXT,
-  attackIcon,
   bossHpNumbers,
   bossHpRatio,
   bossHpSpoken,
   damageLabel,
   daysLeftText,
+  hitIcon,
   hitSpoken,
+  isCompanionHit,
   noBossText,
   unopenedChestsLabel,
   unopenedChestsSpoken,
   weaknessInfo,
 } from './combatText'
 import type { LastWeekNote } from './combatText'
+import { CompanionBadge } from './CompanionBadge'
 import { HIT_DURATION_MS, useBossHits, useOnScreen } from './useBossHits'
 import type { BossHit } from './useBossHits'
 
@@ -41,6 +48,8 @@ export interface BossCardProps {
   onBackfill?: () => void
   /** Einstellung „Effekte“: ohne sie steigen Treffer nicht auf und das Symbol wackelt nicht (nur Ein-/Ausblenden). */
   effects: boolean
+  /** Phase 3b: der Gefährte (`state.companion`) – kämpft mit und steht klein an der Karte. */
+  companion?: CompanionState
 }
 
 /**
@@ -55,16 +64,36 @@ export interface BossCardProps {
  * Ohne Effekte (`settings.effects`) bleibt alles ruhig: kein Aufsteigen, kein Wackeln, der Treffer wird nur kurz
  * eingeblendet. Vorgelesen wird jeder Treffer über eine höfliche Live-Region.
  * Auf dem Handy kompakt (~85 px), ab `md` mit Beschreibung.
+ *
+ * Phase 3b: Der Gefährte steht klein rechts unten an der Karte (Emoji im Stufen-Glanz, Name, schlafend mit 💤) und
+ * springt an Perfekten Tagen mit an – sein Treffer erscheint wie die anderen („🦊 Flink springt mit an −8“), dabei hüpft
+ * er. Glanz: Jeder Treffer lässt Funken vom Boss-Symbol sprühen (in der Farbe des Attributs, an der Schwachstelle
+ * golden); mit Klang & Vibration, wenn eingeschaltet (den entscheidenden Treffer übernimmt die Siegesszene).
  */
-export function BossCard({ boss, unopenedChests, hasQuests, lastWeek, onBackfill, effects }: BossCardProps) {
+export function BossCard({ boss, unopenedChests, hasQuests, lastWeek, onBackfill, effects, companion }: BossCardProps) {
   const titleId = useId()
   const { hits, dismiss } = useBossHits(boss)
+  const cue = useFeedbackCue()
   // Beobachtet wird die ganze Zeile (Symbol, Name, Balken) – auch im Sieg, damit der letzte Treffer zu sehen ist.
   const [row, setRow] = useState<HTMLDivElement | null>(null)
   const rowOnScreen = useOnScreen(row)
   const latestHit = hits.at(-1)
+  const latestCompanionHit = hits.findLast((hit) => isCompanionHit(hit.attack))
+  const latestQuestHit = hits.findLast((hit) => !isCompanionHit(hit.attack))
+
+  // Klang & Vibration je neuem Treffer (mehrere im selben Schritt: einmal). Den Siegtreffer übernimmt die Siegesszene.
+  const defeated = boss?.defeated ?? false
+  const sounded = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (latestHit === undefined || sounded.current === latestHit.id) return
+    sounded.current = latestHit.id
+    if (!defeated) cue(FEEDBACK_CUES.bossHit)
+  }, [latestHit, defeated, cue])
 
   const chestLink = unopenedChests > 0 ? <ChestLink count={unopenedChests} /> : null
+  const companionBadge = companion ? (
+    <CompanionBadge companion={companion} effects={effects} hopKey={latestCompanionHit?.id} />
+  ) : null
   const footer = lastWeek ? <LastWeekStrip note={lastWeek} onBackfill={onBackfill} /> : null
 
   if (boss === undefined) {
@@ -92,7 +121,12 @@ export function BossCard({ boss, unopenedChests, hasQuests, lastWeek, onBackfill
             </h2>
             <p className="text-xs text-muted md:text-sm">{text}</p>
           </div>
-          {chestLink}
+          {(chestLink || companionBadge) && (
+            <div className="flex shrink-0 flex-col items-end gap-1.5 md:flex-row md:items-center md:gap-2">
+              {companionBadge}
+              {chestLink}
+            </div>
+          )}
         </div>
         {footer}
       </Card>
@@ -123,7 +157,13 @@ export function BossCard({ boss, unopenedChests, hasQuests, lastWeek, onBackfill
         className="pointer-events-none absolute inset-y-0 left-0 w-40 rounded-l-2xl bg-radial-[at_15%_50%] from-(--boss-20) to-transparent to-70% md:w-56"
       />
       <div ref={setRow} className="relative flex items-start gap-3 px-3 pt-3 pb-2.5 md:gap-5 md:px-6 md:pt-5 md:pb-4">
-        <BossIcon icon={boss.boss.icon} defeated={boss.defeated} hitKey={effects ? latestHit?.id : undefined} />
+        <BossIcon
+          icon={boss.boss.icon}
+          defeated={boss.defeated}
+          hitKey={effects ? latestHit?.id : undefined}
+          sparks={effects ? latestQuestHit ?? latestHit : undefined}
+          companionColor={companion ? companionGlow(companion.stage).color : undefined}
+        />
 
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
@@ -195,7 +235,12 @@ export function BossCard({ boss, unopenedChests, hasQuests, lastWeek, onBackfill
               </>
             )}
             {boss.defeated && !chestLink && <span className="text-muted">{NEXT_BOSS_TEXT}</span>}
-            {chestLink && <span className="ml-auto">{chestLink}</span>}
+            {(chestLink || companionBadge) && (
+              <span className="ml-auto flex items-center gap-2">
+                {companionBadge}
+                {chestLink}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -210,10 +255,43 @@ export function BossCard({ boss, unopenedChests, hasQuests, lastWeek, onBackfill
   )
 }
 
-/** Boss-Symbol im violetten Kreis; wackelt kurz bei jedem Treffer (nur mit Effekten), besiegt entsättigt mit Pokal. */
-function BossIcon({ icon, defeated, hitKey }: { icon: string; defeated: boolean; hitKey?: string }) {
+/** Farben der Funken eines Treffers: das Attribut (Gefährte: sein Stufen-Glanz), an der Schwachstelle golden. */
+function sparkColors(attack: AttackEvent, companionColor: string | undefined): string[] {
+  if (attack.weakness) return ['#f0c96a', '#fff1c4', '#d4a548']
+  const color = isCompanionHit(attack) ? (companionColor ?? '#f0c96a') : (ATTRIBUTES[attack.attribute]?.color ?? '#ece0c8')
+  return [color, '#ece0c8', color]
+}
+
+/**
+ * Boss-Symbol im violetten Kreis; wackelt kurz bei jedem Treffer und sprüht Funken (nur mit Effekten), besiegt
+ * entsättigt mit Pokal.
+ */
+function BossIcon({
+  icon,
+  defeated,
+  hitKey,
+  sparks,
+  companionColor,
+}: {
+  icon: string
+  defeated: boolean
+  hitKey?: string
+  /** Treffer, dessen Funken sprühen (Schwachstelle: mehr und golden). */
+  sparks?: BossHit
+  companionColor?: string
+}) {
   return (
     <div className="relative shrink-0" aria-hidden="true">
+      {sparks && (
+        <ParticleBurst
+          burstKey={sparks.id}
+          count={sparks.attack.weakness ? 14 : 9}
+          colors={sparkColors(sparks.attack, companionColor)}
+          distance={sparks.attack.weakness ? 46 : 36}
+          size={sparks.attack.weakness ? 5 : 4}
+          duration={0.65}
+        />
+      )}
       <motion.span
         key={hitKey ?? 'idle'}
         initial={false}
@@ -256,7 +334,7 @@ function HitFloat({ hit, onDone, still }: { hit: BossHit; onDone: (id: string) =
   return (
     <motion.span
       layout={still ? false : 'position'}
-      data-boss-hit={attack.weakness ? 'weak' : 'normal'}
+      data-boss-hit={isCompanionHit(attack) ? 'companion' : attack.weakness ? 'weak' : 'normal'}
       data-boss-hit-motion={still ? 'still' : 'float'}
       initial={still ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.85 }}
       animate={
@@ -267,6 +345,7 @@ function HitFloat({ hit, onDone, still }: { hit: BossHit; onDone: (id: string) =
         'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 font-display text-xs font-bold whitespace-nowrap md:text-sm',
         'bg-bg-deep/80 ring-1 ring-(--boss-50) [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]',
         attack.weakness ? 'text-gold-bright ring-gold/60' : 'text-parchment',
+        isCompanionHit(attack) && 'ring-gold/45',
       )}
     >
       <HitContent hit={hit} />
@@ -276,10 +355,12 @@ function HitFloat({ hit, onDone, still }: { hit: BossHit; onDone: (id: string) =
 
 function HitContent({ hit }: { hit: BossHit }) {
   const { attack } = hit
+  const companion = isCompanionHit(attack)
   return (
     <>
-      <span>{attackIcon(attack.attribute)}</span>
+      <span>{hitIcon(attack)}</span>
       <span className="font-semibold">{attack.attackName}</span>
+      {companion && <span className="font-normal text-parchment/85">{COMPANION_HIT_VERB}</span>}
       <span className="tabular-nums">{damageLabel(attack.damage)}</span>
       {attack.weakness && (
         <span className="rounded-full bg-gold/20 px-1.5 text-[0.625rem] font-semibold tracking-wide text-gold-bright uppercase">

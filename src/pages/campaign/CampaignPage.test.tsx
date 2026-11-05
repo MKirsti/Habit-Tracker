@@ -265,7 +265,8 @@ describe('CampaignPage – ohne Kampagne', () => {
 
 describe('CampaignPage – Kapitel', () => {
   it('zählt Zähler-Kapitel hoch und runter', async () => {
-    await createMainQuest(campaign([COUNTER]))
+    // Zwei Kapitel: Das letzte ist der Endgegner (eigene Darstellung, siehe „Endgegner“).
+    await createMainQuest(campaign([COUNTER, MANUAL]))
     const { user } = await renderPage()
     const minus = screen.getByRole('button', { name: 'Bücher beendet verringern' })
     const plus = screen.getByRole('button', { name: 'Bücher beendet erhöhen' })
@@ -508,7 +509,8 @@ describe('CampaignPage – Kampagne', () => {
     await renderPage()
     expect(screen.getByRole('heading', { name: 'Kampagne gemeistert!' })).toBeInTheDocument()
     expect(screen.getAllByText('Neue Laufschuhe').length).toBeGreaterThan(0)
-    expect(screen.getByText('Abgeschlossen am 1. Nov.')).toBeInTheDocument()
+    // Das einzige Kapitel ist zugleich der Endgegner – besiegt statt „abgeschlossen“.
+    expect(screen.getByText('Besiegt am 1. Nov.')).toBeInTheDocument()
     expect(screen.getByText(byFullText('1 / 1 Kapitel abgeschlossen'))).toBeInTheDocument()
     expect(screen.getByText('100 %')).toBeInTheDocument()
     expect(screen.getByText('geschafft')).toBeInTheDocument()

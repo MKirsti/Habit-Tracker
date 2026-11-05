@@ -1,49 +1,17 @@
 import { CalendarClock, MoonStar, Sparkles } from 'lucide-react'
 import { useState } from 'react'
 import { useGameContext } from '../../app/gameContext'
-import { updateSettings } from '../../data/repository'
 import { compareDays, formatDay, toDayKey } from '../../domain/dates'
-import type { Completion, DayKey, Settings } from '../../domain/types'
-import { Card, ConfirmDialog, Select, Switch, useToast } from '../../ui'
+import type { Completion, DayKey } from '../../domain/types'
+import { Card, ConfirmDialog, Select, Switch } from '../../ui'
 import type { SelectOption } from '../../ui'
-import { errorMessage } from './errorMessage'
 import { dayStartBackText, dayStartLabel } from './settingsText'
+import { useSetting } from './useSetting'
 
 const HOUR_OPTIONS: SelectOption<number>[] = Array.from({ length: 13 }, (_, hour) => ({
   value: hour,
   label: dayStartLabel(hour),
 }))
-
-/**
- * Einstellung mit sofortiger Anzeige: Der gewählte Wert erscheint direkt, bis die Datenbank
- * (Live-Query) ihn bestätigt. Schlägt das Speichern fehl, springt die Anzeige zurück und ein Toast erscheint.
- */
-function useSetting<K extends keyof Settings>(key: K): [Settings[K], (value: Settings[K]) => Promise<void>] {
-  const { data } = useGameContext()
-  const { toast } = useToast()
-  const stored = data.settings[key]
-  // `from` = gespeicherter Wert beim Ändern. Sobald sich der gespeicherte Wert ändert, gilt wieder er.
-  const [pending, setPending] = useState<{ value: Settings[K]; from: Settings[K] } | null>(null)
-  // Die Vormerkung ist mit der ersten Änderung des gespeicherten Werts erledigt und wird verworfen –
-  // sonst würde sie wieder auftauchen, sobald der Wert von außen (z. B. durch ein wiederhergestelltes
-  // Backup) auf den alten Stand zurückspringt, und die Anzeige zeigte etwas anderes als gespeichert ist.
-  if (pending !== null && pending.from !== stored) setPending(null)
-  const shown = pending !== null && pending.from === stored ? pending.value : stored
-
-  async function change(value: Settings[K]) {
-    const next = { value, from: stored }
-    setPending(next)
-    try {
-      await updateSettings({ [key]: value } as Partial<Settings>)
-    } catch (error) {
-      // Nur die eigene Vormerkung zurücknehmen – eine inzwischen neuere Auswahl bleibt stehen.
-      setPending((current) => (current === next ? null : current))
-      toast({ tone: 'error', title: 'Einstellung nicht gespeichert', description: errorMessage(error) })
-    }
-  }
-
-  return [shown, change]
-}
 
 /** Frühester Spieltag nach `day`, für den schon etwas erfasst ist – oder `undefined`. */
 function firstRecordedDayAfter(completions: readonly Completion[], day: DayKey): DayKey | undefined {

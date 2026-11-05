@@ -11,6 +11,7 @@ import { AttributesCard } from './dashboard/AttributesCard'
 import { BossCard } from './dashboard/BossCard'
 import { CampaignSection } from './dashboard/CampaignCard'
 import { CombatIntroCard } from './dashboard/CombatIntroCard'
+import { CompanionIntroCard } from './dashboard/CompanionIntroCard'
 import { lastWeekNote } from './dashboard/combatText'
 import {
   dayOffsetWord,
@@ -24,11 +25,13 @@ import { YesterdayNotice } from './dashboard/DayPanel'
 import { HeroCard } from './dashboard/HeroCard'
 import { HpIntroCard } from './dashboard/HpIntroCard'
 import { backfillStanding, canUndoRestToday, goodDayMilestone, yesterdayPreview } from './dashboard/hpText'
+import { JournalNoteEntry } from './dashboard/JournalNoteEntry'
 import { QuestList } from './dashboard/QuestList'
 import { RestDayAction } from './dashboard/RestDayAction'
 import { SideQuestSection } from './dashboard/SideQuestSection'
 import { useQuestActions } from './dashboard/useQuestActions'
 import { useRestDayActions } from './dashboard/useRestDayActions'
+import { WeeklyReviewCard } from './dashboard/WeeklyReviewCard'
 import { usePendingFocus } from './treasury/focus'
 
 /**
@@ -48,6 +51,11 @@ import { usePendingFocus } from './treasury/focus'
  * Anzeige beim Abhaken, Link zu ungeöffneten Truhen und – am Montag – dem Hinweis zum Boss der Vorwoche; einmalige
  * Einführung „Neu: Klassen, Bosse & Beute“ mit Wahl der Sprachform. Es steht immer höchstens eine Einführungskarte da
  * (die Lebenspunkte zuerst).
+ *
+ * Phase 3b: Der Gefährte steht klein an der Boss-Karte und kämpft mit; einmalige Einführung „Neu: Gefährten“ mit
+ * schneller Auswahl (nach den anderen Einführungen); der Wochenrückblick „Bericht des Gildenmeisters“ an derselben
+ * Stelle, bis er weggeklickt wird (nie zusammen mit einer Einführung – höchstens eine solche Karte); unten im Tag der
+ * zugeklappte Eintrag „Notiz zu heute“. Abhaken klingt bzw. vibriert, wenn eingeschaltet.
  */
 export function DashboardPage() {
   const { data, today, state } = useGameContext()
@@ -65,7 +73,7 @@ export function DashboardPage() {
       day === today ? state.todayState : withCurrentWeekStreaks(getDayState(data, day), state.todayState, today),
     [day, today, state.todayState, data],
   )
-  const actions = useQuestActions(day)
+  const actions = useQuestActions(day, dayState.habits)
   const restActions = useRestDayActions(today)
   const showQuests = useMemo(() => hasActiveHabits(data, today), [data, today])
   // Nach „Nachtragen“ in der Vorschau: den Nachtrag-Hinweis fokussieren (der Knopf verschwindet).
@@ -144,8 +152,13 @@ export function DashboardPage() {
     bossById,
     canBackfill: offset === 0 && offsets.includes(1),
   })
+  // Höchstens eine Karte dieser Art: Lebenspunkte, Kampf, Gefährten – danach der Wochenrückblick.
   const showHpIntro = hp.enabled && data.settings.hpIntroSeen !== true
   const showCombatIntro = !showHpIntro && data.settings.combatIntroSeen !== true
+  const showCompanionIntro =
+    !showHpIntro && !showCombatIntro && data.settings.companionIntroSeen !== true && state.companion === undefined
+  const review = !showHpIntro && !showCombatIntro && !showCompanionIntro ? state.weeklyReview : undefined
+  const todayNote = useMemo(() => data.journalNotes?.find((note) => note.day === today), [data.journalNotes, today])
 
   return (
     <>
@@ -168,11 +181,14 @@ export function DashboardPage() {
         lastWeek={lastWeek}
         onBackfill={backfillYesterday}
         effects={data.settings.effects}
+        companion={state.companion}
       />
       {showHpIntro && <HpIntroCard />}
       {showCombatIntro && data.profile && (
         <CombatIntroCard form={data.profile.form} heroClass={state.heroClass.definition} />
       )}
+      {showCompanionIntro && data.profile && <CompanionIntroCard today={today} activeDays={state.totals.activeDays} />}
+      {review && <WeeklyReviewCard review={review} />}
 
       <div className="grid gap-5 md:gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(17.5rem,0.65fr)] lg:items-start lg:gap-8">
         <div className="flex min-w-0 flex-col gap-5 md:gap-6">
@@ -243,6 +259,7 @@ export function DashboardPage() {
             today={today}
             otherDaySelected={offset > 0}
           />
+          {data.profile && <JournalNoteEntry today={today} note={todayNote} />}
         </div>
 
         <div className="flex min-w-0 flex-col gap-6">

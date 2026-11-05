@@ -309,3 +309,68 @@
     display: none;
   }
 }
+
+/* --- Treffer-Funken (Phase 3b, `src/features/combat/HitParticles.tsx`) -------------------- */
+
+/*
+ * Ein Funke springt bremsend aus dem Treffpunkt, fällt dann beschleunigend ein Stück (Schwerkraft) und verglüht.
+ * Bahn je Funke über --spark-x/-y (Ziel), --spark-fall (Fall am Ende) und --spark-rot (Striche zeigen in
+ * Flugrichtung); translate(-50%, -50%) setzt die Mitte des Funkens auf den Treffpunkt.
+ */
+@keyframes hit-spark {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(var(--spark-rot, 0deg)) scale(0.3);
+    animation-timing-function: cubic-bezier(0.15, 0.75, 0.35, 1);
+  }
+  12% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 1;
+    transform: translate(calc(var(--spark-x, 0px) * 0.86 - 50%), calc(var(--spark-y, 0px) * 0.86 - 50%))
+      rotate(var(--spark-rot, 0deg)) scale(1);
+    animation-timing-function: cubic-bezier(0.45, 0, 0.8, 0.4);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(var(--spark-x, 0px) - 50%), calc(var(--spark-y, 0px) + var(--spark-fall, 6px) - 50%))
+      rotate(var(--spark-rot, 0deg)) scale(0.25);
+  }
+}
+
+/* Kurzes Aufblitzen am Treffpunkt. */
+@keyframes hit-flash {
+  0% {
+    opacity: 0.95;
+    transform: translate(-50%, -50%) scale(0.35);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.25);
+  }
+}
+
+/* Ring eines starken Treffers (Schwachstelle). */
+@keyframes hit-ring {
+  0% {
+    opacity: 0.85;
+    transform: translate(-50%, -50%) scale(0.2);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* Die Komponente zeigt ohne Effekte bzw. bei reduzierter Bewegung ohnehin nichts – das hier fängt den Moment des Umschaltens. */
+:root[data-effects="off"] [data-hit-particles] {
+  display: none;
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-hit-particles] {
+    display: none;
+  }
+}

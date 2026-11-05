@@ -47,7 +47,7 @@ export function ClassCard({ heroClass, attributes, form }: ClassCardProps) {
   const name = classNameFor(definition, form)
   const reason = classReason(heroClass)
   const upcoming = upcomingClass(heroClass, attributes)
-  const paths = nextClassPaths(attributes, 2)
+  const paths = nextClassPaths(attributes, 2, undefined, definition.id)
   const powers = attackPowers(heroClass)
   const previous = heroClass.previousId !== undefined ? classDefinition(heroClass.previousId) : undefined
   const mainAttribute = definition.attributes[0]

@@ -6,6 +6,7 @@ import type { Chest, GrammaticalForm } from '../../domain/types'
 import { accentVars } from '../../features/campaignTheme'
 import { ChestGraphic } from '../../features/combat/ChestGraphic'
 import { ChestOpenDialog } from '../../features/combat/ChestOpenDialog'
+import { FEEDBACK_CUES, useFeedbackCue } from '../../features/feedback/feedbackSounds'
 import { Badge, Button, SectionTitle, cn, formatNumber } from '../../ui'
 import { usePendingFocus } from '../treasury/focus'
 import {
@@ -42,7 +43,8 @@ export interface ChestSectionProps {
 
 /**
  * Truhen: ungeöffnete in ihrer Seltenheitsfarbe mit „Öffnen“ (öffnet den Truhen-Dialog aus `features/combat`) und
- * die Chronik der geöffneten mit Fundort und Inhalt. Der Inhalt bleibt bis zum Öffnen eine Überraschung.
+ * die Chronik der geöffneten mit Fundort und Inhalt. Der Inhalt bleibt bis zum Öffnen eine Überraschung. Das Öffnen
+ * klingt bzw. vibriert (Phase 3b, wenn eingeschaltet).
  */
 export function ChestSection({ chests, context, form, dayStartHour, effects, id }: ChestSectionProps) {
   const titleId = useId()
@@ -51,6 +53,8 @@ export function ChestSection({ chests, context, form, dayStartHour, effects, id 
   const opened = openedChests(chests)
   const [dialog, setDialog] = useState<{ chestId: string; open: boolean } | undefined>(undefined)
   const [showAll, setShowAll] = useState(false)
+  // Klang & Vibration beim Öffnen (wie bei der Truhe aus der Siegesszene) – nur, wenn eingeschaltet.
+  const cue = useFeedbackCue()
   // Immer die aktuellen Truhen – das Fokusziel wird erst beim Schließen des Dialogs bestimmt.
   const latestChests = useRef(chests)
   useEffect(() => {
@@ -206,6 +210,7 @@ export function ChestSection({ chests, context, form, dayStartHour, effects, id 
           onClose={closeDialog}
           onOpened={() => {
             openedInDialog.current = dialog.chestId
+            cue(FEEDBACK_CUES.chest)
           }}
           returnFocus={() => focusTargetAfter(dialog.chestId)}
         />

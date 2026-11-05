@@ -43,6 +43,17 @@
  *   Recorder den Sieg speichert (`unrecordedVictories`).
  * - `chests`: gespeicherte plus neu gefundene Truhen (`combat/chests.ts`), `cosmetics` (`combat/cosmetics.ts`),
  *   `gold.fromChests` (Gold geöffneter Truhen), `inventory` (Streak-Schutz auch aus Truhen, ungeöffnete Truhen).
+ * - Nachbesserungen 3a: Klassen-Trägheit über die Wochenfolge ab Abenteuerbeginn (`classTimeline`), Boss-Vielfalt
+ *   (nie derselbe Boss zweimal in Folge, etwa jede 4. Woche das zweitstärkste Thema – `createBossResolver`), Boss-HP nie
+ *   über dem geplanten Schaden, halbiertes Truhen-Gold.
+ *
+ * Phase 3b (ARCHITECTURE.md „Phase 3b … (Vertrag)“):
+ * - `companion` (`companion.ts`): Stufe nach `totals.activeDays`, Schlaf (Durchhänger-Pause laut Ledger/Vorschau oder
+ *   ≥ 3 Tage ohne Quest); Bonus-Treffer an Perfekten Tagen gegen den Wochen-Boss (`withCompanionHits`).
+ * - `MainQuestState.endBoss` (`combat/endBoss.ts`, aktive und archivierte Kampagnen) und die Endgegner-Truhe
+ *   `campaign:<questId>` je gemeisterter Kampagne (`combat/chests.ts`).
+ * - `weeklyReview` (`chronicle/weeklyReview.ts`, `weeklyReviewForState`): Rückblick der Vorwoche, solange er fällig ist
+ *   (Abenteuer spätestens an ihrem Montag begonnen, `settings.weeklyReviewSeen` vor ihr) – sonst wird nichts gerechnet.
  *
  * Pflicht/Sichtbarkeit eines Tages richten sich nach dem an diesem Tag gültigen Rhythmus (`scheduleOn`)
  * und berücksichtigen Pausen. Bearbeiten, Archivieren und Zurückholen einer Quest ändern so nie
@@ -58,20 +69,25 @@ import { ATTRIBUTE_IDS } from './attributes'
 import { BALANCING } from './balancing'
 import { evaluateChapter } from './chapters'
 import type { ChapterContext } from './chapters'
-import { heroSeedOf, plannedWeekAttacks, unrecordedVictories, victoriesByWeek, weekDays, weeklyBossState } from './combat/boss'
-import type { AttackSource, CombatStats } from './combat/boss'
-import { chestGold, chestWindowStart, findChests } from './combat/chests'
-import type { CompletedChapter } from './combat/chests'
 import {
-  attributeLevelsFromXp,
-  attributeXpThrough,
-  classBonusFor,
-  classLevelsDay,
-  heroClassIdFor,
-  heroClassState,
-} from './combat/classes'
+  createBossResolver,
+  heroSeedOf,
+  plannedWeekAttacks,
+  plannedWeekDamage,
+  unrecordedVictories,
+  victoriesByWeek,
+  weekDays,
+  weeklyBossState,
+} from './combat/boss'
+import type { AttackSource, BossWeekPlan, CombatStats, CompanionAttackInput } from './combat/boss'
+import { chestGold, chestWindowStart, findChests } from './combat/chests'
+import type { CompletedCampaign, CompletedChapter } from './combat/chests'
+import { classBonusFor, classTimeline, heroClassState, normalizeLevels } from './combat/classes'
 import type { AttributeXpEntry } from './combat/classes'
 import { unlockedCosmetics } from './combat/cosmetics'
+import { endBossState } from './combat/endBoss'
+import { weeklyReviewForState } from './chronicle/weeklyReview'
+import { companionState, isCompanionSleeping, isCompanionSpecies } from './companion'
 import { addDays, compareDays, dayRange, diffDays, isValidDayKey, startOfWeek } from './dates'
 import {
   firstDefeatDay,
@@ -80,7 +96,10 @@ import {
   hpCalendar,
   hpStateOf,
   inventoryOf,
+  isSlumpPause,
   restDaySet,
+  scoreByProgress,
+  slumpCountOf,
 } from './hpRules'
 import type { DayFacts, HpCalendar } from './hpRules'
 import { attributeLevelFromXp, levelFromXp, rankForLevel } from './leveling'
@@ -104,9 +123,13 @@ import type {
   AttributeId,
   AttributeState,
   BossDefinition,
+  CompanionDefinition,
+  CompanionSpecies,
+  CompanionState,
   Completion,
   DayKey,
   DayState,
+  EndBossDefinition,
   GameData,
   GameState,
   FrameDefinition,
@@ -548,7 +571,13 @@ function dominantAttributeOf(
   )
 }
 
-function buildMainQuestState(quest: MainQuest, index: GameIndex, ctx: ChapterContext, today: DayKey): MainQuestState {
+function buildMainQuestState(
+  quest: MainQuest,
+  index: GameIndex,
+  ctx: ChapterContext,
+  today: DayKey,
+  endBosses: Readonly<Record<string, EndBossDefinition>> | undefined,
+): MainQuestState {
   const chapters = quest.chapters.map((chapter) => evaluateChapter(chapter, quest, ctx))
   const progress =
     chapters.length === 0 ? 0 : chapters.reduce((sum, chapter) => sum + chapter.progress, 0) / chapters.length
@@ -565,6 +594,9 @@ function buildMainQuestState(quest: MainQuest, index: GameIndex, ctx: ChapterCon
   if (quest.deadline !== undefined) state.daysLeft = diffDays(today, quest.deadline)
   const dominantAttribute = dominantAttributeOf(linkedHabitIds, index, today)
   if (dominantAttribute !== undefined) state.dominantAttribute = dominantAttribute
+  // Phase 3b: das letzte Kapitel ist der Endgegner.
+  const endBoss = endBossState(quest, chapters, endBosses)
+  if (endBoss !== undefined) state.endBoss = endBoss
   return state
 }
 
@@ -588,9 +620,10 @@ function buildMainQuestStates(
   index: GameIndex,
   today: DayKey,
   freeDays: ReadonlySet<DayKey>,
+  endBosses?: Readonly<Record<string, EndBossDefinition>>,
 ): MainQuestState[] {
   const ctx = chapterContext(index, today, freeDays)
-  return data.mainQuests.map((quest) => buildMainQuestState(quest, index, ctx, today))
+  return data.mainQuests.map((quest) => buildMainQuestState(quest, index, ctx, today, endBosses))
 }
 
 /**
@@ -611,19 +644,41 @@ export function evaluateMainQuests(data: GameData, today: DayKey): MainQuestStat
 export interface DeriveOptions {
   /** Erfolgs-Definitionen; Standard: `ACHIEVEMENTS` aus `achievements/definitions.ts`. */
   achievements?: readonly AchievementDefinition[]
-  /** Kampf-Inhalte (Phase 3a); Standard: die Definitionen aus `combat/classDefinitions.ts`, `bosses.ts`, `cosmeticDefinitions.ts`. */
+  /**
+   * Kampf-Inhalte (Phase 3a); Standard: die Definitionen aus `combat/classDefinitions.ts`, `bosses.ts`,
+   * `cosmeticDefinitions.ts` – Phase 3b: `endBosses.ts`.
+   */
   combat?: {
     classes?: Readonly<Partial<Record<HeroClassId, HeroClassDefinition>>>
     attackNames?: Readonly<Record<AttributeId, string>>
     bosses?: readonly BossDefinition[]
     titles?: readonly TitleDefinition[]
     frames?: readonly FrameDefinition[]
+    endBosses?: Readonly<Record<string, EndBossDefinition>>
   }
+  /** Gefährten-Inhalte (Phase 3b); Standard: `COMPANIONS` aus `companionDefinitions.ts`. */
+  companions?: Readonly<Partial<Record<CompanionSpecies, CompanionDefinition>>>
 }
 
 // ---------------------------------------------------------------------------
 // Kampf (Phase 3a)
 // ---------------------------------------------------------------------------
+
+/** Kampf-Werte ohne jede Stufe: alle Attribute Level 1, kein Klassen-Bonus (Wochen vor der ersten Attribut-XP). */
+const LEVEL_ONE_STATS: CombatStats = { attributeLevels: normalizeLevels({}), classBonus: {} }
+
+/**
+ * Eine gemeisterte Kampagne für die Endgegner-Truhe: Abschlusstag = spätester `doneDay` ihrer Kapitel (fehlt einem
+ * Kapitel der Tag, ist er unbekannt – dann gibt es, wie bei Kapiteln ohne Tag, keine Truhe).
+ */
+function completedCampaignOf(state: MainQuestState): CompletedCampaign {
+  let doneDay: DayKey | undefined
+  for (const chapter of state.chapters) {
+    if (chapter.doneDay === undefined || !isValidDayKey(chapter.doneDay)) return { questId: state.quest.id }
+    if (doneDay === undefined || compareDays(chapter.doneDay, doneDay) > 0) doneDay = chapter.doneDay
+  }
+  return doneDay === undefined ? { questId: state.quest.id } : { questId: state.quest.id, doneDay }
+}
 
 /**
  * Angriffe einer Woche (bis `today`): erledigte Quest-Erledigungen (Momentaufnahme von Attribut und Schwierigkeit,
@@ -763,12 +818,16 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   const archivedMainQuests: MainQuestState[] = []
   /** Phase 3a: abgeschlossene Kapitel mit Abschlusstag – Fundorte der Kapitel-Truhen. */
   const completedChapters: CompletedChapter[] = []
-  for (const state of buildMainQuestStates(data, index, today, freeDays)) {
+  /** Phase 3b: gemeisterte Kampagnen mit Abschlusstag – Fundorte der Endgegner-Truhen. */
+  const completedCampaigns: CompletedCampaign[] = []
+  const combat = options.combat ?? {}
+  for (const state of buildMainQuestStates(data, index, today, freeDays, combat.endBosses)) {
     for (const chapter of state.chapters) {
       if (chapter.done && chapter.doneDay !== undefined) {
         completedChapters.push({ questId: state.quest.id, chapterId: chapter.chapter.id, doneDay: chapter.doneDay })
       }
     }
+    if (state.complete) completedCampaigns.push(completedCampaignOf(state))
     const doneChapters = state.chapters.filter((chapter) => chapter.done).length
     chaptersCompleted += doneChapters
     xpFromChapters += doneChapters * BALANCING.chapterXp
@@ -850,45 +909,72 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
   const fromAchievements = achievementGold(achievements)
 
   // --- Phase 3a: Klasse, Wochen-Boss, Truhen, Titel & Rahmen ------------------------------------
-  const combat = options.combat ?? {}
   const heroSeed = heroSeedOf(data.profile)
   const weekStart = startOfWeek(today)
   // Gnadenfrist: Gehört gestern (bzw. der früheste nachtragbare Tag) noch zur Vorwoche, kämpft die Vorwoche weiter.
   const graceWeekStart = startOfWeek(addDays(today, -BALANCING.backfillDays))
-  const classDay = classLevelsDay(weekStart)
-  const [classXp, previousClassXp, graceClassXp] = attributeXpThrough(attributeXpEntries, [
-    classDay,
-    addDays(classDay, -7),
-    classLevelsDay(graceWeekStart),
-  ])
+  // Klasse je Woche mit Trägheit – die Wochenfolge ab der ersten Attribut-XP (davor alles Level 1, Abenteurer).
+  const timeline = classTimeline(attributeXpEntries, weekStart)
+  const currentClassWeek = timeline[timeline.length - 1]
+  const previousClassWeek = timeline.length >= 2 ? timeline[timeline.length - 2] : undefined
   const heroClass = heroClassState({
     weekStart,
-    attributeLevels: attributeLevelsFromXp(classXp),
-    previousLevels: attributeLevelsFromXp(previousClassXp),
+    attributeLevels: currentClassWeek.attributeLevels,
+    previousClassId: previousClassWeek?.id ?? 'adventurer',
     definitions: combat.classes,
   })
+  const statsByWeek = new Map<DayKey, CombatStats>()
+  for (const week of timeline) {
+    statsByWeek.set(week.weekStart, { attributeLevels: week.attributeLevels, classBonus: classBonusFor(week.id) })
+  }
+  const statsOf = (week: DayKey): CombatStats => statsByWeek.get(week) ?? LEVEL_ONE_STATS
+
   const storedVictories = victoriesByWeek(data.bossVictories)
-  const bossOf = (week: DayKey, stats: CombatStats): WeeklyBossState | undefined =>
+  // Boss-Vielfalt: Der Boss einer Woche hängt am Boss der Vorwoche (nie derselbe zweimal in Folge) – ab Abenteuerbeginn.
+  const adventureWeek =
+    data.profile !== undefined && isValidDayKey(data.profile.createdDay) ? startOfWeek(data.profile.createdDay) : weekStart
+  const bossResolver = createBossResolver({
+    heroSeed,
+    fromWeek: adventureWeek,
+    bosses: combat.bosses,
+    planOf: (week) => {
+      const { total, byAttribute } = plannedWeekDamage(plannedWeekAttacks(index.habits, week, restDays), statsOf(week))
+      const plan: BossWeekPlan = { total, byAttribute }
+      const victory = storedVictories.get(week)
+      if (victory !== undefined) plan.victory = victory
+      return plan
+    },
+  })
+  // Phase 3b: Der Gefährte trifft an Perfekten Tagen mit (ab dem Tag seiner Wahl).
+  const companionChoice = data.profile?.companion
+  const companionAttack: CompanionAttackInput | undefined =
+    companionChoice !== undefined && isCompanionSpecies(companionChoice.species)
+      ? {
+          species: companionChoice.species,
+          name: companionChoice.name,
+          perfectDays: new Set(perfectDayList),
+          fromDay: companionChoice.chosenDay,
+        }
+      : undefined
+  const bossOf = (week: DayKey): WeeklyBossState | undefined =>
     weeklyBossState({
       weekStart: week,
       today,
       heroSeed,
       planned: plannedWeekAttacks(index.habits, week, restDays),
       sources: weekAttackSources(index, data.sideQuests, week, today),
-      stats,
+      stats: statsOf(week),
       victory: storedVictories.get(week),
+      previousBossId: bossResolver.bossOf(addDays(week, -7))?.id,
+      companion: companionAttack,
       bosses: combat.bosses,
       attackNames: combat.attackNames,
     })
   const bosses: GameState['bosses'] = {}
-  const currentBoss = bossOf(weekStart, heroClass)
+  const currentBoss = bossOf(weekStart)
   if (currentBoss !== undefined) bosses.current = currentBoss
   if (compareDays(graceWeekStart, weekStart) < 0 && !storedVictories.has(graceWeekStart)) {
-    const graceLevels = attributeLevelsFromXp(graceClassXp)
-    const previousBoss = bossOf(graceWeekStart, {
-      attributeLevels: graceLevels,
-      classBonus: classBonusFor(heroClassIdFor(graceLevels)),
-    })
+    const previousBoss = bossOf(graceWeekStart)
     if (previousBoss !== undefined) bosses.previous = previousBoss
   }
   const victories = [...storedVictories.values(), ...unrecordedVictories([bosses.current, bosses.previous], data.bossVictories)]
@@ -919,6 +1005,7 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     completions: windowCompletions,
     victories,
     chapters: completedChapters,
+    campaigns: completedCampaigns,
     stored: data.chests,
     unlocked: cosmetics,
     titles: combat.titles,
@@ -948,6 +1035,36 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     restDays,
   )
 
+  // --- Phase 3b: Gefährte ---------------------------------------------------------------------
+  let companion: CompanionState | undefined
+  if (companionChoice !== undefined && isCompanionSpecies(companionChoice.species)) {
+    let lastActiveDay: DayKey | undefined
+    for (const day of activeDays) {
+      if (lastActiveDay === undefined || compareDays(day, lastActiveDay) > 0) lastActiveDay = day
+    }
+    const todayScore = scoreByProgress(todayState.requiredCount, todayState.requiredDone)
+    companion = companionState({
+      choice: companionChoice,
+      activeDays: activeDays.length,
+      sleeping: isCompanionSleeping({
+        today,
+        lastActiveDay,
+        since: companionChoice.chosenDay,
+        // Laufende Durchhänger-Pause laut Ledger und Vorschau (bis gestern).
+        slumpPause: isSlumpPause(slumpCountOf([...calendar.ledger, ...calendar.pending])),
+        todayGood: todayScore === 'perfect' || todayScore === 'good',
+      }),
+      definitions: options.companions,
+    })
+  }
+
+  // --- Phase 3b: Wochenrückblick der Vorwoche (nur gerechnet, solange er fällig ist) ------------
+  // Der Boss der Vorwoche kommt aus derselben Rechnung wie `bosses` (Klassen-Folge, Boss-Kette, Gefährten-Treffer).
+  const reviewWeek = addDays(weekStart, -7)
+  const weeklyReview = weeklyReviewForState(data, { mainQuests, archivedMainQuests, bosses }, today, {
+    previousWeekBoss: () => bossOf(reviewWeek),
+  })
+
   return {
     today,
     adventureDay,
@@ -968,6 +1085,8 @@ export function deriveGameState(data: GameData, today: DayKey, options: DeriveOp
     bosses,
     chests,
     cosmetics,
+    ...(companion !== undefined ? { companion } : {}),
+    ...(weeklyReview !== undefined ? { weeklyReview } : {}),
   }
 }
 

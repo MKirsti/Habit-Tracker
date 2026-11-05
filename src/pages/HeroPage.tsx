@@ -1,6 +1,6 @@
-import { ChartNoAxesCombined, LayoutGrid, Library, Settings, Trophy, UserRound } from 'lucide-react'
-import { useId } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { BookOpen, ChartNoAxesCombined, LayoutGrid, Library, Settings, Trophy, UserRound } from 'lucide-react'
+import { useEffect, useId } from 'react'
+import { Link, useLocation, useSearchParams } from 'react-router'
 import { useGameContext } from '../app/gameContext'
 import { SETTINGS_PATH } from '../app/navigation'
 import { EmptyState, PageHeader, buttonClassName, formatNumber } from '../ui'
@@ -9,27 +9,43 @@ import { AttributeGrid } from './hero/AttributeGrid'
 import { ClassCard } from './hero/ClassCard'
 import { CollectionTab } from './hero/CollectionTab'
 import { unopenedChests, unopenedCountText } from './hero/collectionView'
+import { CompanionCard } from './hero/CompanionCard'
+import { COMPANION_ANCHOR } from './hero/companionView'
 import { HeroSheet } from './hero/HeroSheet'
 import { HeroStats, XpBreakdown } from './hero/HeroStats'
 import { HeroTabs } from './hero/HeroTabs'
 import type { HeroTab } from './hero/HeroTabs'
 import { DEFAULT_HERO_TAB, HERO_TAB_PARAM, panelId, parseHeroTab, tabId } from './hero/heroTabs'
 import type { HeroTabId } from './hero/heroTabs'
+import { JournalTab } from './hero/journal/JournalTab'
 import { RankLadder } from './hero/RankLadder'
 import { StatisticsTab } from './hero/stats/StatisticsTab'
 
 /**
- * „Held“ – der Charakterbogen mit Reitern (`?tab=`): Übersicht (Avatar, Titel, Rang, Level, Klasse, Attribute,
- * Statistik, XP-Herkunft, Rangleiter), Erfolge (`?tab=erfolge`), Statistik (`?tab=statistik`: Kennzahlen, Heatmap,
- * Diagramme) und Sammlung (`?tab=sammlung`: Truhen, Titel & Rahmen, Bestiarium). Das Zahnrad im Kopf führt zu den
- * Einstellungen.
+ * „Held“ – der Charakterbogen mit Reitern (`?tab=`): Übersicht (Avatar, Titel, Rang, Level, Klasse, Gefährte,
+ * Attribute, Statistik, XP-Herkunft, Rangleiter), Erfolge (`?tab=erfolge`), Statistik (`?tab=statistik`: Kennzahlen,
+ * Heatmap, Diagramme), Sammlung (`?tab=sammlung`: Truhen, Titel & Rahmen, Bestiarium) und Tagebuch
+ * (`?tab=tagebuch`: Chronik mit Notizen). `/held#gefaehrte` springt zur Gefährten-Karte. Das Zahnrad im Kopf führt zu
+ * den Einstellungen.
  */
 export function HeroPage() {
-  const { data, state } = useGameContext()
+  const { data, state, today } = useGameContext()
   const { profile } = data
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = parseHeroTab(searchParams.get(HERO_TAB_PARAM))
   const idBase = `hero${useId().replace(/:/g, '')}`
+  const location = useLocation()
+  const wantsCompanion = tab === DEFAULT_HERO_TAB && location.hash === `#${COMPANION_ANCHOR}`
+
+  // `/held#gefaehrte` (z. B. vom Gefährten-Abzeichen der Tagesübersicht): zur Gefährten-Karte scrollen und sie fokussieren.
+  useEffect(() => {
+    if (!wantsCompanion) return
+    const card = document.getElementById(COMPANION_ANCHOR)
+    if (card === null) return
+    // jsdom kennt scrollIntoView nicht.
+    card.scrollIntoView?.({ block: 'start' })
+    card.focus({ preventScroll: true })
+  }, [wantsCompanion, location.key])
 
   const unlocked = state.achievements.filter((achievement) => achievement.unlocked).length
   const unopened = unopenedChests(state.chests).length
@@ -65,6 +81,7 @@ export function HeroPage() {
         ) : undefined,
       metaDot: unopened > 0,
     },
+    { id: 'tagebuch', label: 'Tagebuch', icon: <BookOpen aria-hidden /> },
   ]
 
   function selectTab(next: HeroTabId) {
@@ -86,7 +103,7 @@ export function HeroPage() {
         <PageHeader
           eyebrow="Charakterbogen"
           title="Held"
-          subtitle="Level, Klasse, Attribute, Erfolge und deine Sammlung – alle Taten deines bisherigen Abenteuers."
+          subtitle="Level, Klasse, Gefährte, Erfolge, Sammlung und Tagebuch – alle Taten deines bisherigen Abenteuers."
           className="pr-14"
         />
         {/* Eigener Rahmen fürs Positionieren: Buttons bringen selbst `relative` mit. */}
@@ -124,6 +141,8 @@ export function HeroPage() {
           <StatisticsTab />
         ) : tab === 'sammlung' ? (
           <CollectionTab />
+        ) : tab === 'tagebuch' ? (
+          <JournalTab />
         ) : (
           <>
             {profile ? (
@@ -135,6 +154,17 @@ export function HeroPage() {
             <div className="mt-6">
               <ClassCard heroClass={state.heroClass} attributes={state.attributes} form={profile?.form} />
             </div>
+
+            {profile && (
+              <div className="mt-6">
+                <CompanionCard
+                  companion={state.companion}
+                  today={today}
+                  effects={data.settings.effects}
+                  activeDays={state.totals.activeDays}
+                />
+              </div>
+            )}
 
             <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,20rem)] lg:items-start">
               <div className="flex min-w-0 flex-col gap-8">

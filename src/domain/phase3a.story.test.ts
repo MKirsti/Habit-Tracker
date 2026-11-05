@@ -23,11 +23,19 @@
  *   Do lassen Familie und Meditieren eine Truhe fallen – höchstens eine pro Tag: die erste nach ID (Familie).
  *   Attribut-XP: Lesen 40, 42, 44, 46, (Fr Ruhetag – Schontag), 48, 50 = 270 → 442 (Level 4);
  *   Meditieren 40, 42, 44, (Do zurückgenommen – Serie bricht), 40, 42 = 208 (Level 3); Charisma 20 → 40 (Level 2).
- * Woche C (02.–08.11., Erzmagierin: Intelligenz 4 und Weisheit 3 liegen ≤ 1 auseinander, je +10 %):
- *   Lesen 40 × 1,3 × 1,1 = 57,2 → 57; Meditieren 40 × 1,2 × 1,1 = 52,8 → 53 (Schwäche × 1,5: 79,2 → 79);
- *   Familie 20 × 1,1 (Charisma 2) = 22. Geplant: 7 × 57 + 7 × 53 + 2 × 22 = 814 → 570 HP. Thema Intelligenz →
- *   „Bücherwurm-Golem“, Schwäche Weisheit. Mo–Mi je 136 → 408; Fr Meditieren → 487; Sa Lesen + Familie → 566:
- *   4 HP fehlen, Sonntag vergessen. **Montag**: Sonntag nachgetragen (Lesen +57 → 623) – besiegt am Sonntag.
+ * Woche C (02.–08.11., **Erzmagierin**: Intelligenz 4 und Weisheit 3 liegen ≤ 1 auseinander, je +10 % – der Hybrid
+ *   entsteht wie ohne Klassen-Trägheit; die Trägheit hält nur das Verlassen einer Klasse auf):
+ *   Lesen 40 × 1,3 × 1,1 = 57,2 → 57 (gegen die Schwäche × 1,5: 85,8 → 86); Meditieren 40 × 1,2 × 1,1 = 52,8 → 53;
+ *   Familie 20 × 1,1 (Charisma 2) = 22.
+ *   Geplant: 7 × 57 + 7 × 53 + 2 × 22 = 814 → 570 HP. Diese Woche kommt der Boss aus dem **zweitstärksten** Thema
+ *   (Boss-Vielfalt, per Hash etwa jede 4. Woche): Weisheit (371 nach Intelligenz 399) → „Grübelspinne“, Schwäche
+ *   Intelligenz.
+ *   Mo–Di je 86 + 53 = 139 → 278; Mi nur Lesen → 364; Fr Meditieren → 417; Sa Lesen + Familie → 525: 45 HP fehlen,
+ *   Sonntag vergessen. **Montag**: Sonntag nachgetragen (Lesen +86 → 611) – besiegt am Sonntag.
+ *   Attribut-XP bis Sonntag: Lesen 52, 54, 56 (Serie aus Woche B), Sa 40, So 42 → 686 (Level 5); Meditieren 44, 46,
+ *   Fr 40 → 338 (Level 4); Charisma 60 (Level 2).
+ * Woche D (ab 09.11.): Intelligenz 5, Weisheit 4 – sie bleibt Erzmagierin (Abstand 1, ohnehin). Thema wieder
+ *   Intelligenz – nie derselbe Boss wie in der Vorwoche (hier ohnehin ein anderes Thema): „Fürst der Ablenkung“.
  *
  * Wer welcher Boss wird, welche Erledigung eine Truhe fallen lässt und was darin liegt, entscheidet der Hash
  * (Helden-Seed „2026-10-19Juna“) – die Werte unten sind dafür einmal ermittelt und so festgeschrieben (deterministisch).
@@ -274,9 +282,10 @@ describe('Phase 3a – Geschichte: drei Wochen mit Juna', () => {
     story.tick(familie, '2026-10-29')
     const beforeRecording = story.state('2026-10-29')
     expect(beforeRecording.bosses.current).toMatchObject({ damage: 492, hp: 0, defeated: true, defeatedDay: '2026-10-29', daysLeft: 4 })
+    // Truhen-Gold halbiert (Nachbesserung 3a): common 10–25.
     expect(beforeRecording.chests.map((chest) => [chest.id, chest.source, chest.foundDay, chest.rarity, chest.content])).toEqual([
       ['boss:2026-10-26', 'boss', '2026-10-29', 'rare', { kind: 'item', itemId: 'streakFreeze' }],
-      ['quest:familie:2026-10-29', 'quest', '2026-10-29', 'common', { kind: 'gold', amount: 39 }],
+      ['quest:familie:2026-10-29', 'quest', '2026-10-29', 'common', { kind: 'gold', amount: 20 }],
     ])
     expect(beforeRecording.inventory).toEqual({ streakFreezes: 0, unopenedChests: 2 })
     expect(beforeRecording.cosmetics.titles).toContain('fearless') // erster Boss-Sieg
@@ -310,78 +319,88 @@ describe('Phase 3a – Geschichte: drei Wochen mit Juna', () => {
     expect(state.attributes.wisdom).toMatchObject({ totalXp: 208, level: 3 })
     expect(state.attributes.charisma).toMatchObject({ totalXp: 40, level: 2 })
 
-    // Sonntag: beide Truhen öffnen – 39 Gold und ein Streak-Schutz.
+    // Sonntag: beide Truhen öffnen – 20 Gold und ein Streak-Schutz.
     const goldBefore = state.gold
-    expect(story.open('quest:familie:2026-10-29', '2026-11-01').content).toEqual({ kind: 'gold', amount: 39 })
+    expect(story.open('quest:familie:2026-10-29', '2026-11-01').content).toEqual({ kind: 'gold', amount: 20 })
     expect(story.open('boss:2026-10-26', '2026-11-01').content).toEqual({ kind: 'item', itemId: 'streakFreeze' })
     state = story.record('2026-11-01')
-    expect(state.gold).toEqual({ ...goldBefore, fromChests: 39, earned: goldBefore.earned + 39, balance: goldBefore.balance + 39 })
+    expect(state.gold).toEqual({ ...goldBefore, fromChests: 20, earned: goldBefore.earned + 20, balance: goldBefore.balance + 20 })
     expect(state.inventory).toEqual({ streakFreezes: 1, unopenedChests: 0 })
 
     // ---------------------------------------------------------------- Woche C: Erzmagierin
     state = story.state('2026-11-02')
+    expect(state.heroClass.attributeLevels).toEqual({ strength: 1, intellect: 4, wisdom: 3, charisma: 2, vitality: 1, discipline: 1 })
     expect(state.heroClass.definition.id).toBe('archmage')
     expect(state.heroClass.definition.names.female).toBe('Erzmagierin')
     expect(state.heroClass).toMatchObject({ weekStart: WEEK_C, classBonus: { intellect: 0.1, wisdom: 0.1 }, previousId: 'mage' })
-    expect(state.heroClass.attributeLevels).toEqual({ strength: 1, intellect: 4, wisdom: 3, charisma: 2, vitality: 1, discipline: 1 })
     expect(state.bosses.previous).toBeUndefined() // Vorwoche besiegt und gespeichert
-    expect(state.bosses.current).toMatchObject({ weekStart: WEEK_C, weakness: 'wisdom', maxHp: 570 })
-    expect(state.bosses.current?.boss.id).toBe('bookworm-golem')
+    // Boss-Vielfalt: Nebenthema-Woche – der Boss kommt aus Weisheit (zweitstärkstes geplantes Attribut).
+    expect(state.bosses.current).toMatchObject({ weekStart: WEEK_C, weakness: 'intellect', maxHp: 570 })
+    expect(state.bosses.current?.boss.id).toBe('brooding-spider')
+    expect(state.bosses.current?.boss.theme).toBe('wisdom')
 
-    for (const day of ['2026-11-02', '2026-11-03', '2026-11-04']) {
+    for (const day of ['2026-11-02', '2026-11-03']) {
       story.tick(lesen, day)
       story.tick(meditieren, day)
       story.record(day)
     }
-    state = story.state('2026-11-04')
+    story.tick(lesen, '2026-11-04') // Mittwoch nur Lesen
+    state = story.record('2026-11-04')
     expect(hits(state.bosses.current?.attacks ?? []).slice(0, 2)).toEqual([
-      ['2026-11-02', 'lesen', 'Arkaner Blitz', 57, false],
-      ['2026-11-02', 'meditieren', 'Mondlicht', 79, true],
+      ['2026-11-02', 'lesen', 'Arkaner Blitz', 86, true], // 40 × 1,3 × 1,1 × 1,5 = 85,8 gegen die Schwäche
+      ['2026-11-02', 'meditieren', 'Mondlicht', 53, false],
     ])
-    expect(state.bosses.current).toMatchObject({ damage: 408, hp: 162 })
+    expect(state.bosses.current).toMatchObject({ damage: 364, hp: 206 })
 
     story.record('2026-11-05') // Donnerstag: nichts
     story.tick(meditieren, '2026-11-06')
     state = story.record('2026-11-06')
-    expect(state.bosses.current).toMatchObject({ damage: 487, hp: 83 })
-    expect(state.chests.at(-1)).toMatchObject({ id: 'quest:meditieren:2026-11-06', rarity: 'common', content: { kind: 'gold', amount: 32 } })
+    expect(state.bosses.current).toMatchObject({ damage: 417, hp: 153 })
+    expect(state.chests.at(-1)).toMatchObject({ id: 'quest:meditieren:2026-11-06', rarity: 'common', content: { kind: 'gold', amount: 16 } })
 
     story.tick(lesen, '2026-11-07')
     story.tick(familie, '2026-11-07')
     state = story.record('2026-11-07')
-    expect(state.bosses.current).toMatchObject({ damage: 566, hp: 4, defeated: false })
+    expect(state.bosses.current).toMatchObject({ damage: 525, hp: 45, defeated: false })
     expect(hits(state.bosses.current?.attacks ?? []).slice(-2)).toEqual([
-      ['2026-11-07', 'lesen', 'Arkaner Blitz', 57, false],
+      ['2026-11-07', 'lesen', 'Arkaner Blitz', 86, true],
       ['2026-11-07', 'familie', 'Schlachtruf', 22, false],
     ])
-    expect(state.chests.at(-1)).toMatchObject({ id: 'quest:lesen:2026-11-07', rarity: 'uncommon', content: { kind: 'gold', amount: 66 } })
+    expect(state.chests.at(-1)).toMatchObject({ id: 'quest:lesen:2026-11-07', rarity: 'uncommon', content: { kind: 'gold', amount: 33 } })
     story.record('2026-11-08') // Sonntag vergessen
 
     // ---------------------------------------------------------------- Montag: Sonntag nachtragen
     state = story.state('2026-11-09')
-    expect(state.bosses.previous).toMatchObject({ weekStart: WEEK_C, damage: 566, hp: 4, defeated: false, daysLeft: 0 })
+    expect(state.bosses.previous).toMatchObject({ weekStart: WEEK_C, damage: 525, hp: 45, defeated: false, daysLeft: 0 })
     expect(state.bosses.current?.weekStart).toBe(WEEK_D)
+    // Neue Woche: Intelligenz 5, Weisheit 4 – weiter Erzmagierin (keine Wechsel-Szene).
     expect(state.heroClass.definition.id).toBe('archmage')
+    expect(state.heroClass.attributeLevels).toMatchObject({ intellect: 5, wisdom: 4, charisma: 2 })
     expect(state.heroClass.previousId).toBeUndefined()
+    // Wieder das Thema Intelligenz – und nie derselbe Boss wie in der Vorwoche.
+    expect(state.bosses.current?.boss.id).toBe('prince-of-distraction')
+    expect(state.bosses.current?.boss.id).not.toBe(state.bosses.previous?.boss.id)
 
     story.tick(lesen, '2026-11-08') // nachgetragen
     story.tick(familie, '2026-11-09')
     const backfilled = story.state('2026-11-09')
-    expect(backfilled.bosses.previous).toMatchObject({ damage: 623, hp: 0, defeated: true, defeatedDay: '2026-11-08' })
-    expect(backfilled.cosmetics.titles).toContain('well-read') // Bücherwurm-Golem besiegt
+    expect(backfilled.bosses.previous).toMatchObject({ damage: 611, hp: 0, defeated: true, defeatedDay: '2026-11-08' })
+    expect(backfilled.cosmetics.titles).not.toContain('well-read') // der Bücherwurm-Golem kam diesmal nicht
     state = story.record('2026-11-09')
     expect(state.bosses.previous).toBeUndefined() // gespeichert → die Vorwoche ist erledigt
-    expect(story.data.bossVictories?.at(-1)).toEqual({ weekStart: WEEK_C, bossId: 'bookworm-golem', day: '2026-11-08', maxHp: 570 })
-    expect(state.cosmetics.titles).toEqual(expect.arrayContaining(['daring', 'fearless', 'well-read']))
+    expect(story.data.bossVictories?.at(-1)).toEqual({ weekStart: WEEK_C, bossId: 'brooding-spider', day: '2026-11-08', maxHp: 570 })
+    expect(state.cosmetics.titles).toEqual(expect.arrayContaining(['daring', 'fearless']))
+    expect(state.attributes.intellect).toMatchObject({ totalXp: 686, level: 5 })
+    expect(state.attributes.wisdom).toMatchObject({ totalXp: 338, level: 4 })
 
     // Alle Truhen der Geschichte – je Fund genau eine, gespeichert und unverändert.
     expect(state.chests.map((chest) => [chest.id, chest.foundDay, chest.rarity, chest.content, chest.openedAt !== undefined])).toEqual([
       ['boss:2026-10-26', '2026-10-29', 'rare', { kind: 'item', itemId: 'streakFreeze' }, true],
-      ['quest:familie:2026-10-29', '2026-10-29', 'common', { kind: 'gold', amount: 39 }, true],
-      ['quest:meditieren:2026-11-06', '2026-11-06', 'common', { kind: 'gold', amount: 32 }, false],
-      ['quest:lesen:2026-11-07', '2026-11-07', 'uncommon', { kind: 'gold', amount: 66 }, false],
-      ['boss:2026-11-02', '2026-11-08', 'common', { kind: 'gold', amount: 26 }, false],
-      ['quest:familie:2026-11-09', '2026-11-09', 'common', { kind: 'gold', amount: 38 }, false],
+      ['quest:familie:2026-10-29', '2026-10-29', 'common', { kind: 'gold', amount: 20 }, true],
+      ['quest:meditieren:2026-11-06', '2026-11-06', 'common', { kind: 'gold', amount: 16 }, false],
+      ['quest:lesen:2026-11-07', '2026-11-07', 'uncommon', { kind: 'gold', amount: 33 }, false],
+      ['boss:2026-11-02', '2026-11-08', 'common', { kind: 'gold', amount: 13 }, false],
+      ['quest:familie:2026-11-09', '2026-11-09', 'common', { kind: 'gold', amount: 19 }, false],
     ])
     expect(state.chests).toEqual(story.data.chests?.slice().sort((a, b) => a.foundDay.localeCompare(b.foundDay) || a.id.localeCompare(b.id)))
     expect(state.inventory).toEqual({ streakFreezes: 1, unopenedChests: 4 })
@@ -391,7 +410,7 @@ describe('Phase 3a – Geschichte: drei Wochen mit Juna', () => {
       story.open(id, '2026-11-09')
     }
     state = story.record('2026-11-09')
-    expect(state.gold.fromChests).toBe(39 + 32 + 66 + 26 + 38)
+    expect(state.gold.fromChests).toBe(20 + 16 + 33 + 13 + 19)
     expect(state.gold.fromXp).toBe(Math.floor(state.level.totalXp * BALANCING.goldPerXp))
     expect(state.gold.earned).toBe(state.gold.fromXp + state.gold.fromAchievements + state.gold.fromChests)
     expect(state.gold.balance).toBe(state.gold.earned)
@@ -404,6 +423,6 @@ describe('Phase 3a – Geschichte: drei Wochen mit Juna', () => {
     // Ein späterer Blick auf vergangene Tage sieht dieselben gespeicherten Truhen und Siege.
     const later = deriveGameState(story.data, '2026-11-20')
     expect(later.chests).toEqual(state.chests)
-    expect(later.cosmetics.titles).toEqual(expect.arrayContaining(['fearless', 'well-read']))
+    expect(later.cosmetics.titles).toEqual(expect.arrayContaining(['fearless']))
   })
 })

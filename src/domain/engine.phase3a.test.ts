@@ -190,10 +190,14 @@ describe('Phase 3a – Wochen-Boss in der Engine', () => {
     expect(deriveGameState(warriorWeek([], { restPeriods: [vacation] }), '2026-11-04').bosses.current).toBeUndefined()
   })
 
-  it('ohne geplante Quests kein Boss; kleine Pläne bekommen mindestens 60 HP', () => {
+  it('ohne geplante Quests kein Boss; kleine Pläne bekommen einen Boss, der nie über dem Plan liegt', () => {
     expect(deriveGameState(hero(), '2026-11-04').bosses.current).toBeUndefined()
+    // 2 × leicht = 20 geplant → 20 HP (Nachbesserung 3a: höchstens der geplante Schaden)
     const weekly = makeHabit({ id: 'w', difficulty: 'easy', createdDay: START, schedule: { type: 'weekly', times: 2 } })
-    expect(deriveGameState(hero({ habits: [weekly] }), '2026-11-04').bosses.current?.maxHp).toBe(BALANCING.combat.bossMinHp)
+    expect(deriveGameState(hero({ habits: [weekly] }), '2026-11-04').bosses.current?.maxHp).toBe(20)
+    // 7 × leicht = 70 geplant → round(49) liegt unter der Untergrenze → 60 HP
+    const daily = makeHabit({ id: 'd', difficulty: 'easy', createdDay: START })
+    expect(deriveGameState(hero({ habits: [daily] }), '2026-11-04').bosses.current?.maxHp).toBe(BALANCING.combat.bossMinHp)
   })
 
   it('Boss und Schwäche sind deterministisch je Held und Woche', () => {
@@ -271,7 +275,11 @@ describe('Phase 3a – Truhen, Gold und Vorrat', () => {
       chapters: [makeChapter({ id: 'c1', criterion: { type: 'manual' }, manualDone: true, completedDay: day })],
     })
     const state = deriveGameState(hero({ mainQuests: [campaign] }), day)
-    expect(state.chests.map((chest) => [chest.id, chest.source, chest.foundDay])).toEqual([['chapter:q1:c1', 'chapter', day]])
+    // Phase 3b: Mit dem letzten Kapitel ist die Kampagne gemeistert – dazu die Endgegner-Truhe.
+    expect(state.chests.map((chest) => [chest.id, chest.source, chest.foundDay])).toEqual([
+      ['campaign:q1', 'campaign', day],
+      ['chapter:q1:c1', 'chapter', day],
+    ])
   })
 
   it('Gold zählt ab dem Öffnen; ungeöffnete Truhen stehen im Vorrat', () => {

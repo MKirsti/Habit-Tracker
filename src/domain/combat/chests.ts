@@ -7,16 +7,21 @@
  *   mit `hash(heroSeed + ':' + completion.id) < questDropChance` (10 %) liefert eine Truhe – höchstens
  *   `maxQuestChestsPerDay` (1) pro Tag **inklusive** schon gespeicherter Quest-Truhen dieses Tages.
  * - **Kapitel-Truhe** `chapter:<questId>:<chapterId>` je abgeschlossenem Kapitel mit `doneDay`.
+ * - **Endgegner-Truhe** (Phase 3b) `campaign:<questId>` je gemeisterter Kampagne (foundDay = Abschlusstag: der späteste
+ *   `doneDay` ihrer Kapitel), Seltenheit mindestens `rare` (gewürfelt nur über rare/legendary, Gewichte 7 : 1).
  *
  * Inhalt (festgelegt beim **Fund**, gespeicherte Truhen ändern sich nie): Seltenheit per `hash(key + ':rarity')` mit
  * `key = chestRollKey(heroSeed, id)` = `heroSeed + ':' + id` gegen `rarityWeights` (70/22/7/1) – der Helden-Seed gehört
  * dazu, weil die ID einer Boss-Truhe (`boss:<weekStart>`) für jeden Helden gleich ist: Ohne ihn bekämen zwei Helden
  * (etwa auf zwei Handys) jede Woche dieselbe Boss-Beute. common/uncommon Gold gleichverteilt im Bereich (per Hash);
- * rare 50 % Streak-Schutz / 50 % ein noch nicht freigeschalteter Truhen-Rahmen der Seltenheit rare (sonst 100 Gold); legendary ein noch nicht
- * freigeschalteter Truhen-Titel oder -Rahmen der Seltenheit legendary (sonst 150 Gold). „Noch nicht freigeschaltet“
+ * rare 50 % Streak-Schutz / 50 % ein noch nicht freigeschalteter Truhen-Rahmen der Seltenheit rare (sonst 50 Gold); legendary ein noch nicht
+ * freigeschalteter Truhen-Titel oder -Rahmen der Seltenheit legendary (sonst 75 Gold). „Noch nicht freigeschaltet“
  * heißt: weder freigeschaltet noch schon in einer anderen Truhe versprochen – so liegt nie zweimal dasselbe darin.
  *
- * **Fenster:** Neu gefunden werden Quest- und Kapitel-Truhen nur ab `chestWindowStart(today)` – dem Montag der Woche
+ * Gold (Nachbesserung 3a): halbiert – common 10–25, uncommon 30–50, Ersatz-Gold 50 bzw. 75. Schon gespeicherte Truhen
+ * behalten ihren Inhalt (er wurde beim Fund festgelegt).
+ *
+ * **Fenster:** Neu gefunden werden Quest-, Kapitel- und Endgegner-Truhen nur ab `chestWindowStart(today)` – dem Montag der Woche
  * von gestern (dieselben Wochen wie die Bosse: die laufende und, solange gestern nachgetragen werden kann, die
  * vorige). Ältere Tage lassen sich ohnehin nicht mehr ändern; ihre Truhen sind längst gespeichert. So beschert das
  * Update keinen Berg rückwirkender Truhen aus dem ganzen bisherigen Verlauf (Bosse gibt es rückwirkend ja auch nicht).
@@ -38,10 +43,10 @@ import type {
 import { FRAMES, TITLES } from './cosmeticDefinitions'
 import { hashUnit, rendezvousPick } from './hash'
 
-/** Gold einer rare-Truhe, wenn kein Truhen-Rahmen mehr frei ist. */
-export const RARE_FALLBACK_GOLD = 100
-/** Gold einer legendary-Truhe, wenn kein Truhen-Titel/-Rahmen mehr frei ist. */
-export const LEGENDARY_FALLBACK_GOLD = 150
+/** Gold einer rare-Truhe, wenn kein Truhen-Rahmen mehr frei ist (halbiert, Nachbesserung 3a). */
+export const RARE_FALLBACK_GOLD = 50
+/** Gold einer legendary-Truhe, wenn kein Truhen-Titel/-Rahmen mehr frei ist (halbiert, Nachbesserung 3a). */
+export const LEGENDARY_FALLBACK_GOLD = 75
 
 export const CHEST_RARITIES: readonly ChestRarity[] = ['common', 'uncommon', 'rare', 'legendary']
 
@@ -61,7 +66,20 @@ export function chapterChestId(questId: string, chapterId: string): string {
   return `chapter:${questId}:${chapterId}`
 }
 
-/** Erster Tag, für den Quest- und Kapitel-Truhen neu gefunden werden: Montag der Woche von gestern. */
+/** Endgegner-Truhe einer gemeisterten Kampagne (Phase 3b). */
+export function campaignChestId(questId: string): string {
+  return `campaign:${questId}`
+}
+
+/** Mindest-Seltenheit je Fundort: Endgegner-Truhen sind mindestens selten, alle anderen beliebig. */
+export const MIN_CHEST_RARITY: Readonly<Record<ChestSource, ChestRarity>> = {
+  boss: 'common',
+  quest: 'common',
+  chapter: 'common',
+  campaign: 'rare',
+}
+
+/** Erster Tag, für den Quest-, Kapitel- und Endgegner-Truhen neu gefunden werden: Montag der Woche von gestern. */
 export function chestWindowStart(today: DayKey): DayKey {
   return startOfWeek(addDays(today, -BALANCING.backfillDays))
 }
@@ -85,18 +103,22 @@ export function chestRollKey(heroSeed: string, id: string): string {
 
 /**
  * Seltenheit: `hash(key + ':rarity')` gegen die Gewichte (common 70 · uncommon 22 · rare 7 · legendary 1).
+ * Mit `min` wird nur über die Seltenheiten ab `min` gewürfelt (deren Gewichte im selben Verhältnis), z. B. `'rare'`:
+ * rare 7 : legendary 1. Ohne `min` (bzw. `'common'`) genau wie bisher.
  * @param key Würfel-Schlüssel der Truhe (`chestRollKey`); `findChests` übergibt ihn so.
  */
-export function chestRarity(key: string): ChestRarity {
+export function chestRarity(key: string, min: ChestRarity = 'common'): ChestRarity {
   const weights = BALANCING.chests.rarityWeights
-  const total = CHEST_RARITIES.reduce((sum, rarity) => sum + weights[rarity], 0)
+  const start = Math.max(0, CHEST_RARITIES.indexOf(min))
+  const allowed = CHEST_RARITIES.slice(start)
+  const total = allowed.reduce((sum, rarity) => sum + weights[rarity], 0)
   const roll = hashUnit(`${key}:rarity`) * total
   let cumulative = 0
-  for (const rarity of CHEST_RARITIES) {
+  for (const rarity of allowed) {
     cumulative += weights[rarity]
     if (roll < cumulative) return rarity
   }
-  return 'common'
+  return allowed[0]
 }
 
 /** Gold einer common-/uncommon-Truhe: gleichverteilt in `[min, max]` (beide inklusive) per `hash(id + ':gold')`. */
@@ -186,6 +208,13 @@ export interface CompletedChapter {
   doneDay?: DayKey
 }
 
+/** Eine gemeisterte Kampagne (für Endgegner-Truhen). */
+export interface CompletedCampaign {
+  questId: string
+  /** Abschlusstag: der späteste `doneDay` ihrer Kapitel (fehlt, wenn ein Kapitel keinen bekannten Tag hat). */
+  doneDay?: DayKey
+}
+
 export interface FindChestsInput {
   heroSeed: string
   today: DayKey
@@ -196,6 +225,8 @@ export interface FindChestsInput {
   /** Boss-Siege: gespeicherte und gerade abgeleitete (je Woche eine Truhe). */
   victories: readonly Pick<BossVictory, 'weekStart' | 'day'>[]
   chapters: readonly CompletedChapter[]
+  /** Phase 3b: gemeisterte Kampagnen (Endgegner-Truhen); fehlt = keine. */
+  campaigns?: readonly CompletedCampaign[]
   /** Gespeicherte Truhen – bleiben genau so, wie sie sind. */
   stored: readonly Chest[] | undefined
   /** Schon freigeschaltete Titel/Rahmen (IDs), damit eine neue Truhe nichts Doppeltes bringt. */
@@ -274,6 +305,12 @@ export function findChests(input: FindChestsInput): Chest[] {
     addFind(chapterChestId(chapter.questId, chapter.chapterId), 'chapter', chapter.doneDay)
   }
 
+  // Endgegner-Truhen (Phase 3b): je gemeisterter Kampagne, Abschlusstag im Fenster.
+  for (const campaign of input.campaigns ?? []) {
+    if (!inWindow(campaign.doneDay)) continue
+    addFind(campaignChestId(campaign.questId), 'campaign', campaign.doneDay)
+  }
+
   // Inhalt der neuen Truhen – chronologisch, jede Kosmetik höchstens einmal.
   const taken = new Set<string>([
     ...input.unlocked.titles.map((id) => cosmeticKey({ kind: 'title', id })),
@@ -287,7 +324,7 @@ export function findChests(input: FindChestsInput): Chest[] {
   const found: Chest[] = []
   for (const find of finds.sort(compareChests)) {
     const key = chestRollKey(input.heroSeed, find.id)
-    const rarity = chestRarity(key)
+    const rarity = chestRarity(key, MIN_CHEST_RARITY[find.source])
     const content = chestContent(key, rarity, context)
     if (content.kind === 'cosmetic') taken.add(cosmeticKey({ kind: content.cosmeticKind, id: content.cosmeticId }))
     found.push({ ...find, rarity, content })

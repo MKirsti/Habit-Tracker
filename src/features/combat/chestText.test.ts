@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { BOSSES } from '../../domain/combat/bosses'
 import { makeBossVictory, makeChapter, makeChest, makeHabit, makeMainQuest } from '../../domain/testing'
-import { chestReveal, chestSourceLine } from './chestText'
+import { CHEST_SOURCE_LABELS, chestReveal, chestSourceLine } from './chestText'
 
 const reading = makeHabit({ id: 'h-read', title: 'Lesen', icon: '📖', attribute: 'intellect' })
 const campaign = makeMainQuest({
@@ -21,6 +21,13 @@ describe('chestSourceLine', () => {
   it('nennt Kampagne und Kapitel einer Kapitel-Truhe', () => {
     expect(chestSourceLine(makeChest('chapter:mq-1:c-1'), { mainQuests: [campaign] })).toBe('📚 Kapitel „Erste Seiten“')
     expect(chestSourceLine(makeChest('chapter:mq-1:weg'), { mainQuests: [campaign] })).toBe('Ein abgeschlossenes Kapitel')
+  })
+
+  it('nennt die gemeisterte Kampagne einer Endgegner-Truhe (Phase 3b)', () => {
+    expect(CHEST_SOURCE_LABELS.campaign).toBe('Endgegner-Truhe')
+    expect(chestSourceLine(makeChest('campaign:mq-1'), { mainQuests: [campaign] })).toBe('📚 „Der Weg des Gelehrten“ gemeistert')
+    expect(chestSourceLine(makeChest('campaign:weg'), { mainQuests: [campaign] })).toBe('Eine gemeisterte Kampagne')
+    expect(chestSourceLine(makeChest('campaign:mq-1'), {})).toBe('Eine gemeisterte Kampagne')
   })
 
   it('nennt den besiegten Boss – gespeichert oder gerade erst besiegt', () => {

@@ -8,13 +8,22 @@
  *   Reihenfolge `ATTRIBUTE_IDS`): liegen sie höchstens `hybridMaxLevelGap` (1) auseinander und sind beide ≥ 3 →
  *   Hybridklasse dieses Paares, sonst die Grundklasse des höchsten.
  * - Klassen-Bonus: Grundklasse +20 % auf ihr Attribut, Hybrid +10 % auf beide, Abenteurer keiner.
+ * - **Trägheit** (Nachbesserung 3a, gegen Flackern): Die Klasse der Vorwoche bleibt, solange sie noch annähernd passt
+ *   (`keepsClass`) – Hybrid (a, b): beide ≥ 3, |a − b| ≤ `hybridMaxLevelGap + 1` und kein anderes Attribut über dem
+ *   niedrigeren der beiden; Grundklasse (a): a ≥ 3 und a ist (mit) höchstes Attribut oder liegt höchstens 1 Level
+ *   hinter dem höchsten – **außer** die normale Ermittlung ergibt einen Hybrid mit a (a und sein Nachbar oben liegen
+ *   höchstens 1 auseinander): Der entsteht wie ohne Trägheit, und ab dann ist er es, der träge bleibt. Die Trägheit
+ *   verzögert also nur das **Verlassen** einer Klasse (Hysterese), nie das Entstehen eines Hybrids – so flackert
+ *   nichts, und wer zwei Attribute gleich stark trainiert, wird trotzdem Hybrid. Sonst gilt die normale Ermittlung
+ *   (`heroClassIdFor`). Die Klasse einer Woche hängt so an der Klasse der Vorwoche: `classTimeline` rechnet die
+ *   Wochenfolge ab Abenteuerbeginn in einem Durchlauf.
  *
  * Namen, Icons und Texte stehen in `classDefinitions.ts` (`CLASS_DEFINITIONS`); welche Attribute zu welcher Klasse
  * gehören, legt diese Datei fest (Vertrag); `classes.test.ts` prüft, dass beides übereinstimmt.
  */
 import { ATTRIBUTE_IDS } from '../attributes'
 import { BALANCING } from '../balancing'
-import { addDays, compareDays, startOfWeek } from '../dates'
+import { addDays, compareDays, diffDays, isValidDayKey, startOfWeek } from '../dates'
 import { attributeLevelFromXp } from '../leveling'
 import type { AttributeId, DayKey, GrammaticalForm, HeroClassDefinition, HeroClassId, HeroClassState } from '../types'
 import { CLASS_DEFINITIONS } from './classDefinitions'
@@ -103,6 +112,43 @@ export function heroClassIdFor(levels: Readonly<Partial<Record<AttributeId, numb
   return BASE_CLASS_BY_ATTRIBUTE[first]
 }
 
+/**
+ * Trägheit: Darf die Klasse der Vorwoche bei diesen Attribut-Leveln bleiben? (Regeln siehe Dateikopf.) Der
+ * Abenteurer hat keine Trägheit – sobald eine echte Klasse möglich ist, gibt es sie.
+ */
+export function keepsClass(previous: HeroClassId, levels: Readonly<Partial<Record<AttributeId, number>>>): boolean {
+  const normalized = normalizeLevels(levels)
+  const { classMinLevel, hybridMaxLevelGap } = BALANCING.combat
+  const attributes = classAttributes(previous)
+  if (attributes.length === 2) {
+    const [a, b] = attributes
+    if (normalized[a] < classMinLevel || normalized[b] < classMinLevel) return false
+    if (Math.abs(normalized[a] - normalized[b]) > hybridMaxLevelGap + 1) return false
+    const lower = Math.min(normalized[a], normalized[b])
+    return ATTRIBUTE_IDS.every((id) => id === a || id === b || normalized[id] <= lower)
+  }
+  if (attributes.length === 1) {
+    const [a] = attributes
+    if (normalized[a] < classMinLevel) return false
+    const normal = heroClassIdFor(normalized)
+    if (normal === previous) return true
+    // Ergibt die normale Ermittlung einen Hybrid mit a, entsteht er – wie ohne Trägheit (er ist die passendere Klasse
+    // und bleibt seinerseits träge). Die Trägheit hält nur gegen einen Wechsel zu einer Klasse ohne a.
+    if (classAttributes(normal).includes(a)) return false
+    const highest = Math.max(...ATTRIBUTE_IDS.map((id) => normalized[id]))
+    return normalized[a] >= highest - 1
+  }
+  return false
+}
+
+/** Klasse zu diesen Attribut-Leveln mit Trägheit: bleibt `previous`, solange sie noch annähernd passt. */
+export function heroClassIdWithInertia(
+  levels: Readonly<Partial<Record<AttributeId, number>>>,
+  previous: HeroClassId | undefined,
+): HeroClassId {
+  return previous !== undefined && keepsClass(previous, levels) ? previous : heroClassIdFor(levels)
+}
+
 /** Klassen-Bonus: Grundklasse `{ [attr]: 0.2 }`, Hybrid `{ [a]: 0.1, [b]: 0.1 }`, Abenteurer `{}`. */
 export function classBonusFor(id: HeroClassId): Partial<Record<AttributeId, number>> {
   const attributes = classAttributes(id)
@@ -161,6 +207,64 @@ export function attributeLevelsFromXp(xp: Readonly<Partial<Record<AttributeId, n
   return levels
 }
 
+/** Klasse einer Woche in der Wochenfolge (`classTimeline`). */
+export interface ClassWeek {
+  /** Montag der Woche. */
+  weekStart: DayKey
+  /** Klasse der Woche (mit Trägheit). */
+  id: HeroClassId
+  /** Attribut-Level am Ende des Sonntags davor (`classLevelsDay`). */
+  attributeLevels: Record<AttributeId, number>
+}
+
+/** Sicherheitsgrenze für kaputte Daten (ein Eintrag im Jahr 1970 o. Ä.): höchstens so viele Wochen (≈ 40 Jahre). */
+const MAX_TIMELINE_WEEKS = 2_100
+
+/**
+ * Klassen über die Wochenfolge bis `untilWeek` (aufsteigend, eine Woche je Eintrag, die letzte ist `untilWeek`):
+ * Jede Woche bekommt `heroClassIdWithInertia(Level am Sonntag davor, Klasse der Vorwoche)`. Die Folge beginnt mit der
+ * Woche der ersten Attribut-XP – davor stehen alle Attribute auf Level 1 (Abenteurer, ohne Trägheit), ein früherer
+ * Beginn änderte also nichts. Ohne Beiträge (oder nur spätere) ist es nur `untilWeek`.
+ *
+ * Ein Durchlauf: Beiträge einmal nach Tag sortiert, dann je Woche die neuen aufaddiert – O(Beiträge · log + Wochen).
+ * Unbekannte Attribute, ungültige Tage und ungültige XP zählen nicht (wie `attributeXpThrough`).
+ */
+export function classTimeline(entries: Iterable<AttributeXpEntry>, untilWeek: DayKey): ClassWeek[] {
+  const until = startOfWeek(untilWeek)
+  const valid: AttributeXpEntry[] = []
+  for (const entry of entries) {
+    if (!isAttributeId(entry.attribute) || !Number.isFinite(entry.xp) || entry.xp <= 0) continue
+    if (typeof entry.day !== 'string' || !isValidDayKey(entry.day)) continue
+    valid.push(entry)
+  }
+  valid.sort((a, b) => compareDays(a.day, b.day))
+
+  let week = until
+  if (valid.length > 0) {
+    const first = startOfWeek(valid[0].day)
+    if (compareDays(first, until) < 0) week = first
+  }
+  if (diffDays(week, until) > MAX_TIMELINE_WEEKS * 7) week = addDays(until, -MAX_TIMELINE_WEEKS * 7)
+
+  const xp = {} as Record<AttributeId, number>
+  for (const id of ATTRIBUTE_IDS) xp[id] = 0
+  const timeline: ClassWeek[] = []
+  let next = 0
+  let previous: HeroClassId | undefined
+  for (; compareDays(week, until) <= 0; week = addDays(week, 7)) {
+    const cutoff = classLevelsDay(week)
+    while (next < valid.length && compareDays(valid[next].day, cutoff) <= 0) {
+      xp[valid[next].attribute] += valid[next].xp
+      next++
+    }
+    const attributeLevels = attributeLevelsFromXp(xp)
+    const id = heroClassIdWithInertia(attributeLevels, previous)
+    timeline.push({ weekStart: week, id, attributeLevels })
+    previous = id
+  }
+  return timeline
+}
+
 /** Notfall-Definition, falls der Inhalt eine Klasse (noch) nicht kennt – die App stürzt so nie ab. */
 function fallbackDefinition(id: HeroClassId): HeroClassDefinition {
   const name = id === 'adventurer' ? 'Abenteurer' : id
@@ -191,24 +295,34 @@ export interface HeroClassInput {
   weekStart: DayKey
   /** Attribut-Level am Ende von `classLevelsDay(weekStart)`. */
   attributeLevels: Readonly<Partial<Record<AttributeId, number>>>
-  /** Attribut-Level am Ende des Sonntags davor (Klasse der Vorwoche, für die Wechsel-Szene). */
+  /**
+   * Klasse der Vorwoche, wie sie in der Wochenfolge tatsächlich war (`classTimeline`) – Grundlage der Trägheit und
+   * der Wechsel-Szene. Hat Vorrang vor `previousLevels`.
+   */
+  previousClassId?: HeroClassId
+  /**
+   * Attribut-Level am Ende des Sonntags davor: Ohne `previousClassId` gilt als Klasse der Vorwoche die normale
+   * Ermittlung daraus (eine Wochenfolge der Länge 2).
+   */
   previousLevels?: Readonly<Partial<Record<AttributeId, number>>>
   definitions?: Readonly<Partial<Record<HeroClassId, HeroClassDefinition>>>
 }
 
-/** `GameState.heroClass`: Klasse, Woche, Kampf-Level, Bonus und – falls anders – die Klasse der Vorwoche. */
+/**
+ * `GameState.heroClass`: Klasse (mit Trägheit gegenüber der Vorwoche), Woche, Kampf-Level, Bonus und – falls anders –
+ * die Klasse der Vorwoche.
+ */
 export function heroClassState(input: HeroClassInput): HeroClassState {
   const attributeLevels = normalizeLevels(input.attributeLevels)
-  const id = heroClassIdFor(attributeLevels)
+  const previous =
+    input.previousClassId ?? (input.previousLevels !== undefined ? heroClassIdFor(input.previousLevels) : undefined)
+  const id = heroClassIdWithInertia(attributeLevels, previous)
   const state: HeroClassState = {
     definition: classDefinition(id, input.definitions),
     weekStart: startOfWeek(input.weekStart),
     attributeLevels,
     classBonus: classBonusFor(id),
   }
-  if (input.previousLevels !== undefined) {
-    const previousId = heroClassIdFor(input.previousLevels)
-    if (previousId !== id) state.previousId = previousId
-  }
+  if (previous !== undefined && previous !== id) state.previousId = previous
   return state
 }

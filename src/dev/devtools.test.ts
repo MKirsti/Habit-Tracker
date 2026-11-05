@@ -104,3 +104,32 @@ describe('devtools – Phase 3a (Bosse & Truhen)', () => {
     expect((await loadGameData()).bossVictories).toHaveLength(1)
   })
 })
+
+describe('devtools – Phase 3b (Gefährte & Tagebuch)', () => {
+  it('seedDemo: ein Fuchs begleitet den Helden seit Abenteuerbeginn, drei Notizen der letzten Tage', async () => {
+    await devtools.seedDemo(30)
+    const day = await today()
+    const start = addDays(day, -30)
+    const data = await loadGameData()
+    expect(data.profile?.companion).toStrictEqual({ species: 'fox', name: 'Flink', chosenDay: start })
+    expect(data.journalNotes?.map((note) => note.day)).toEqual([-8, -3, -1].map((offset) => addDays(day, offset)))
+    expect(data.journalNotes?.every((note) => note.text.length > 0 && note.mood !== undefined)).toBe(true)
+    const state = deriveGameState(data, day)
+    expect(state.companion?.stage).toBeGreaterThanOrEqual(1)
+    // Auch mit Gefährte gilt: alles, was die Engine zeigt, ist gespeichert.
+    expect(state.chests.map((chest) => chest.id).sort()).toEqual((data.chests ?? []).map((chest) => chest.id).sort())
+  })
+
+  it('companion: false / eine andere Art, journal: false; kurze Demos schreiben Notizen ab dem ersten Tag', async () => {
+    await devtools.seedDemo(10, { companion: false, journal: false, combat: false })
+    let data = await loadGameData()
+    expect(data.profile?.companion).toBeUndefined()
+    expect(data.journalNotes).toBeUndefined()
+
+    await devtools.seedDemo(2, { companion: 'dragon', combat: false })
+    const day = await today()
+    data = await loadGameData()
+    expect(data.profile?.companion).toMatchObject({ species: 'dragon', name: 'Glut', chosenDay: addDays(day, -2) })
+    expect(data.journalNotes?.map((note) => note.day)).toEqual([addDays(day, -2), addDays(day, -1)])
+  })
+})

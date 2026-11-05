@@ -1,4 +1,4 @@
-import { ArrowRight, Coins, Crown, Gift, ScrollText, Sunrise, Swords, Trophy } from 'lucide-react'
+import { ArrowRight, Coins, Crown, Gift, ScrollText, Sparkles, Sunrise, Swords, Trophy } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useId, useMemo, useRef } from 'react'
 import type { ReactNode, RefObject } from 'react'
@@ -11,12 +11,23 @@ import { chestTheme } from '../combat/chestTheme'
 import { chestName } from '../combat/combatText'
 import type { Celebration } from './celebrations'
 import type { BossDefeatedEvent, ClassChangedEvent } from './combatFeedback'
-import { bossVictorySceneText, classChangeSceneText, openedChestLine, VICTORY_CHEST_TEXT } from './combatSceneText'
+import {
+  bossVictorySceneText,
+  classChangeSceneText,
+  endBossVictorySceneText,
+  evolutionSceneText,
+  openedChestLine,
+  VICTORY_CHEST_TEXT,
+} from './combatSceneText'
+import type { CompanionEvolvedEvent } from './companionFeedback'
+import { companionGlow } from './companionTheme'
+import type { EndBossDefeatedEvent } from './endBossFeedback'
 import type { CampaignCompletedEvent, LevelUpEvent } from './feedbackEvents'
 import { defeatSceneText, hpLabel, rankHint, xpLabel } from './feedbackText'
 import type { DefeatEvent } from './hpFeedback'
 import { HP_COLOR } from './hpTheme'
 import { focusIsLost, useModalScene } from './modalScene'
+import { ParticleBurst } from './ParticleBurst'
 
 export interface CelebrationOverlayProps {
   celebration: Celebration
@@ -26,18 +37,18 @@ export interface CelebrationOverlayProps {
   /** Nach dem Einblenden: Mittelpunkt des Medaillons (Anteil der Fenstergröße) – Ursprung fürs Konfetti. */
   onReveal?: (origin: { x: number; y: number }) => void
   /**
-   * Nur Kampagne bzw. Klassenwechsel: ihre Hauptfarbe (Hex, `campaignColor` bzw. Farbe des Klassen-Attributs). Tönt
-   * Lichtschein, Strahlen, Medaillon-Rahmen und den Titel; Pokal, XP, Belohnung und „Weiter“ bleiben golden. Ohne: alles
-   * golden (wie beim Level-Up und beim Boss-Sieg).
+   * Nur Kampagne, Endgegner, Klassenwechsel bzw. Entwicklung des Gefährten: ihre Farbe (Hex, `campaignColor`, Farbe des
+   * Klassen-Attributs bzw. der Stufen-Glanz). Tönt Lichtschein, Strahlen, Medaillon-Rahmen und den Titel; Pokal, XP,
+   * Belohnung und „Weiter“ bleiben golden. Ohne: alles golden (wie beim Level-Up und beim Boss-Sieg).
    */
   accent?: string
   /** Heutiger Spieltag – für Texte wie „am Montag“ (Niederlage). */
   today?: DayKey
   /** Sprachform des Helden (Klassennamen, Titel in der Beute). */
   form?: GrammaticalForm
-  /** Nur Boss-Sieg: seine Truhe im aktuellen Spielzustand (geöffnet oder nicht). */
-  bossChest?: Chest
-  /** Nur Boss-Sieg: Truhen-Dialog über der Szene öffnen. */
+  /** Nur Boss-Sieg bzw. Endgegner: seine Truhe im aktuellen Spielzustand (geöffnet oder nicht). */
+  sceneChest?: Chest
+  /** Nur Boss-Sieg bzw. Endgegner: Truhen-Dialog über der Szene öffnen. */
   onOpenChest?: (chestId: string) => void
 }
 
@@ -97,7 +108,7 @@ export function CelebrationOverlay({
   accent,
   today,
   form,
-  bossChest,
+  sceneChest,
   onOpenChest,
 }: CelebrationOverlayProps) {
   const titleId = useId()
@@ -119,10 +130,12 @@ export function CelebrationOverlay({
 
   // Ist die Truhe der Siegesszene offen, verschwindet „Öffnen“. Lag der Fokus noch darauf (der Truhen-Dialog war schon
   // zu, als die Live-Daten nachzogen), springt er auf „Weiter“ – solange der Dialog offen ist, bleibt er dort.
-  const bossChestOpened = celebration.kind === 'boss' && bossChest?.openedAt !== undefined
+  const withChest = celebration.kind === 'boss' || celebration.kind === 'end-boss'
+  const chest = withChest ? sceneChest : undefined
+  const chestOpened = chest?.openedAt !== undefined
   useEffect(() => {
-    if (bossChestOpened && focusIsLost()) buttonRef.current?.focus({ preventScroll: true })
-  }, [bossChestOpened])
+    if (chestOpened && focusIsLost()) buttonRef.current?.focus({ preventScroll: true })
+  }, [chestOpened])
 
   const onRevealRef = useRef(onReveal)
   useEffect(() => {
@@ -141,7 +154,11 @@ export function CelebrationOverlay({
   const tone: SceneTone =
     celebration.kind === 'defeat'
       ? 'calm'
-      : (celebration.kind === 'campaign' || celebration.kind === 'class') && accent !== undefined
+      : (celebration.kind === 'campaign' ||
+            celebration.kind === 'class' ||
+            celebration.kind === 'end-boss' ||
+            celebration.kind === 'evolve') &&
+          accent !== undefined
         ? 'accent'
         : 'gold'
 
@@ -178,10 +195,38 @@ export function CelebrationOverlay({
           titleId={titleId}
           descriptionId={descriptionId}
           medallionRef={medallionRef}
-          chest={bossChest}
+          chest={chest}
           form={form}
           onOpenChest={onOpenChest}
           chestButtonRef={chestButtonRef}
+        />
+      )
+      break
+    case 'end-boss':
+      content = (
+        <EndBossVictoryContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+          tone={tone}
+          chest={chest}
+          form={form}
+          onOpenChest={onOpenChest}
+          chestButtonRef={chestButtonRef}
+        />
+      )
+      break
+    case 'evolve':
+      content = (
+        <EvolutionContent
+          event={celebration.event}
+          fancy={fancy}
+          titleId={titleId}
+          descriptionId={descriptionId}
+          medallionRef={medallionRef}
+          tone={tone}
         />
       )
       break
@@ -257,7 +302,7 @@ export function CelebrationOverlay({
               ref={buttonRef}
               size="lg"
               // Steht noch eine ungeöffnete Truhe in der Szene, ist „Truhe öffnen“ die Hauptaktion.
-              variant={celebration.kind === 'boss' && bossChest !== undefined && bossChest.openedAt === undefined ? 'secondary' : 'primary'}
+              variant={chest !== undefined && !chestOpened ? 'secondary' : 'primary'}
               onClick={onClose}
               data-scene-continue=""
               className="mt-[clamp(1.25rem,3.5dvh,1.75rem)] w-full sm:w-60"
@@ -284,26 +329,63 @@ interface ContentProps<E> {
   tone?: SceneTone
 }
 
+/** Gold, Hellgold und Pergament – die Funken der Level-Up-Szene. */
+const LEVEL_SPARKS = ['#f0c96a', '#fff1c4', '#d4a548', '#ece0c8'] as const
+
+/**
+ * Level-Aufstieg: Bei vollen Effekten weicht die alte Zahl nach oben aus, die neue springt aus dem Licht ins Medaillon,
+ * ein Funkenkranz sprüht nach außen und eine Krone legt sich darüber. Darunter der Weg „Level 6 → 7“, der (neue) Rang und
+ * der XP-Balken ins nächste Level.
+ */
 function LevelUpContent({ event, fancy, titleId, descriptionId, medallionRef }: ContentProps<LevelUpEvent>) {
   const jump = event.to - event.from
   const digits = String(event.to).length
+  // Ohne Positionierung – `cn` löst widersprüchliche Klassen nicht auf (relative/absolute setzt jede Zahl selbst).
+  const numberClass = cn(
+    'font-display leading-none font-bold text-gold-gradient tabular-nums drop-shadow-[0_2px_10px_rgb(0_0_0/0.6)]',
+    digits <= 2 ? 'text-[clamp(3.5rem,10dvh,4.75rem)]' : 'text-[clamp(2.5rem,7dvh,3rem)]',
+  )
   return (
     <>
       <Eyebrow>Level-Aufstieg</Eyebrow>
       <Medallion fancy={fancy} medallionRef={medallionRef}>
+        {fancy && event.from > 0 && (
+          // Die alte Zahl weicht – nur Dekoration, vorgelesen wird die Überschrift.
+          <motion.span
+            aria-hidden="true"
+            data-level-from=""
+            className={cn(numberClass, 'absolute opacity-0')}
+            initial={{ opacity: 0.9, y: 0, scale: 1 }}
+            animate={{ opacity: 0, y: -26, scale: 0.7 }}
+            transition={{ duration: 0.45, ease: 'easeIn', delay: 0.05 }}
+          >
+            {formatNumber(event.from)}
+          </motion.span>
+        )}
         <motion.span
-          className={cn(
-            'relative font-display leading-none font-bold text-gold-gradient tabular-nums drop-shadow-[0_2px_10px_rgb(0_0_0/0.6)]',
-            digits <= 2 ? 'text-[clamp(3.5rem,10dvh,4.75rem)]' : 'text-[clamp(2.5rem,7dvh,3rem)]',
-          )}
+          className={cn('relative', numberClass)}
           initial={fancy ? { opacity: 0, scale: 2.2, filter: 'blur(10px)' } : { opacity: 0 }}
           animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
           transition={
-            fancy ? { type: 'spring', stiffness: 260, damping: 17, delay: 0.18 } : { duration: 0.2, delay: 0.05 }
+            fancy ? { type: 'spring', stiffness: 260, damping: 17, delay: 0.32 } : { duration: 0.2, delay: 0.05 }
           }
         >
           {formatNumber(event.to)}
         </motion.span>
+        {fancy && (
+          <>
+            <ParticleBurst burstKey={event.to} count={16} colors={LEVEL_SPARKS} distance={118} size={7} duration={1.1} delay={0.38} shape="star" />
+            <motion.span
+              aria-hidden="true"
+              className="absolute -top-4 left-1/2 grid -translate-x-1/2 place-items-center text-gold-bright drop-shadow-[0_0_10px_rgb(240_201_106/0.7)]"
+              initial={{ opacity: 0, y: -14, scale: 0.6 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 16, delay: 0.62 }}
+            >
+              <Crown className="size-7" strokeWidth={1.8} />
+            </motion.span>
+          </>
+        )}
       </Medallion>
 
       <h2 id={titleId} className={cn(HEADING, 'mt-[clamp(1.25rem,4dvh,2rem)]')}>
@@ -312,6 +394,18 @@ function LevelUpContent({ event, fancy, titleId, descriptionId, medallionRef }: 
       <Ornament className="mt-2 h-3.5 w-24" />
 
       <div id={descriptionId} className="mt-3 flex flex-col items-center gap-2">
+        <p className="flex items-center gap-2 text-sm text-muted" data-level-path="">
+          <span className="sr-only">
+            Von Level {formatNumber(event.from)} auf Level {formatNumber(event.to)}.
+          </span>
+          <span aria-hidden="true" className="tabular-nums">
+            Level {formatNumber(event.from)}
+          </span>
+          <ArrowRight aria-hidden className="size-3.5 shrink-0 text-gold" strokeWidth={2.2} />
+          <span aria-hidden="true" className="font-semibold text-gold-bright tabular-nums">
+            {formatNumber(event.to)}
+          </span>
+        </p>
         {jump > 1 && (
           <Badge tone="gold" size="md">
             +{formatNumber(jump)} Level auf einmal
@@ -522,6 +616,177 @@ function VictoryChest({
       </div>
       {!opened && <p className="mt-2 text-xs text-muted">{VICTORY_CHEST_TEXT.later}</p>}
     </div>
+  )
+}
+
+/**
+ * Endgegner besiegt (letztes Kapitel einer Kampagne): der Endgegner im Medaillon (in der Farbe der Kampagne) mit Krone,
+ * „… ist besiegt!“, die Kampagne, sein Siegessatz und – ist die Kampagne damit gemeistert – die Endgegner-Truhe mit
+ * „Öffnen“. Danach folgt die Szene „Kampagne gemeistert“.
+ */
+function EndBossVictoryContent({
+  event,
+  fancy,
+  titleId,
+  descriptionId,
+  medallionRef,
+  tone = 'gold',
+  chest,
+  form,
+  onOpenChest,
+  chestButtonRef,
+}: ContentProps<EndBossDefeatedEvent> & {
+  chest?: Chest
+  form?: GrammaticalForm
+  onOpenChest?: (chestId: string) => void
+  chestButtonRef: RefObject<HTMLButtonElement | null>
+}) {
+  const text = endBossVictorySceneText(event)
+  return (
+    <>
+      <Eyebrow>{text.eyebrow}</Eyebrow>
+      <Medallion fancy={fancy} medallionRef={medallionRef} tone={tone}>
+        <motion.span
+          className="relative text-[clamp(3rem,8.5dvh,4rem)] leading-none drop-shadow-[0_4px_12px_rgb(0_0_0/0.6)]"
+          initial={fancy ? { opacity: 0, scale: 1.8, rotate: -10 } : { opacity: 0 }}
+          animate={{ opacity: 1, scale: 1, rotate: 0 }}
+          transition={fancy ? { type: 'spring', stiffness: 240, damping: 14, delay: 0.15 } : { duration: 0.2, delay: 0.05 }}
+        >
+          {event.icon}
+        </motion.span>
+        <span
+          aria-hidden="true"
+          className="absolute -bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-gold-bright/70 bg-linear-to-b from-gold-bright to-gold text-on-gold shadow-glow"
+        >
+          <Crown className="size-[1.125rem]" strokeWidth={2.2} />
+        </span>
+      </Medallion>
+
+      <h2 id={titleId} className={cn(HEADING, 'mt-[clamp(1.5rem,4.5dvh,2.25rem)] wrap-anywhere')}>
+        {text.title}
+      </h2>
+      <Ornament className="mt-2 h-3.5 w-24" />
+      <div id={descriptionId} className="mt-3 flex max-w-full flex-col items-center gap-2.5">
+        <p
+          data-end-boss-campaign=""
+          className={cn(
+            'max-w-full font-display text-base leading-snug font-semibold tracking-wide wrap-anywhere',
+            tone === 'accent' ? 'text-(--accent-text)' : 'text-gold-bright',
+          )}
+        >
+          {text.campaign}
+        </p>
+        <p className="text-[0.9375rem] leading-relaxed text-parchment/90 italic">„{text.line}“</p>
+        <p className="text-sm text-muted">{text.note}</p>
+      </div>
+
+      {chest && <VictoryChest chest={chest} form={form} onOpenChest={onOpenChest} buttonRef={chestButtonRef} />}
+    </>
+  )
+}
+
+/**
+ * Entwicklung des Gefährten: das Emoji wächst im Medaillon (in der Farbe der neuen Stufe) und leuchtet kurz auf, Funken
+ * sprühen; darunter „Wuselwicht → Glitzerpfote“, die Stufe, ihr Text und der Weg zur nächsten.
+ */
+function EvolutionContent({
+  event,
+  fancy,
+  titleId,
+  descriptionId,
+  medallionRef,
+  tone = 'gold',
+}: ContentProps<CompanionEvolvedEvent>) {
+  const text = evolutionSceneText(event)
+  const glow = companionGlow(event.to)
+  const accentText = tone === 'accent' ? 'text-(--accent-text)' : 'text-gold-bright'
+  return (
+    <>
+      <Eyebrow>{text.eyebrow}</Eyebrow>
+      <Medallion fancy={fancy} medallionRef={medallionRef} tone={tone}>
+        <motion.span
+          data-evolve-icon=""
+          className="relative text-[clamp(3.25rem,9dvh,4.25rem)] leading-none drop-shadow-[0_4px_12px_rgb(0_0_0/0.6)]"
+          initial={fancy ? { opacity: 0.7, scale: 0.5 } : { opacity: 0 }}
+          animate={
+            fancy
+              ? {
+                  opacity: [0.7, 1, 1, 1],
+                  scale: [0.5, 0.56, 1.28, 1],
+                  filter: ['brightness(1)', 'brightness(1.1)', 'brightness(1.9)', 'brightness(1)'],
+                }
+              : { opacity: 1 }
+          }
+          transition={fancy ? { duration: 1.5, times: [0, 0.35, 0.72, 1], ease: 'easeOut', delay: 0.2 } : { duration: 0.2, delay: 0.05 }}
+        >
+          {event.icon}
+        </motion.span>
+        {fancy && (
+          <ParticleBurst
+            burstKey={event.to}
+            count={14}
+            colors={[glow.color, '#fff1c4', '#f0c96a']}
+            distance={112}
+            size={6}
+            duration={1}
+            delay={1.1}
+            shape="star"
+          />
+        )}
+        <span
+          aria-hidden="true"
+          className="absolute -bottom-3 left-1/2 grid size-9 -translate-x-1/2 place-items-center rounded-full border border-gold-bright/70 bg-linear-to-b from-gold-bright to-gold text-on-gold shadow-glow"
+        >
+          <Sparkles className="size-[1.125rem]" strokeWidth={2.2} />
+        </span>
+      </Medallion>
+
+      <h2 id={titleId} className={cn(HEADING, 'mt-[clamp(1.5rem,4.5dvh,2.25rem)] wrap-anywhere')}>
+        {text.title}
+      </h2>
+      <Ornament className="mt-2 h-3.5 w-24" />
+      <div id={descriptionId} className="mt-3 flex max-w-full flex-col items-center gap-2.5">
+        <p className="flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[1.0625rem]">
+          <span className="sr-only">{text.changeSpoken}</span>
+          <span aria-hidden="true" className="text-muted">
+            {text.from}
+          </span>
+          <ArrowRight aria-hidden className="size-4 shrink-0 text-gold" strokeWidth={2.2} />
+          <span aria-hidden="true" className={cn('font-display font-bold tracking-wide', accentText)} data-evolve-to="">
+            {text.to}
+          </span>
+        </p>
+        <StageDots stage={event.to} label={text.stage} />
+        {text.description && <p className="text-sm leading-relaxed text-muted">{text.description}</p>}
+        <p className="text-xs text-faint">{text.next}</p>
+      </div>
+    </>
+  )
+}
+
+/** Vier Punkte für die Stufen des Gefährten (erreichte leuchten) mit der Stufe in Worten. */
+function StageDots({ stage, label }: { stage: number; label: string }) {
+  return (
+    <p className="flex items-center gap-2 text-xs font-medium tracking-wide text-parchment" data-evolve-stage={stage}>
+      <span aria-hidden="true" className="flex items-center gap-1">
+        {[0, 1, 2, 3].map((index) => {
+          const reached = index <= stage
+          const glow = companionGlow(index)
+          return (
+            <span
+              key={index}
+              className="block size-2 rounded-full"
+              style={
+                reached
+                  ? { background: glow.color, boxShadow: `0 0 6px ${glow.color}` }
+                  : { background: 'transparent', boxShadow: 'inset 0 0 0 1px rgb(168 151 122 / 0.5)' }
+              }
+            />
+          )
+        })}
+      </span>
+      {label}
+    </p>
   )
 }
 

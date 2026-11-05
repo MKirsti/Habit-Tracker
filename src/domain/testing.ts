@@ -14,10 +14,14 @@ import type {
   Chapter,
   Chest,
   ChestSource,
+  CompanionChoice,
+  CompanionDefinition,
+  CompanionSpecies,
   Completion,
   CosmeticCondition,
   CosmeticUnlock,
   DayKey,
+  EndBossDefinition,
   FrameDefinition,
   GameData,
   Habit,
@@ -303,7 +307,7 @@ export function makeBossVictory(weekStart: DayKey, overrides: Partial<BossVictor
 /** Gespeicherte Truhe (Standard: ungeöffnet, common, 20 Gold; Quelle aus dem ID-Präfix). */
 export function makeChest(id: string, overrides: Partial<Chest> = {}): Chest {
   const prefix = id.split(':')[0]
-  const source: ChestSource = prefix === 'boss' || prefix === 'chapter' ? prefix : 'quest'
+  const source: ChestSource = prefix === 'boss' || prefix === 'chapter' || prefix === 'campaign' ? prefix : 'quest'
   return { id, source, foundDay: '2026-01-01', rarity: 'common', content: { kind: 'gold', amount: 20 }, ...overrides }
 }
 
@@ -325,4 +329,56 @@ export function makeTitle(id: string, condition: CosmeticCondition, overrides: P
 
 export function makeFrame(id: string, condition: CosmeticCondition, overrides: Partial<FrameDefinition> = {}): FrameDefinition {
   return { id, name: `Rahmen ${id}`, condition, hint: `So bekommst du ${id}.`, rarity: 'common', colors: ['#d4a548'], ...overrides }
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 3b: Gefährten, Endgegner
+// ---------------------------------------------------------------------------
+
+const TEST_COMPANION_SPECIES: CompanionSpecies[] = ['dragon', 'raccoon', 'snake', 'owl', 'fox']
+
+/** Gewählter Gefährte (Standard: Fuchs „Flink“, gewählt am 2026-01-01). */
+export function makeCompanionChoice(species: CompanionSpecies = 'fox', overrides: Partial<CompanionChoice> = {}): CompanionChoice {
+  return { species, name: 'Flink', chosenDay: '2026-01-01', ...overrides }
+}
+
+/** Gefährten-Definitionen für Tests (unabhängig vom echten Inhalt): Stufen `<art>-0` … `<art>-3`. */
+export function makeCompanionDefinitions(): Record<CompanionSpecies, CompanionDefinition> {
+  const definitions = {} as Record<CompanionSpecies, CompanionDefinition>
+  for (const species of TEST_COMPANION_SPECIES) {
+    definitions[species] = {
+      species,
+      label: `Art ${species}`,
+      icon: '🐾',
+      stages: [0, 1, 2, 3].map((stage) => ({ name: `${species}-${stage}`, description: `Stufe ${stage}.` })),
+      personality: `Persönlichkeit ${species}.`,
+    }
+  }
+  return definitions
+}
+
+/** Endgegner für Tests. */
+export function makeEndBoss(id: string, overrides: Partial<EndBossDefinition> = {}): EndBossDefinition {
+  return { id, name: `Endgegner ${id}`, icon: '🐲', description: 'Ein Endgegner für Tests.', defeatLine: 'Bezwungen!', ...overrides }
+}
+
+/** Schlüssel der Endgegner laut Vertrag (Vorlage bzw. Vorlage:Pfad, dazu `custom`). */
+export const END_BOSS_KEYS: readonly string[] = [
+  'scholar',
+  'body:strength',
+  'body:endurance',
+  'body:sports',
+  'alchemist',
+  'monk',
+  'earlyRiser',
+  'fortress',
+  'fellowship',
+  'polyglot',
+  'custom',
+]
+
+/** Endgegner je Schlüssel (`end-<schlüssel>`, Doppelpunkt → Bindestrich) – wie der echte Inhalt aufgebaut. */
+export function makeEndBossRoster(): Record<string, EndBossDefinition> {
+  return Object.fromEntries(END_BOSS_KEYS.map((key) => [key, makeEndBoss(`end-${key.replace(':', '-')}`)]))
 }

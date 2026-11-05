@@ -7,6 +7,8 @@
  *   await questlog.seedDemo(30, { missedDays: 3 })      // die letzten 3 abgerechneten Tage verpasst → HP angeschlagen
  *   await questlog.seedDemo(30, { penalties: false })   // Sanfter Modus (keine HP)
  *   await questlog.seedDemo(30, { combat: false })      // ohne Boss-Sieg und Truhen
+ *   await questlog.seedDemo(30, { companion: false })   // ohne Gefährten (Einführungskarte „Neu: Gefährten“)
+ *   await questlog.seedDemo(30, { companion: 'dragon', journal: false })   // anderer Gefährte, ohne Notizen
  *   await questlog.installBlueprint('body', { level: 'advanced', pathId: 'endurance' })  // weitere Kampagne
  *
  * Phase 3a (Klassen, Bosse, Truhen):
@@ -17,6 +19,11 @@
  *   await questlog.defeatBoss()                          // Boss der Vorwoche als besiegt speichern (Bestiarium)
  *   await questlog.defeatBoss(await questlog.today())    // … oder den der Woche dieses Tages
  *   await questlog.reset()        // alles löschen → Onboarding
+ *
+ * Phase 3b (Gefährte, Tagebuch):
+ *   await questlog.repository.setCompanion({ species: 'owl', name: 'Eulalia' }, await questlog.today())
+ *   await questlog.repository.saveJournalNote(await questlog.today(), { text: 'Guter Tag!', mood: '😄' }, await questlog.today())
+ *   await questlog.repository.markWeeklyReviewSeen(await questlog.today())   // Wochenrückblick weggeklickt
  *
  * Alle Repository-Funktionen stehen unter `questlog.repository` bereit, z. B.
  *   await questlog.repository.createReward({ title: 'Pizza', icon: '🍕', price: 400, repeatable: true })
@@ -33,7 +40,15 @@ import { chestContent, chestCosmetic, chestRarity } from '../domain/combat/chest
 import { addDays, compareDays, dayRange, isoWeekday, startOfWeek, toDayKey } from '../domain/dates'
 import { deriveGameState } from '../domain/engine'
 import { isRequiredOn } from '../domain/schedule'
-import type { BossVictory, Chest, ChestContent, ChestRarity, ChestSource, DayKey } from '../domain/types'
+import type {
+  BossVictory,
+  Chest,
+  ChestContent,
+  ChestRarity,
+  ChestSource,
+  CompanionSpecies,
+  DayKey,
+} from '../domain/types'
 import * as backup from '../data/backup'
 import { db, KV_KEYS } from '../data/db'
 import type { BlueprintOptions } from '../data/blueprints/types'
@@ -75,6 +90,10 @@ async function currentDay(): Promise<DayKey> {
  * Phase 3a (`combat: false` lässt es weg): Der Boss der Vorwoche ist besiegt (`defeatBoss`, gespeichert über
  * `recordProgress`), alles, was der `ProgressRecorder` der App jetzt speichern würde (gerade gefundene Truhen, Siege),
  * ist gespeichert, und es liegen mindestens zwei ungeöffnete Truhen bereit (fehlende per `grantChest`).
+ *
+ * Phase 3b: Ein Gefährte begleitet den Helden seit dem Abenteuerbeginn (Standard 🦊 Fuchs „Flink“; `companion: 'owl'`
+ * wählt eine andere Art, `companion: false` keinen – dann zeigt die App die Einführung „Neu: Gefährten“), und im
+ * Tagebuch stehen drei Notizen der letzten Tage (`journal: false` lässt sie weg).
  */
 async function seedDemo(
   days = 30,
@@ -85,6 +104,8 @@ async function seedDemo(
     penalties?: boolean
     missedDays?: number
     combat?: boolean
+    companion?: CompanionSpecies | false
+    journal?: boolean
   } = {},
 ): Promise<void> {
   const today = await currentDay()
@@ -122,8 +143,43 @@ async function seedDemo(
   await setPenaltiesSince(start, options.penalties ?? true)
   await repository.saveProfile({ name: 'Aria', avatar: '🧙', createdDay: start })
   await repository.settleHpDays(today)
+  // Nach dem Profil (beides braucht den Helden), vor dem Kampf: Der Gefährte trifft an Perfekten Tagen mit.
+  const species = options.companion ?? 'fox'
+  if (species !== false) await repository.setCompanion({ species, name: DEMO_COMPANION_NAMES[species] }, start)
+  if (options.journal ?? true) await seedJournal(today, start)
   // Nach dem Profil: Boss-Wahl und Quest-Truhen hängen vom Helden ab (`heroSeed`).
   if (options.combat ?? true) await seedCombat(today)
+}
+
+/** Namen der Demo-Gefährten je Art. */
+const DEMO_COMPANION_NAMES: Record<CompanionSpecies, string> = {
+  dragon: 'Glut',
+  raccoon: 'Krümel',
+  snake: 'Sira',
+  owl: 'Eulalia',
+  fox: 'Flink',
+}
+
+/**
+ * Drei Tagebuch-Notizen der letzten Tage (vor wie vielen Tagen, Stimmung, Text) – bei kurzen Demos ab dem Beginn.
+ * Die Stimmungen stammen aus der Auswahl der App (`JOURNAL_MOODS` in `pages/dashboard/journalText.ts`), damit sie beim
+ * Bearbeiten vorgewählt erscheinen.
+ */
+const DEMO_NOTES: readonly { daysAgo: number; mood: string; text: string }[] = [
+  { daysAgo: 1, mood: '😄', text: 'Vor dem Frühstück gelesen – so in den Tag zu starten fühlt sich richtig gut an.' },
+  { daysAgo: 3, mood: '😴', text: 'Etwas müde, aber drangeblieben. Ein Kapitel ist besser als keins.' },
+  { daysAgo: 8, mood: '🙂', text: 'Neues Buch angefangen! Ich bin gespannt, wohin die Reise geht.' },
+]
+
+/** Tagebuch-Notizen für `seedDemo` (über das Repository, gleiche Prüfungen wie in der App). */
+async function seedJournal(today: DayKey, start: DayKey): Promise<void> {
+  const written = new Set<DayKey>()
+  for (const note of DEMO_NOTES) {
+    const day = latest(start, addDays(today, -note.daysAgo))
+    if (written.has(day)) continue
+    written.add(day)
+    await repository.saveJournalNote(day, { text: note.text, mood: note.mood }, today)
+  }
 }
 
 /** Mindestens so viele ungeöffnete Truhen legt `seedDemo` bereit. */

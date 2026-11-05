@@ -1,12 +1,15 @@
 /**
- * Texte der Kampf-Rückmeldungen (Phase 3a): Siegesszene, Klassenwechsel-Szene und „Truhe gefunden“. Rein, damit
- * testbar. Klassennamen in der Sprachform des Helden (`CharacterProfile.form`).
+ * Texte der Kampf-Rückmeldungen (Phase 3a): Siegesszene, Klassenwechsel-Szene und „Truhe gefunden“ – Phase 3b:
+ * Endgegner-Siegesszene und Entwicklung des Gefährten. Rein, damit testbar. Klassennamen in der Sprachform des Helden (`CharacterProfile.form`).
  */
 import type { ChestRarity, GrammaticalForm } from '../../domain/types'
 import { chestName, chestsFoundTitle, classBonusLines, classChangeKind, classDativeIn, classNameIn } from '../combat/combatText'
 import type { ClassChangeKind } from '../combat/combatText'
 import { formatNumber } from '../../ui/format'
 import type { BossDefeatedEvent, ClassChangedEvent } from './combatFeedback'
+import { stageLine, TOP_COMPANION_STAGE } from './companionTheme'
+import type { CompanionEvolvedEvent } from './companionFeedback'
+import type { EndBossDefeatedEvent } from './endBossFeedback'
 import type { ToastText } from './feedbackText'
 
 export interface BossVictorySceneText {
@@ -107,4 +110,79 @@ export function chestFoundToastText(chests: readonly FoundChestInfo[]): ToastTex
     return { title: chestsFoundTitle(1), description: `${chestName(chest.rarity)} · ${chest.sourceLine} – öffne sie in deiner Sammlung.` }
   }
   return { title: chestsFoundTitle(chests.length), description: 'Öffne sie in deiner Sammlung.' }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3b: Endgegner besiegt, Entwicklung des Gefährten
+// ---------------------------------------------------------------------------
+
+export interface EndBossVictorySceneText {
+  eyebrow: string
+  /** „Der Bibliothekar der Ewigkeit ist besiegt!“ */
+  title: string
+  /** Der Siegessatz des Endgegners. */
+  line: string
+  /** „📚 Der Weg des Gelehrten“ – die Kampagne, an deren Ende er wartete. */
+  campaign: string
+  /** Wie es weitergeht: gleich die Kampagnen-Szene bzw. die noch offenen Kapitel. */
+  note: string
+}
+
+/**
+ * Endgegner besiegt (letztes Kapitel einer Kampagne): „… ist besiegt!“, sein Siegessatz, die Kampagne – und der Blick
+ * nach vorn (die Kampagne ist gemeistert bzw. ein paar Kapitel warten noch).
+ */
+export function endBossVictorySceneText(
+  event: Pick<EndBossDefeatedEvent, 'name' | 'defeatLine' | 'campaignTitle' | 'campaignIcon' | 'campaignComplete'>,
+): EndBossVictorySceneText {
+  return {
+    eyebrow: 'Endgegner besiegt',
+    title: `${event.name} ist besiegt!`,
+    line: event.defeatLine,
+    campaign: `${event.campaignIcon} ${event.campaignTitle}`,
+    note: event.campaignComplete
+      ? 'Das letzte Kapitel ist geschafft – deine Kampagne ist gemeistert!'
+      : 'Ein paar Kapitel warten noch – dann ist deine Kampagne gemeistert.',
+  }
+}
+
+export interface EvolutionSceneText {
+  eyebrow: string
+  /** „Krümel ist gewachsen!“ */
+  title: string
+  from: string
+  to: string
+  /** Vorgelesen statt des Pfeils: „Bisher Wuselwicht, jetzt Glitzerpfote.“ */
+  changeSpoken: string
+  /** „Stufe 2 von 4 · Gefährte“ */
+  stage: string
+  description: string
+  /** „Nächste Stufe in 46 aktiven Tagen.“ bzw. auf der höchsten Stufe ein Abschluss. */
+  next: string
+}
+
+/**
+ * Entwicklung des Gefährten: der Name (ohne Pronomen – er ist frei gewählt), alte → neue Stufe, die Stufe in Worten,
+ * ihr Text und wie weit es bis zur nächsten ist. Auf der höchsten Stufe: legendär.
+ */
+export function evolutionSceneText(
+  event: Pick<CompanionEvolvedEvent, 'name' | 'to' | 'fromName' | 'toName' | 'description' | 'daysToNextStage'>,
+): EvolutionSceneText {
+  const top = event.to >= TOP_COMPANION_STAGE
+  const days = event.daysToNextStage
+  return {
+    eyebrow: top ? 'Legendärer Gefährte' : 'Dein Gefährte wächst',
+    title: top ? `${event.name} ist legendär!` : `${event.name} ist gewachsen!`,
+    from: event.fromName,
+    to: event.toName,
+    changeSpoken: `Bisher ${event.fromName}, jetzt ${event.toName}.`,
+    stage: stageLine(event.to),
+    description: event.description,
+    next:
+      top || days === undefined
+        ? 'Die höchste Stufe – an deiner Seite für alle Abenteuer, die noch kommen.'
+        : days === 1
+          ? 'Noch ein aktiver Tag bis zur nächsten Stufe.'
+          : `Nächste Stufe in ${formatNumber(days)} aktiven Tagen.`,
+  }
 }
